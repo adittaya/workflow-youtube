@@ -62,7 +62,7 @@ function isConfigured() {
   return !!(cfg.supabase_url && cfg.supabase_key && cfg.supabase_secret);
 }
 
-// CLI mode: node config.js --get <key> or --set <key> <value>
+// CLI mode: node config.js --get <key> or --set <key> <value> or --setup
 if (require.main === module) {
   const args = process.argv.slice(2);
   if (args[0] === '--get') {
@@ -77,9 +77,95 @@ if (require.main === module) {
     save({ [key]: val });
   } else if (args[0] === '--check') {
     console.log(isConfigured() ? 'configured' : 'unconfigured');
+  } else if (args[0] === '--setup') {
+    interactiveSetup();
   } else if (args.length === 0) {
-    console.log(JSON.stringify(load(), null, 2));
+    const cfg = load();
+    if (process.stdin.isTTY) {
+      interactiveMenu(cfg);
+    } else {
+      console.log(JSON.stringify(cfg, null, 2));
+    }
   }
+}
+
+function interactiveSetup() {
+  const readline = require('readline');
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const cfg = load();
+
+  console.log('');
+  console.log('\x1b[1m╔══════════════════════════════════════════════════════════╗\x1b[0m');
+  console.log('\x1b[1m║        VPLink 3.0 — Database Credential Setup          ║\x1b[0m');
+  console.log('\x1b[1m╚══════════════════════════════════════════════════════════╝\x1b[0m');
+  console.log('');
+  console.log('  Credentials are stored in ~/.vplink3.0/config.json');
+  console.log('  Press Enter to keep current value (shown in brackets).');
+  console.log('');
+
+  const ask = (prompt, current) => {
+    return new Promise(resolve => {
+      const display = current ? ` [${current.slice(0, 20)}${current.length > 20 ? '...' : ''}]` : ' [empty]';
+      rl.question(`  \x1b[1m${prompt}:\x1b[0m${display} `, answer => {
+        resolve(answer.trim() || current || '');
+      });
+    });
+  };
+
+  (async () => {
+    const supabase_url = await ask('Supabase URL', cfg.supabase_url);
+    const supabase_key = await ask('Supabase Publishable Key', cfg.supabase_key);
+    const supabase_secret = await ask('Supabase Secret Key', cfg.supabase_secret);
+    const proxy_enabled = await ask('Enable proxy? (true/false)', String(cfg.proxy_enabled));
+    const proxy_tier = await ask('Proxy tier (free/premium)', cfg.proxy_tier);
+
+    save({
+      supabase_url,
+      supabase_key,
+      supabase_secret,
+      proxy_enabled: proxy_enabled === 'true',
+      proxy_tier,
+    });
+
+    console.log('');
+    if (supabase_url && supabase_key && supabase_secret) {
+      console.log('  \x1b[32m✓\x1b[0m \x1b[1mCredentials saved successfully!\x1b[0m');
+      console.log('  \x1b[32m✓\x1b[0m Proxy: ' + (proxy_enabled === 'true' ? `enabled (${proxy_tier})` : 'disabled'));
+    } else {
+      console.log('  \x1b[33m⚠\x1b[0m Partial config — proxy features will be limited');
+      console.log('  Run \x1b[1mvplink3.0 config\x1b[0m again to update.');
+    }
+    console.log('');
+    rl.close();
+  })();
+}
+
+function interactiveMenu(cfg) {
+  const readline = require('readline');
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+
+  const configured = isConfigured();
+  const status = configured ? '\x1b[32m✓ Configured\x1b[0m' : '\x1b[33m✗ Not configured\x1b[0m';
+
+  console.log('');
+  console.log('\x1b[1m╔══════════════════════════════════════════════════════════╗\x1b[0m');
+  console.log('\x1b[1m║           VPLink 3.0 — Configuration                   ║\x1b[0m');
+  console.log('\x1b[1m╚══════════════════════════════════════════════════════════╝\x1b[0m');
+  console.log('');
+  console.log(`  Status: ${status}`);
+  if (cfg.supabase_url) {
+    console.log(`  Supabase URL: ${cfg.supabase_url.slice(0, 40)}...`);
+  }
+  console.log(`  Proxy: ${cfg.proxy_enabled ? `enabled (${cfg.proxy_tier})` : 'disabled'}`);
+  console.log(`  Views: ${cfg.views}`);
+  console.log('');
+  console.log('  Commands:');
+  console.log('    \x1b[1mvplink3.0 config --setup\x1b[0m   Interactive credential setup');
+  console.log('    \x1b[1mvplink3.0 config --set\x1b[0m <k> <v>  Set a value');
+  console.log('    \x1b[1mvplink3.0 config --get\x1b[0m <k>     Get a value');
+  console.log('    \x1b[1mvplink3.0 config --check\x1b[0m      Check if configured');
+  console.log('');
+  rl.close();
 }
 
 module.exports = { load, save, loadProxyHistory, saveProxyHistory, isConfigured };

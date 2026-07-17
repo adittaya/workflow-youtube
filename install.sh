@@ -596,19 +596,24 @@ create_global_command() {
 # ═══════════════════════════════════════════════════════════════
 
 setup_credentials() {
-  # Skip if already configured (credentials exist and are valid)
-  [ "$STATE_CREDENTIALS" = "done" ] || [ "$STATE_CREDENTIALS" = "skipped" ] && { log "Credentials already configured"; return 0; }
-  if [ -f "$CREDENTIAL_FILE" ]; then
-    local cfg
-    cfg=$(cat "$CREDENTIAL_FILE" 2>/dev/null || echo '{}')
-    local sb_url sb_key
-    sb_url=$(echo "$cfg" | sed -n 's/.*"supabase_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || true)
-    sb_key=$(echo "$cfg" | sed -n 's/.*"supabase_key"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || true)
-    if [ -n "$sb_url" ] && [ -n "$sb_key" ] && [ "$sb_url" != "''" ] && [ "$sb_key" != "''" ]; then
-      STATE_CREDENTIALS="done"
+  # Already done from install state: offer to reconfigure
+  if [ "$STATE_CREDENTIALS" = "done" ] || [ "$STATE_CREDENTIALS" = "skipped" ]; then
+    # Non-interactive or piped: skip silently
+    if [ -n "${VPLINK_NONINTERACTIVE:-}" ] || [ -n "${CI:-}" ] || [ ! -t 0 ]; then
       log "Credentials already configured"
       return 0
     fi
+    echo ""
+    read -r -p "  Credentials already configured. Reconfigure? [y/N] " RECONFIG
+    case "$RECONFIG" in
+      [yY]|[yY][eE][sS])
+        # Fall through to interactive setup
+        ;;
+      *)
+        log "Keeping existing credentials"
+        return 0
+        ;;
+    esac
   fi
 
   # Non-interactive mode: skip with warning
@@ -1047,6 +1052,7 @@ main_install() {
     echo "║                                              ║"
     echo "║  Commands:                                   ║"
     echo "║    vplink3.0              — Run automation   ║"
+    echo "║    vplink3.0 config       — Setup credentials║"
     echo "║    vplink3.0 update       — Update project   ║"
     echo "║    vplink3.0 uninstall    — Remove project   ║"
     echo "║    vplink-desktop         — Virtual desktop  ║"

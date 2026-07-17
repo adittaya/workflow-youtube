@@ -277,29 +277,42 @@ fi
 
 echo ""
 echo "╔══════════════════════════════════════════════╗"
-echo "║               Run Summary                    ║"
+echo "║              Run Summary                     ║"
 echo "╠══════════════════════════════════════════════╣"
-echo "║  Views:        $VIEWS"
-echo "║  Key:          $KEY"
+printf "║  %-13s %s\n" "Views:" "$VIEWS"
+printf "║  %-13s %s\n" "Key:" "$KEY"
 if [ -n "$MULTI_URLS" ]; then
-echo "║  Multi-URL:    enabled ($(echo "$MULTI_URLS" | tr ',' '\n' | wc -l) keys)"
+  MULTI_COUNT=$(echo "$MULTI_URLS" | tr ',' '\n' | wc -l)
+  printf "║  %-13s %s\n" "Multi-URL:" "✓ enabled ($MULTI_COUNT keys)"
 fi
-echo "║  Proxy:        $([[ "$PROXY_ENABLED" = true ]] && echo "enabled (${PROXY_TIER})" || echo "disabled")"
-echo "║  YouTube src:  $([[ "$YT_ENABLED" = true ]] && echo "enabled" || echo "disabled")"
-echo "║  Mobile prof:  $([[ "$MOBILE_ENABLED" = true ]] && echo "enabled" || echo "disabled")"
-if [ "$TERMUX" = 1 ]; then
-echo "║  Mode:          Termux (headless)"
-elif [ "$DESKTOP_NEEDED" = "existing" ]; then
-echo "║  Mode:          Existing display ($DISPLAY)"
-elif [ "$DESKTOP_NEEDED" = "n" ]; then
-echo "║  Mode:          Headless"
+if [ "$PROXY_ENABLED" = true ]; then
+  printf "║  %-13s %s\n" "Proxy:" "✓ enabled (${PROXY_TIER})"
 else
-echo "║  Mode:          Virtual desktop (Xvfb)"
+  printf "║  %-13s %s\n" "Proxy:" "— disabled"
+fi
+if [ "$YT_ENABLED" = true ]; then
+  printf "║  %-13s %s\n" "YouTube src:" "✓ enabled"
+else
+  printf "║  %-13s %s\n" "YouTube src:" "— disabled"
+fi
+if [ "$MOBILE_ENABLED" = true ]; then
+  printf "║  %-13s %s\n" "Mobile prof:" "✓ enabled"
+else
+  printf "║  %-13s %s\n" "Mobile prof:" "— disabled"
+fi
+if [ "$TERMUX" = 1 ]; then
+  printf "║  %-13s %s\n" "Mode:" "Termux (headless)"
+elif [ "$DESKTOP_NEEDED" = "existing" ]; then
+  printf "║  %-13s %s\n" "Mode:" "✓ Existing display ($DISPLAY)"
+elif [ "$DESKTOP_NEEDED" = "n" ]; then
+  printf "║  %-13s %s\n" "Mode:" "Headless"
+else
+  printf "║  %-13s %s\n" "Mode:" "✓ Virtual desktop (Xvfb)"
 fi
 if [[ "$VNC_NEEDED" =~ ^[yY] ]]; then
-echo "║  VNC:          :$VNC_PORT"
+  printf "║  %-13s %s\n" "VNC:" "✓ :$VNC_PORT"
 else
-echo "║  VNC:          disabled"
+  printf "║  %-13s %s\n" "VNC:" "— disabled"
 fi
 echo "╚══════════════════════════════════════════════╝"
 echo ""

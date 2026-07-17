@@ -7,6 +7,7 @@
 |------|--------|--------|
 | 2026-07-05–08 | Initial development, iterative fixes, CI, installer (see git log) | AI |
 | 2026-07-16 | **Complete rewrite from live recording**: recorded full flow with network/console/DOM/screenshot capture. Analyzed 3 article templates (TP, CE, LINK1S). Rewrote automation.js with domain-agnostic template detection, human-like behavior (random delays, smooth scrolling, mouse movement), and bot-detection handling. | AI |
+| 2026-07-17 | **macOS CI fixes**: Replaced `grep -oP`/`grep -qP` (PCRE) with POSIX-compatible `grep`+`sed`/`awk` in state.sh and config.sh JSON handling. Fixed multi-line sed `\n` replacement (GNU-only) with `awk`. Replaced `:a;N;$!ba` hold-space loop with `awk`. Fixed `bash -c` subshells inheriting `set -e` from CI. Skipped `declare -A` modules on macOS bash 3.2. CI now passes all 5 jobs (shellcheck, Linux, macOS, Termux, smoke). | AI |
 
 ## Overview
 Automated vplink.in URL funnel: navigate auto-redirects, handle article pages (any domain), click "Get Link" on vplink.in, and capture the final destination URL.

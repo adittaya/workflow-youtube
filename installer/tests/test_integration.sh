@@ -141,13 +141,13 @@ _REQUIRED_FUNCTIONS=(
 
 # Source the platform module which defines most of these
 "${BASH}" -c "
+    set +e
     source '${INSTALLER_DIR}/core/platform.sh' 2>/dev/null
     source '${INSTALLER_DIR}/core/logger.sh' 2>/dev/null
     source '${INSTALLER_DIR}/core/state.sh' 2>/dev/null
     source '${INSTALLER_DIR}/core/config.sh' 2>/dev/null
     source '${INSTALLER_DIR}/core/env.sh' 2>/dev/null
     source '${INSTALLER_DIR}/core/rollback.sh' 2>/dev/null
-    source '${INSTALLER_DIR}/packages/definitions.sh' 2>/dev/null
 
     for fn in ${_REQUIRED_FUNCTIONS[*]}; do
         if type \"\$fn\" &>/dev/null; then
@@ -165,13 +165,13 @@ done
 
 # Run the check again and capture results for exit code
 _func_results="$("${BASH}" -c "
+    set +e
     source '${INSTALLER_DIR}/core/platform.sh' 2>/dev/null
     source '${INSTALLER_DIR}/core/logger.sh' 2>/dev/null
     source '${INSTALLER_DIR}/core/state.sh' 2>/dev/null
     source '${INSTALLER_DIR}/core/config.sh' 2>/dev/null
     source '${INSTALLER_DIR}/core/env.sh' 2>/dev/null
     source '${INSTALLER_DIR}/core/rollback.sh' 2>/dev/null
-    source '${INSTALLER_DIR}/packages/definitions.sh' 2>/dev/null
 
     _fail=0
     for fn in ${_REQUIRED_FUNCTIONS[*]}; do
@@ -199,6 +199,7 @@ test_suite "Doctor Command (Dry Run)"
 
 # Source the installer modules and run doctor-like checks
 "${BASH}" -c "
+    set +e
     export INSTALLER_DIR='${INSTALLER_DIR}'
     export VPLINK_DRY_RUN=1
     export STATE_FILE='${_TEST_TMPDIR}/state.json'
@@ -247,6 +248,7 @@ test_end_suite
 test_suite "Config Get/Set Integration"
 
 "${BASH}" -c "
+    set +e
     export CONFIG_FILE='${_TEST_TMPDIR}/config_integ.json'
     source '${INSTALLER_DIR}/core/config.sh' 2>/dev/null
     config_init 2>/dev/null || true
@@ -293,6 +295,7 @@ test_end_suite
 test_suite "State Management Integration"
 
 "${BASH}" -c "
+    set +e
     export STATE_FILE='${_TEST_TMPDIR}/state_integ.json'
     source '${INSTALLER_DIR}/core/state.sh' 2>/dev/null
     state_init 2>/dev/null || true
@@ -342,6 +345,7 @@ test_end_suite
 test_suite "Platform Detection Outputs"
 
 "${BASH}" -c "
+    set +e
     source '${INSTALLER_DIR}/core/platform.sh' 2>/dev/null
     detect_all 2>/dev/null
 

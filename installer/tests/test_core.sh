@@ -100,8 +100,9 @@ echo -e "${T_BOLD}VPLink Installer — Core Module Unit Tests${T_RESET}"
 echo -e "${T_DIM}Installer dir: ${INSTALLER_DIR}${T_RESET}"
 
 # ---------------------------------------------------------------------------
-# Source core modules
+# Source core modules (relax error handling for bash 3.2 / macOS compat)
 # ---------------------------------------------------------------------------
+set +euo pipefail
 # shellcheck source=/dev/null
 source "${INSTALLER_DIR}/core/logger.sh" 2>/dev/null || true
 # shellcheck source=/dev/null
@@ -118,6 +119,7 @@ source "${INSTALLER_DIR}/core/env.sh" 2>/dev/null || true
 source "${INSTALLER_DIR}/core/rollback.sh" 2>/dev/null || true
 # shellcheck source=/dev/null
 source "${INSTALLER_DIR}/packages/definitions.sh" 2>/dev/null || true
+set -euo pipefail
 
 # ---------------------------------------------------------------------------
 # Use a temp directory for test state

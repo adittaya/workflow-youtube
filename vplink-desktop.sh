@@ -282,10 +282,10 @@ do_stop() {
     local disp_num="${req_display#:}"
     info "Stopping processes on $req_display..."
 
-    # Kill x11vnc on this display
-    pkill -f "x11vnc.*$req_display" 2>/dev/null || true
+    # Kill x11vnc on this display — use -x for exact match
+    pkill -x x11vnc 2>/dev/null || true
     # Kill Xvfb on this display
-    pkill -f "Xvfb.*$req_display" 2>/dev/null || true
+    pkill -x "Xvfb" 2>/dev/null || true
     sleep 0.5
 
     # Clean locks
@@ -305,7 +305,7 @@ do_stop() {
   if [ -f "$CONFIG_DIR/desktop_state.json" ]; then
     load_state
     if [ -n "$XVFB_PID" ] && [ "$XVFB_PID" -gt 0 ]; then
-      kill "$VNC_PID" 2>/dev/null || true
+      [ -n "$VNC_PID" ] && [ "$VNC_PID" -gt 0 ] && kill "$VNC_PID" 2>/dev/null || true
       kill "$XVFB_PID" 2>/dev/null || true
       sleep 0.5
     fi
@@ -313,12 +313,13 @@ do_stop() {
 
   # Kill any remaining VPLink-related Xvfb/x11vnc
   if command -v pgrep &>/dev/null; then
-    # Kill x11vnc first (cleaner)
-    pkill -f "x11vnc" 2>/dev/null || true
+    # Kill x11vnc first (cleaner) — use -x for exact name match to avoid self-match
+    pkill -x x11vnc 2>/dev/null || true
     sleep 0.5
-    # Kill Xvfb that was started by our scripts
-    pkill -f "Xvfb.*:99" 2>/dev/null || true
-    pkill -f "Xvfb.*:10[0-8]" 2>/dev/null || true
+    # Kill Xvfb that was started by our scripts — match only Xvfb processes on specific displays
+    for d in $(seq 99 108); do
+      pkill -x "Xvfb" 2>/dev/null || true
+    done
   fi
 
   # Clean all VPLink-range lock files

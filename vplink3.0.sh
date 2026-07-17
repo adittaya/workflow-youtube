@@ -94,6 +94,7 @@ track_pid() {
 }
 
 cleanup_pids() {
+  trap - SIGINT SIGTERM 2>/dev/null
   for pid in "${PIDS[@]}"; do
     kill "$pid" 2>/dev/null || true
   done
@@ -102,13 +103,11 @@ cleanup_pids() {
   DESKTOP_CMD="$SCRIPT_DIR/vplink-desktop.sh"
   [ ! -x "$DESKTOP_CMD" ] && DESKTOP_CMD="vplink-desktop"
   if command -v "$DESKTOP_CMD" &>/dev/null; then
-    $DESKTOP_CMD stop 2>/dev/null || true
+    "$DESKTOP_CMD" stop 2>/dev/null || true
   else
-    # Fallback: manual cleanup
-    if command -v pgrep &>/dev/null; then
-      pkill -f "x11vnc.*$DISPLAY" 2>/dev/null || true
-      pkill -f "Xvfb.*$DISPLAY" 2>/dev/null || true
-    fi
+    # Fallback: kill by exact process name only (no -f to avoid matching ourselves)
+    killall Xvfb 2>/dev/null || true
+    killall x11vnc 2>/dev/null || true
     [ -n "$DISPLAY" ] && rm -f "/tmp/.X${DISPLAY#:}-lock" "/tmp/.X11-unix/X${DISPLAY#:}" 2>/dev/null
   fi
 }

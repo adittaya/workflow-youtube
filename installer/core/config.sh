@@ -106,24 +106,28 @@ config_get() {
     echo "$value"
 }
 
-# _config_json_get — portable JSON value extraction
+# _config_json_get — portable JSON value extraction (POSIX-compatible, no grep -P)
 _config_json_get() {
     local key="$1"
+    local line result
+
+    # Find the line containing our key (POSIX grep, no -P)
+    line="$(echo "$_CONFIG_DATA" | grep "\"${key}\"[[:space:]]*:" 2>/dev/null | head -1)"
+    if [[ -z "$line" ]]; then
+        return 1
+    fi
 
     # Handle string values: "key": "value"
-    local pattern="\"${key}\"[[:space:]]*:[[:space:]]*\"([^\"]*?)\""
-    local result
-    result="$(echo "$_CONFIG_DATA" | grep -oP "$pattern" 2>/dev/null | head -1)"
-    if [[ -n "$result" ]]; then
-        echo "$result" | sed "s/\"${key}\"[[:space:]]*:[[:space:]]*\"//" | sed 's/"$//'
+    result="$(echo "$line" | sed -E "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"([^\"]*)\".*/\1/")"
+    if [[ -n "$result" ]] && [[ "$result" != "$line" ]]; then
+        echo "$result"
         return 0
     fi
 
     # Handle boolean/number values: "key": true/false/123
-    pattern="\"${key}\"[[:space:]]*:[[:space:]]*([a-zA-Z0-9._-]+)"
-    result="$(echo "$_CONFIG_DATA" | grep -oP "$pattern" 2>/dev/null | head -1)"
-    if [[ -n "$result" ]]; then
-        echo "$result" | sed "s/\"${key}\"[[:space:]]*:[[:space:]]*//"
+    result="$(echo "$line" | sed -E "s/.*\"${key}\"[[:space:]]*:[[:space:]]*([a-zA-Z0-9._-]+).*/\1/")"
+    if [[ -n "$result" ]] && [[ "$result" != "$line" ]]; then
+        echo "$result"
         return 0
     fi
 
@@ -157,15 +161,20 @@ _config_json_set() {
 
     # Check if key already exists
     local pattern="\"${key}\"[[:space:]]*:"
-    if echo "$_CONFIG_DATA" | grep -qP "$pattern" 2>/dev/null; then
+    if echo "$_CONFIG_DATA" | grep -qE "$pattern" 2>/dev/null; then
         # Replace existing value
         echo "$_CONFIG_DATA" | sed -E "s|\"${key}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"${key}\": \"${escaped_value}\"|g"
         return 0
     fi
 
-    # Key doesn't exist — insert before closing brace
-    echo "$_CONFIG_DATA" | sed "s|}|  ,\n  \"${key}\": \"${escaped_value}\"\n}|" 2>/dev/null || \
-    echo "$_CONFIG_DATA" | sed -e "s/}$/  ,\n  \"${key}\": \"${escaped_value}\"\n}/"
+    # Key doesn't exist — insert before closing brace (POSIX-compatible awk)
+    echo "$_CONFIG_DATA" | awk -v k="$key" -v v="$escaped_value" '{
+        if ($0 ~ /^[[:space:]]*\}[[:space:]]*$/ && !done) {
+            printf "  ,\n  \"%s\": \"%s\"\n", k, v
+            done = 1
+        }
+        print
+    }'
 }
 
 # config_has — check if a key exists in config
@@ -180,7 +189,7 @@ config_has() {
     fi
 
     local pattern="\"${key}\"[[:space:]]*:"
-    echo "$_CONFIG_DATA" | grep -qP "$pattern" 2>/dev/null
+    echo "$_CONFIG_DATA" | grep -qE "$pattern" 2>/dev/null
 }
 
 # config_remove — remove a key from config
@@ -194,10 +203,23 @@ config_remove() {
     config_save
 }
 
-# _config_json_remove — portable JSON key removal
+# _config_json_remove — portable JSON key removal (POSIX-compatible, no GNU sed)
 _config_json_remove() {
     local key="$1"
-    echo "$_CONFIG_DATA" | sed -E "/\"${key}\"[[:space:]]*:/d" | sed -E ':a;N;$!ba;s|,(\s*\n\s*\})|\1|g'
+    # Remove the key-value line and clean up trailing commas (awk for portability)
+    echo "$_CONFIG_DATA" | awk -v k="$key" '
+    $0 ~ "\"" k "\"[[:space:]]*:" { next }
+    { lines[NR] = $0; last = NR }
+    END {
+        if (last == 0) { print "{}"; next }
+        for (i = 1; i <= last; i++) {
+            line = lines[i]
+            if (i == last) {
+                sub(/[[:space:]]*,[[:space:]]*$/, "", line)
+            }
+            print line
+        }
+    }'
 }
 
 # config_init — create default config

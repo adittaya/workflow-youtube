@@ -72,12 +72,7 @@ function generateProfile(mobile = false, youtube = false) {
   const profile = { userAgent: ua, viewport };
 
   if (youtube) {
-    profile.extraHTTPHeaders = {
-      'Referer': pick(YOUTUBE_REFERRERS),
-      'Sec-Fetch-Site': 'cross-site',
-      'Sec-Fetch-Mode': 'navigate',
-      'Sec-Fetch-Dest': 'document',
-    };
+    profile.youtubeReferer = pick(YOUTUBE_REFERRERS);
   }
 
   return profile;
@@ -99,7 +94,7 @@ if (require.main === module) {
   const profile = generateProfile(mobile, youtube);
   const ua = profile.userAgent;
   const vp = profile.viewport;
-  const ref = profile.extraHTTPHeaders?.Referer || '';
+  const ref = profile.youtubeReferer || '';
   process.stdout.write(`${ua}\n${vp.width}x${vp.height}\n${ref}`);
 }
 

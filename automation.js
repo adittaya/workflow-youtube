@@ -595,6 +595,19 @@ process.on('SIGINT', async () => {
   if (DEBUG) log('debug mode active');
   const navTimeout = process.env.VPLINK_PROXY ? 90000 : 45000;
 
+  // YouTube referral: navigate to YouTube first so browser naturally sets Referer
+  const REFERER = process.env.VPLINK_REFERER || '';
+  if (REFERER) {
+    log(`navigating to YouTube first for referral: ${REFERER.substring(0, 60)}`);
+    try {
+      await page.goto(REFERER, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await humanDelay(2000, 4000);
+      log('YouTube loaded, now navigating to vplink.in (browser will set Referer)');
+    } catch (e) {
+      log(`YouTube navigation failed: ${e.message}, continuing without referral`);
+    }
+  }
+
   log(`navigating to vplink.in/${KEY}`);
   await debugShot('01-start');
   try {

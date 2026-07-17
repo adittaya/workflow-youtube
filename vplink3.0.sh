@@ -390,6 +390,7 @@ for (( i=1; i<=VIEWS; i++ )); do
       [ -n "$VH" ] && export VPLINK_VIEWPORT_HEIGHT="$VH"
 
       if [ "$YT_ENABLED" = "true" ] && [ -n "$PROFILE_REFERER" ]; then
+        export VPLINK_REFERER="$PROFILE_REFERER"
         info "YouTube referer: $PROFILE_REFERER"
       fi
     fi

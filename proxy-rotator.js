@@ -54,6 +54,89 @@ async function testProxyQuick(proxy, timeoutMs = 5000) {
   return { ok: false, latency_ms: Date.now() - start };
 }
 
+// ── Browser-level test: fetch actual page through proxy like Chrome would ──
+// Chrome uses CONNECT tunnel for HTTPS sites (which vplink.in is)
+// Returns: { ok: true, latency_ms, protocol } or { ok: false }
+async function testProxyBrowser(proxy, timeoutMs = 12000) {
+  const start = Date.now();
+  // Test 1: HTTPS via CONNECT tunnel (this is how Chrome fetches vplink.in)
+  const httpsOk = await tryBrowserConnect(proxy, 'vplink.in', '/gbd1b', timeoutMs);
+  if (httpsOk) {
+    return { ok: true, latency_ms: Date.now() - start, protocol: 'https' };
+  }
+  // Test 2: HTTP absolute-form GET (fallback for HTTP-only proxies)
+  const httpOk = await tryBrowserPage(proxy, 'http', 'vplink.in', '/gbd1b', timeoutMs);
+  if (httpOk) {
+    return { ok: true, latency_ms: Date.now() - start, protocol: 'http' };
+  }
+  return { ok: false, latency_ms: Date.now() - start };
+}
+
+function tryBrowserPage(proxy, scheme, host, path, timeoutMs) {
+  return new Promise((resolve) => {
+    const url = scheme + '://' + host + path;
+    let resolved = false;
+    const timer = setTimeout(() => { if (!resolved) { resolved = true; req.destroy(); resolve(false); } }, timeoutMs);
+    const req = http.request({
+      hostname: proxy.ip, port: parseInt(proxy.port),
+      path: url, method: 'GET',
+      headers: {
+        'Host': host,
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 15; Pixel 9 Pro) AppleWebKit/537.36 Chrome/127.0 Mobile Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      timeout: timeoutMs,
+    }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => {
+        data += chunk;
+        if (data.length > 500 && !resolved) { resolved = true; clearTimeout(timer); res.destroy(); resolve(true); }
+      });
+      res.on('end', () => { if (!resolved) { resolved = true; clearTimeout(timer); resolve(data.length > 100); } });
+    });
+    req.on('error', () => { if (!resolved) { resolved = true; clearTimeout(timer); resolve(false); } });
+    req.on('timeout', () => { if (!resolved) { resolved = true; clearTimeout(timer); req.destroy(); resolve(false); } });
+    req.end();
+  });
+}
+
+// ── Browser-level CONNECT tunnel: fetch actual page content through proxy ──
+// Same as tryConnectQuick but returns actual content length for validation
+function tryBrowserConnect(proxy, host, path, timeoutMs) {
+  return new Promise((resolve) => {
+    let resolved = false;
+    const fail = (reason) => { if (!resolved) { resolved = true; clearTimeout(timer); resolve(false); } };
+    const timer = setTimeout(fail, timeoutMs);
+    const connReq = http.request({
+      hostname: proxy.ip, port: parseInt(proxy.port),
+      method: 'CONNECT', path: host + ':443',
+      timeout: timeoutMs,
+    });
+    connReq.on('connect', (res, socket) => {
+      if (resolved) { socket.destroy(); return; }
+      socket.setTimeout(timeoutMs);
+      socket.on('error', () => fail());
+      socket.on('timeout', () => { socket.destroy(); fail(); });
+      const tlsReq = https.request({
+        socket, hostname: host, path, method: 'GET',
+        headers: { 'Host': host }, timeout: timeoutMs, rejectUnauthorized: false,
+      }, (tlsRes) => {
+        let data = '';
+        tlsRes.on('data', (chunk) => { data += chunk; });
+        tlsRes.on('end', () => { if (!resolved) { resolved = true; clearTimeout(timer); socket.destroy(); resolve(data.length > 50); } });
+      });
+      tlsReq.on('error', () => fail());
+      tlsReq.on('timeout', () => { tlsReq.destroy(); fail(); });
+      tlsReq.end();
+    });
+    connReq.on('error', () => fail());
+    connReq.on('timeout', () => { connReq.destroy(); fail(); });
+    connReq.on('response', (res) => { res.on('data', () => {}); res.on('end', () => fail()); });
+    connReq.end();
+  });
+}
+
 function tryConnectQuick(proxy, host, path, timeoutMs) {
   return new Promise((resolve) => {
     const timer = setTimeout(() => { connReq.destroy(); resolve(false); }, timeoutMs);
@@ -326,17 +409,21 @@ async function getProxy(tier = 'premium') {
   const alive = [];
   const dead = [];
   let completed = 0;
-  const concurrency = 30;
+  const concurrency = 15;
 
   for (let i = 0; i < subset.length; i += concurrency) {
     const batch = subset.slice(i, i + concurrency);
     const outcomes = await Promise.allSettled(batch.map(async (p) => {
+      // Quick alive test first (fast — 5s timeout)
       const quick = await testProxyQuick(p, 5000);
-      return { proxy: p, ok: quick.ok, latency_ms: quick.latency_ms };
+      if (!quick.ok) return { proxy: p, ok: false };
+      // Browser-level test: fetch actual page content (slower — 12s timeout)
+      const browser = await testProxyBrowser(p, 12000);
+      return { proxy: p, ok: browser.ok, latency_ms: browser.latency_ms, protocol: browser.protocol };
     }));
     for (const o of outcomes) {
       if (o.status === 'fulfilled' && o.value.ok) {
-        alive.push({ ...o.value.proxy, latency_ms: o.value.latency_ms });
+        alive.push({ ...o.value.proxy, latency_ms: o.value.latency_ms, protocol: o.value.protocol });
       } else {
         dead.push(batch[outcomes.indexOf(o)] || o.value?.proxy);
       }
@@ -366,7 +453,9 @@ async function getProxy(tier = 'premium') {
       const batch = remaining.slice(i, i + concurrency);
       const outcomes = await Promise.allSettled(batch.map(async (p) => {
         const quick = await testProxyQuick(p, 5000);
-        return quick.ok ? { ...p, latency_ms: quick.latency_ms } : null;
+        if (!quick.ok) return null;
+        const browser = await testProxyBrowser(p, 12000);
+        return browser.ok ? { ...p, latency_ms: browser.latency_ms, protocol: browser.protocol } : null;
       }));
       for (const o of outcomes) {
         if (o.status === 'fulfilled' && o.value) alive.push(o.value);
@@ -444,16 +533,16 @@ if (require.main === module) {
       const proxy = { ip, port: parseInt(port), proto: 'https' };
       console.error(`  [Proxy] Testing ${ip}:${port}...`);
       const quickResult = await testProxyQuick(proxy, 5000);
-      console.error(`  [Proxy] Alive: ${quickResult.ok} (${quickResult.latency_ms}ms)`);
+      console.error(`  [Proxy] Quick alive: ${quickResult.ok} (${quickResult.latency_ms}ms)`);
       if (quickResult.ok) {
-        const full = await testProxyFull(proxy);
-        if (full) {
-          console.error(`  [Proxy] Full test: origin=${full.origin}, speed=${full.speed_kbps} KB/s`);
+        const browserResult = await testProxyBrowser(proxy, 12000);
+        console.error(`  [Proxy] Browser test: ${browserResult.ok} (${browserResult.latency_ms}ms, ${browserResult.protocol || 'none'})`);
+        if (browserResult.ok) {
           console.log(`${ip}:${port}`);
           process.exit(0);
         }
       }
-      console.error(`  [Proxy] ${ip}:${port} is DEAD`);
+      console.error(`  [Proxy] ${ip}:${port} FAILED browser test`);
       process.exit(1);
     } else if (purge) {
       purgeDead(tier);
@@ -467,4 +556,4 @@ if (require.main === module) {
   })();
 }
 
-module.exports = { getProxy, getProxyQuick, filterAndClean, filterQuick, fetchProxies, testProxyQuick, testProxyFull, markDead, deleteProxy };
+module.exports = { getProxy, getProxyQuick, filterAndClean, filterQuick, fetchProxies, testProxyQuick, testProxyBrowser, testProxyFull, markDead, deleteProxy };

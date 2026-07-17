@@ -10,6 +10,7 @@
 | 2026-07-17 | **macOS CI fixes**: Replaced `grep -oP`/`grep -qP` (PCRE) with POSIX-compatible `grep`+`sed`/`awk` in state.sh and config.sh JSON handling. Fixed multi-line sed `\n` replacement (GNU-only) with `awk`. Replaced `:a;N;$!ba` hold-space loop with `awk`. Fixed `bash -c` subshells inheriting `set -e` from CI. Skipped `declare -A` modules on macOS bash 3.2. CI now passes all 5 jobs (shellcheck, Linux, macOS, Termux, smoke). | AI |
 | 2026-07-17 | **Critical bug fixes**: Fixed `kill 0` in vplink-desktop.sh (VNC_PID=0 killed entire process group). Fixed cleanup_pids trap recursion loop. Added interactive credential setup (`vplink3.0 config --setup`). Polished run summary box with checkmarks. Fixed `BASH_SOURCE[0]` unbound variable in curl pipe. | AI |
 | 2026-07-17 | **#goog_rewarded + stuck-loop fixes**: Fixed `#goog_rewarded` infinite loop (popup click → ad page → kept clicking buttons → loop). `handlePopup` now returns `'rewarded'` state. `waitForCountdown` propagates `'rewarded'` return. `handleArticle` waits 45s for ad redirect. Added `#goog_rewarded` handler in main loop (clears hash). Added stuck-loop detection (3 consecutive same-URL visits → force-navigate, excludes vplink.in + intermediate redirect pages). Fixed CE template: page reloads to same URL after btn7 — handleArticle now returns `true` on button success without requiring base URL change. Added `dumpDOM` helper for debug HTML + screenshots. Max cycles 40→25. E2E test: full funnel completion darkguruji→srtak×3→vplink.in→destination in ~460s. | AI |
+| 2026-07-17 | **Proxy filtration + YouTube referral fix**: Added `testProxyBrowser()` — CONNECT tunnel test validates actual page content (>50 bytes) to match Chrome's real browsing behavior. `getProxy()` chains quick→browser tests. Removed broken `extraHTTPHeaders` Referer and `page.route` intercept (both broke vplink.in by applying YouTube Referer to ALL requests including subresources). Replaced with **YouTube-first navigation**: navigate to YouTube page first, browser naturally sets `Referer: https://www.youtube.com/` on next navigation to vplink.in. Updated `profile-generator.js` to output `youtubeReferer` URL instead of `extraHTTPHeaders`. Fixed `vplink3.0.sh` to export `VPLINK_REFERER` env var. | AI |
 
 ## Overview
 Automated vplink.in URL funnel: navigate auto-redirects, handle article pages (any domain), click "Get Link" on vplink.in, and capture the final destination URL.
@@ -22,7 +23,7 @@ Automated vplink.in URL funnel: navigate auto-redirects, handle article pages (a
 | `automation.js` | **Main script** — Playwright automation with domain-agnostic template detection and human-like behavior |
 | `config.js` | Config management — load/save `~/.vplink3.0/config.json`, CLI get/set |
 | `proxy-rotator.js` | Proxy rotation — fetches from Supabase, tests, deletes dead IPs, 24h no-repeat |
-| `profile-generator.js` | Profile generator — random mobile/desktop UAs, viewports, YouTube referer |
+| `profile-generator.js` | Profile generator — random mobile/desktop UAs, viewports, YouTube referer URL |
 | `vplink3.0.sh` | Interactive CLI — questionnaire, PID tracking, VNC detection |
 | `vplink-desktop.sh` | Virtual desktop manager — Xvfb + x11vnc lifecycle |
 | `install.sh` | Production installer — 20+ environments, deps, Node.js, Playwright, credentials |
@@ -101,6 +102,7 @@ vplink.in/{KEY}
 - `VPLINK_USER_AGENT` — context userAgent
 - `VPLINK_VIEWPORT_WIDTH` / `VPLINK_VIEWPORT_HEIGHT` — viewport
 - `VPLINK_EXTRA_ARGS` — extra Chrome args (space-separated)
+- `VPLINK_REFERER` — YouTube URL to navigate to first (browser sets Referer naturally)
 - `VPLINK_DEBUG=1` — screenshots + HTML captures at key steps
 
 ## Stealth
@@ -125,6 +127,7 @@ vplink.in/{KEY}
 - **Stuck-loop detection**: track URL visit counts per URL, force-navigate after 3 visits to same article. Excludes vplink.in (needs multiple cycles for countdown) and intermediate redirect pages (learn_more.php, studieseducates, studiiessuniversitiess, etc.)
 - **CE same-URL reload**: CE template btn7 can cause page reload to same URL (with `#/` hash). handleArticle returns `true` on button success regardless of URL change, letting main loop re-evaluate
 - **dumpDOM helper**: saves HTML + screenshot to `screenshots/` when `VPLINK_DEBUG=1`
+- **YouTube-first navigation**: navigate to YouTube page first, browser naturally sets `Referer: https://www.youtube.com/` on next navigation to vplink.in. No header manipulation needed — `extraHTTPHeaders` Referer broke vplink.in by applying to ALL requests (subresources too). `page.route` intercept also broke it. Natural browser navigation is the only reliable approach.
 
 ## CLI Usage
 ```bash

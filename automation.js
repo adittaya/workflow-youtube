@@ -3,6 +3,8 @@ try { ({ chromium } = require('playwright')); }
 catch { ({ chromium } = require('playwright-core')); }
 const fs = require('fs');
 const path = require('path');
+let markDead;
+try { ({ markDead } = require('./proxy-rotator')); } catch { markDead = async () => false; }
 
 const KEY = process.argv[2] || process.env.VPLINK_KEY;
 if (!KEY) { console.error('Usage: node automation.js <vplink_key>'); process.exit(1); }
@@ -18,6 +20,24 @@ const rand = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
 const safeURL = () => { try { return page.url(); } catch { return ''; } };
 const urlBase = u => { try { const x = new URL(u); return x.origin + x.pathname; } catch { return (u || '').split('#')[0]; } };
 const safeEval = (fn, ...a) => { try { return page.evaluate(fn, ...a).catch(() => null); } catch { return null; } };
+
+let proxyFailures = 0;
+const PROXY = process.env.VPLINK_PROXY || '';
+const PROXY_HOST = PROXY.replace(/^https?:\/\//, '').replace(/:\d+$/, '');
+
+const reportProxyFailure = async (reason) => {
+  if (!PROXY_HOST) return;
+  proxyFailures++;
+  log(`proxy failure #${proxyFailures}: ${reason} (${PROXY_HOST})`);
+  if (proxyFailures >= 2) {
+    log(`proxy ${PROXY_HOST} failed ${proxyFailures}x, deleting from DB`);
+    const [ip, port] = PROXY_HOST.split(':');
+    if (ip && port) await markDead(ip, parseInt(port));
+  }
+  if (proxyFailures >= 3) {
+    log(`proxy ${PROXY_HOST} failed ${proxyFailures}x, aborting (too many failures)`);
+  }
+};
 
 process.on('SIGINT', async () => {
   if (browser) await browser.close().catch(() => {});
@@ -522,11 +542,17 @@ process.on('SIGINT', async () => {
     await page.goto(`https://vplink.in/${KEY}`, { waitUntil: 'domcontentloaded', timeout: navTimeout });
   } catch (e) {
     log(`first goto failed: ${e.message}, retrying...`);
+    if (PROXY && (e.message.includes('ERR_TUNNEL') || e.message.includes('ERR_PROXY') || e.message.includes('ERR_CONNECTION'))) {
+      await reportProxyFailure('first-goto-tunnel-error');
+    }
     await ms(2000);
     try {
       await page.goto(`https://vplink.in/${KEY}`, { waitUntil: 'domcontentloaded', timeout: navTimeout });
     } catch (e2) {
       log(`second goto failed: ${e2.message}`);
+      if (PROXY && (e2.message.includes('ERR_TUNNEL') || e2.message.includes('ERR_PROXY') || e2.message.includes('ERR_CONNECTION'))) {
+        await reportProxyFailure('second-goto-tunnel-error');
+      }
     }
   }
   await humanDelay(2000, 4000);
@@ -648,6 +674,7 @@ process.on('SIGINT', async () => {
     // ── Chrome error recovery ──
     if (url.startsWith('chrome-error://')) {
       log('chrome-error, force to vplink.in');
+      if (PROXY) await reportProxyFailure('chrome-error');
       await page.goto(`https://vplink.in/${KEY}`, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch(() => {});
       await humanDelay(3000, 5000);
       continue;

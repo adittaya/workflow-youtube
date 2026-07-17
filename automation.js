@@ -14,7 +14,9 @@ let startTime = Date.now();
 
 const log = msg => console.log(`  [${((Date.now()-startTime)/1000).toFixed(1)}s] ${msg}`);
 const ms = t => new Promise(r => setTimeout(r, t));
+const rand = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
 const safeURL = () => { try { return page.url(); } catch { return ''; } };
+const urlBase = u => { try { const x = new URL(u); return x.origin + x.pathname; } catch { return (u || '').split('#')[0]; } };
 const safeEval = (fn, ...a) => { try { return page.evaluate(fn, ...a).catch(() => null); } catch { return null; } };
 
 process.on('SIGINT', async () => {
@@ -23,22 +25,6 @@ process.on('SIGINT', async () => {
 });
 
 (async () => {
-  // Clean old artifacts
-  for (const pattern of ['destination_url', 'debug_', 'events', 'summary.json', 'screen_recording',
-    'recording_', 'record.js', 'record.sh']) {
-    try {
-      const entries = fs.readdirSync(__dirname);
-      for (const e of entries) {
-        if (e.startsWith(pattern)) {
-          const fp = path.join(__dirname, e);
-          try { if (fs.statSync(fp).isFile()) fs.unlinkSync(fp); } catch {}
-        }
-      }
-    } catch {}
-  }
-  try { fs.rmSync(path.join(__dirname, 'screenshots'), { recursive: true, force: true }); } catch {}
-
-  // Launch browser
   const stealthArgs = ['--no-sandbox', '--disable-gpu', '--disable-blink-features=AutomationControlled',
     '--disable-dev-shm-usage', '--disable-accelerated-2d-canvas', '--disable-setuid-sandbox',
     '--disable-automation'];
@@ -67,7 +53,6 @@ process.on('SIGINT', async () => {
   page = await context.newPage();
   page.setDefaultNavigationTimeout(90000);
 
-  // Debug screenshot helper
   let debugPage = page;
   const debugShot = async (label) => {
     if (!DEBUG) return;
@@ -76,7 +61,6 @@ process.on('SIGINT', async () => {
     try { await debugPage.screenshot({ path: path.join(dir, `${label}.png`), fullPage: false }); } catch {}
   };
 
-  // Stealth init
   await page.addInitScript(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
     Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
@@ -86,41 +70,47 @@ process.on('SIGINT', async () => {
     window.navigator.permissions.query = p => p.name === 'notifications' ? Promise.resolve({ state: 'denied' }) : orig(p);
   });
 
-  // Network logging
-  page.on('request', req => {
-    const u = req.url();
-    if (u.includes('wistfulseverely.com')) log(`wistful ${req.method()} ${u.substring(0,100)}`);
-    if (u.includes('vplink.in') && u.includes('/api/')) log(`vplink-api ${req.method()} ${u.substring(0,100)}`);
-  });
-  page.on('response', res => {
-    const u = res.url();
-    if (u.includes('wistfulseverely.com')) {
-      const loc = res.headers()['location'] || '';
-      log(`wistful ${res.status()} ${u.substring(0,70)}${loc ? ' → ' + loc.substring(0,70) : ''}`);
-    }
-    if (res.status() >= 300 && res.status() < 400 && !u.includes('wistfulseverely.com') && !u.includes('doubleclick') && !u.includes('google')) {
-      const loc = res.headers()['location'] || '';
-      if (loc) log(`redirect ${res.status()} ${u.substring(0,60)} → ${loc.substring(0,70)}`);
-    }
-  });
-  page.on('console', msg => {
-    const t = msg.text();
-    if (t.includes('vplink') || t.includes('visitor') || t.includes('partner') || t.includes('click') || t.includes('error'))
-      log(`console: ${t.substring(0,120)}`);
-  });
   page.on('framenavigated', frame => {
-    if (frame === page.mainFrame()) log(`nav: ${frame.url()}`);
-  });
-  page.on('popup', popup => {
-    log(`popup opened: ${popup.url().substring(0,100)}`);
+    if (frame === page.mainFrame()) log(`nav: ${frame.url().substring(0, 120)}`);
   });
 
-  // Helpers
-  const clickEl = async sel => {
+  // ── Human-like helpers ──
+  const humanDelay = (min, max) => ms(rand(min, max));
+
+  const humanScroll = async () => {
+    const scrolls = rand(1, 3);
+    for (let i = 0; i < scrolls; i++) {
+      await safeEval(y => window.scrollBy({ top: y, behavior: 'smooth' }), rand(100, 400));
+      await humanDelay(300, 800);
+    }
+  };
+
+  const humanMouseMove = async (sel) => {
+    try {
+      const box = await page.locator(sel).first().boundingBox();
+      if (box) {
+        const x = box.x + box.width * (0.3 + Math.random() * 0.4);
+        const y = box.y + box.height * (0.3 + Math.random() * 0.4);
+        await page.mouse.move(x, y, { steps: rand(5, 15) });
+        await humanDelay(100, 300);
+      }
+    } catch {}
+  };
+
+  const humanClick = async (sel) => {
+    await humanMouseMove(sel);
+    await humanDelay(200, 500);
     try { await page.click(sel, { timeout: 5000 }); return true; }
     catch {
-      try { return await page.evaluate(s => { const el = document.querySelector(s); if (!el) return false; el.scrollIntoView({block:'center'}); el.click(); return true; }, sel); }
-      catch { return false; }
+      try {
+        return await page.evaluate(s => {
+          const el = document.querySelector(s);
+          if (!el) return false;
+          el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          el.click();
+          return true;
+        }, sel);
+      } catch { return false; }
     }
   };
 
@@ -130,7 +120,8 @@ process.on('SIGINT', async () => {
   };
 
   const DEST_PATTERNS = ['12indiaplay.com', 'vv53243', 'casino', 'one-',
-    'apkmirror.com', 'play.google.com', 'download', '.apk', 'one-vv'];
+    'apkmirror.com', 'play.google.com', 'download', '.apk', 'one-vv',
+    'capecutapk.com', 'amazingbaba.com'];
 
   const isDestination = url => {
     if (!url || !url.startsWith('http')) return false;
@@ -138,6 +129,295 @@ process.on('SIGINT', async () => {
     for (const p of DEST_PATTERNS) {
       if (url.includes(p)) return true;
     }
+    return false;
+  };
+
+  // ── Template detection ──
+  // Returns: 'tp' | 'ce' | 'link1s' | 'unknown'
+  const detectTemplate = async () => {
+    const result = await safeEval(() => {
+      if (document.getElementById('tp-time') || document.getElementById('tp-wait1')) return 'tp';
+      if (document.getElementById('ce-time') || document.getElementById('ce-wait1')) return 'ce';
+      if (document.getElementById('link1s-wait1') || document.getElementById('startCountdownBtn')) return 'link1s';
+      return 'unknown';
+    });
+    return result || 'unknown';
+  };
+
+  // ── Get countdown seconds remaining ──
+  const getCountdown = async () => {
+    const result = await safeEval(() => {
+      const tpTime = document.getElementById('tp-time');
+      if (tpTime) return parseInt(tpTime.textContent) || 0;
+      const ceTime = document.getElementById('ce-time');
+      if (ceTime) return parseInt(ceTime.textContent) || 0;
+      const link1sTime = document.getElementById('link1s-time');
+      if (link1sTime) return parseInt(link1sTime.textContent) || 0;
+      return -1;
+    });
+    return result ?? -1;
+  };
+
+  // ── Handle bot-detection popup (#continueBtn) ──
+  // Returns true if popup was found and clicked
+  const handlePopup = async () => {
+    const popupVisible = await safeEval(() => {
+      const el = document.getElementById('continueBtn');
+      if (!el) return false;
+      const style = getComputedStyle(el);
+      return style.display !== 'none' && style.visibility !== 'hidden'
+        && el.getClientRects().length > 0;
+    });
+    if (!popupVisible) return false;
+
+    log('popup detected, clicking...');
+    await humanDelay(500, 1500);
+    // Popup has CSS pulse animation — force click to bypass stability wait
+    try {
+      await page.locator('#continueBtn').click({ force: true, timeout: 5000 });
+    } catch {
+      await humanClick('#continueBtn');
+    }
+    await humanDelay(1000, 2000);
+    return true;
+  };
+
+  // ── Wait for countdown to finish ──
+  const waitForCountdown = async (template, maxWaitSec) => {
+    const maxIter = maxWaitSec * 2; // check every 500ms
+    for (let i = 0; i < maxIter; i++) {
+      const remaining = await getCountdown();
+      if (remaining <= 0) return true;
+
+      // Handle popup that may appear during countdown
+      if (i % 4 === 0) await handlePopup();
+
+      // Occasional scroll to look natural
+      if (i % 10 === 0) await humanScroll();
+
+      await ms(500);
+    }
+    return false;
+  };
+
+  // ── Template A (TP): tp-time countdown → tp-snp2 ──
+  const handleTP = async () => {
+    log('template: TP (tp-time countdown)');
+
+    // Wait for countdown (up to 30s — timer starts at ~23, popup appears at ~6s remaining)
+    const countdownDone = await waitForCountdown('tp', 30);
+    if (!countdownDone) log('TP countdown timeout, trying button anyway');
+
+    // Popup may appear near end of countdown
+    await handlePopup();
+    await humanDelay(500, 1500);
+
+    // Click #tp-snp2 when visible
+    const clicked = await humanClick('#tp-snp2');
+    if (!clicked) {
+      // Fallback: find anchor with learn_more.php href
+      const altClicked = await safeEval(() => {
+        const links = document.querySelectorAll('a');
+        for (const a of links) {
+          if (a.href && a.href.includes('learn_more.php') && a.offsetParent !== null) {
+            a.click();
+            return true;
+          }
+        }
+        return false;
+      });
+      if (!altClicked) {
+        // Last resort: text click
+        await clickText('Continue');
+      }
+    }
+    return true;
+  };
+
+  // ── Template B (CE): ce-time countdown → btn6 Verify → btn7 Continue ──
+  const handleCE = async () => {
+    log('template: CE (ce-time countdown)');
+
+    // Wait for countdown (up to 30s — timer starts at ~20)
+    const countdownDone = await waitForCountdown('ce', 30);
+    if (!countdownDone) log('CE countdown timeout, trying buttons anyway');
+
+    await humanDelay(500, 1500);
+
+    // Click #btn6 (Verify) first — may trigger navigation OR just hide itself
+    const startUrl = safeURL();
+    const btn6Clicked = await humanClick('#btn6');
+    if (btn6Clicked) {
+      log('clicked btn6 (Verify)');
+      // Wait up to 8s — btn6 may navigate OR just hide itself
+      for (let w = 0; w < 8; w++) {
+        await ms(1000);
+        if (safeURL() !== startUrl) {
+          log('btn6 triggered navigation');
+          return true;
+        }
+        // Check if btn7 became visible (btn6 just hid itself)
+        const btn7Visible = await safeEval(() => {
+          const el = document.querySelector('#btn7 > button');
+          if (!el) return false;
+          const style = getComputedStyle(el);
+          return style.display !== 'none' && style.visibility !== 'hidden'
+            && el.getClientRects().length > 0;
+        });
+        if (btn7Visible) break;
+      }
+    }
+
+    // Click #btn7 > button (Continue)
+    const btn7Clicked = await humanClick('#btn7 > button');
+    if (!btn7Clicked) {
+      // Fallback: click #btn7 directly
+      await humanClick('#btn7');
+    }
+    log('clicked btn7 (Continue)');
+    return true;
+  };
+
+  // ── Template C (LINK1S): startCountdownBtn → countdown → cross-snp2 ──
+  const handleLINK1S = async () => {
+    log('template: LINK1S (startCountdownBtn)');
+
+    // Click #startCountdownBtn to start the countdown
+    const started = await humanClick('#startCountdownBtn');
+    if (started) {
+      log('clicked startCountdownBtn, waiting for countdown...');
+      await humanDelay(500, 1000);
+    }
+
+    // Wait for countdown (up to 25s — timer resets to 14s after click)
+    const countdownDone = await waitForCountdown('link1s', 25);
+    if (!countdownDone) log('LINK1S countdown timeout, trying button anyway');
+
+    await humanDelay(500, 1500);
+
+    // Click #cross-snp2 when visible
+    const clicked = await humanClick('#cross-snp2');
+    if (!clicked) {
+      // Fallback: find anchor with learn_more.php href
+      await safeEval(() => {
+        const links = document.querySelectorAll('a');
+        for (const a of links) {
+          if (a.href && a.href.includes('learn_more.php') && a.offsetParent !== null) {
+            a.click();
+            return true;
+          }
+        }
+        return false;
+      });
+    }
+    return true;
+  };
+
+  // ── Unknown template: try all known buttons ──
+  const handleUnknown = async () => {
+    log('template: UNKNOWN — trying all known buttons');
+    await humanDelay(3000, 5000);
+
+    // Try each button in priority order
+    const buttons = [
+      '#tp-snp2', '#cross-snp2', '#btn6',
+      '#btn7 > button', '#btn7',
+      '#continueBtn',
+      '#main > div:nth-child(4) > center > center > a',
+    ];
+
+    for (const sel of buttons) {
+      await handlePopup();
+      const visible = await safeEval(s => {
+        const el = document.querySelector(s);
+        if (!el) return false;
+        const style = getComputedStyle(el);
+        return style.display !== 'none' && style.visibility !== 'hidden'
+          && el.getClientRects().length > 0;
+      }, sel);
+
+      if (visible) {
+        log(`clicking ${sel}`);
+        await humanClick(sel);
+        await humanDelay(1000, 2000);
+
+        // Wait for navigation
+        const startUrl = safeURL();
+        for (let w = 0; w < 15; w++) {
+          await ms(1000);
+          if (safeURL() !== startUrl) return true;
+        }
+      }
+    }
+
+    // Text-based fallback
+    for (const txt of ['Continue', 'Verify', 'Get Link']) {
+      if (await clickText(txt)) {
+        await humanDelay(1000, 2000);
+        return true;
+      }
+    }
+
+    return false;
+  };
+
+  // ── Article page handler (domain-agnostic) ──
+  const handleArticle = async () => {
+    log('article page');
+    await debugShot('article-start');
+    const startUrl = safeURL();
+
+    // Initial settle — let page load and JS initialize
+    await humanDelay(2000, 4000);
+    await humanScroll();
+
+    // Detect template by DOM structure (NOT by domain)
+    const template = await detectTemplate();
+    log(`detected template: ${template}`);
+
+    let navigated = false;
+
+    switch (template) {
+      case 'tp':
+        navigated = await handleTP();
+        break;
+      case 'ce':
+        navigated = await handleCE();
+        break;
+      case 'link1s':
+        navigated = await handleLINK1S();
+        break;
+      default:
+        navigated = await handleUnknown();
+        break;
+    }
+
+    // Wait for navigation after button click
+    if (navigated) {
+      const startBase = urlBase(startUrl);
+      for (let w = 0; w < 25; w++) {
+        await ms(1000);
+        const cur = safeURL();
+        if (cur !== startUrl && urlBase(cur) !== startBase) {
+          log(`navigated to: ${cur.substring(0, 100)}`);
+          return true;
+        }
+      }
+      // Hash-only change (#goog_rewarded) — wait for learn_more.php or redirect
+      const curUrl = safeURL();
+      if (curUrl !== startUrl) {
+        log(`hash change detected (${urlBase(curUrl)}), waiting for redirect...`);
+        for (let w = 0; w < 15; w++) {
+          await ms(1000);
+          const cur2 = safeURL();
+          if (urlBase(cur2) !== urlBase(curUrl)) {
+            log(`redirected to: ${cur2.substring(0, 100)}`);
+            return true;
+          }
+        }
+      }
+    }
+
     return false;
   };
 
@@ -152,7 +432,7 @@ process.on('SIGINT', async () => {
       const btn = await page.waitForSelector('#get-link', { timeout: 40000 }).catch(() => null);
       if (!btn) return false;
 
-      // Capture href before clicking (reliable fallback when popup fails)
+      // Capture href before clicking
       const linkHref = await btn.evaluate(el => el.href).catch(() => '');
 
       // Wait for countdown completion (disabled class removal)
@@ -165,22 +445,25 @@ process.on('SIGINT', async () => {
       } catch {}
       const countdownElapsed = Date.now() - t0;
       if (countdownElapsed > 500) log(`get-link countdown: ${countdownElapsed}ms`);
-      await ms(1000);
+
+      // Human-like delay before clicking
+      await humanDelay(800, 2000);
+      await humanMouseMove('#get-link');
+      await humanDelay(300, 700);
 
       log('clicking Get Link');
       const newTabPromise = context.waitForEvent('page', { timeout: 20000 }).catch(() => null);
-      await clickEl('#get-link');
+      await humanClick('#get-link');
       let newTab = await newTabPromise;
 
       const clickTime = Date.now();
       let stableUrl = '', stableCount = 0;
 
-      // Poll for destination URL — check main page + popup
+      // Poll for destination URL
       for (let i = 0; i < 60; i++) {
         await ms(1000);
         let popupUrl = '';
 
-        // Check popup first — if it has a real URL, it IS the destination
         if (newTab) {
           try {
             await newTab.waitForLoadState('networkidle', { timeout: 3000 }).catch(() => {});
@@ -196,11 +479,9 @@ process.on('SIGINT', async () => {
           }
         }
 
-        // Fallback to main page URL (popup failed or still loading)
         const mUrl = safeURL();
         if (!mUrl || mUrl.includes('about:blank') || mUrl.includes('chrome-error')) continue;
 
-        // Stability + pattern check for main page (filters wistfulseverely tracking URLs)
         if (mUrl === stableUrl) {
           stableCount++;
           if (stableCount >= 3 && isDestination(mUrl)) {
@@ -217,7 +498,6 @@ process.on('SIGINT', async () => {
         }
       }
 
-      // After loop: href fallback (captured before click)
       if (linkHref && linkHref.startsWith('http')) {
         destinationUrl = linkHref;
         log(`destination (href): ${linkHref.substring(0,100)}`);
@@ -230,129 +510,12 @@ process.on('SIGINT', async () => {
     return false;
   };
 
-  // ── Article page handler ──
-  const handleArticle = async () => {
-    log('article page');
-    await debugShot('article-start');
-    const startUrl = safeURL();
-
-    // Wait for page to settle after initial load
-    await ms(3000);
-
-    const tried = new Set();
-    const maxIterations = 30;
-
-    for (let iter = 0; iter < maxIterations; iter++) {
-      const currentUrl = safeURL();
-      if (currentUrl !== startUrl) { log('page navigated, exiting article'); return true; }
-
-      // Scroll to trigger lazy-loaded elements
-      await safeEval(() => window.scrollBy(0, 300));
-
-      // Priority button detection
-      const btn = await safeEval((triedArr, popupSels, normalSels) => {
-        const visible = el => el && el.getClientRects().length > 0
-          && getComputedStyle(el).display !== 'none'
-          && getComputedStyle(el).visibility !== 'hidden'
-          && getComputedStyle(el).opacity !== '0'
-          && !el.disabled;
-
-        // Popup selectors — always check, never skipped (popup can reappear)
-        for (const sel of popupSels) {
-          const el = document.querySelector(sel);
-          if (visible(el)) return `__popup__${sel}`;
-        }
-
-        // Normal selectors — skip tried
-        for (const sel of normalSels) {
-          if (triedArr.includes(sel)) continue;
-          const el = document.querySelector(sel);
-          if (visible(el)) return `__normal__${sel}`;
-        }
-
-        // Text-based detection — skip tried
-        const texts = ['verify', 'continue', 'get link'];
-        const allEls = document.querySelectorAll('a, button, span, div, input');
-        for (const el of allEls) {
-          const txt = (el.textContent || '').trim().toLowerCase();
-          if (!texts.includes(txt)) continue;
-          if (triedArr.includes(txt)) continue;
-          if (visible(el)) return `__text__${txt}`;
-        }
-
-        return null;
-      }, [...tried],
-        ['#continueBtn', '#adOverlay button'],
-        ['#tp-snp2', '#cross-snp2', '#btn6', '#btn7 > button', '#btn7',
-          '#tp-generate a', '#ce-generate a', '#main > div:nth-child(4) > center > center > a']);
-
-      if (!btn) {
-        log('no buttons yet — waiting for popup (up to 60s)...');
-        let popupFound = false;
-        for (let w = 0; w < 60; w++) {
-          await ms(1000);
-          if (safeURL() !== startUrl) { log('auto-redirect detected'); return true; }
-          const foundSel = await safeEval(() => {
-            for (const sel of ['#continueBtn', '#adOverlay button']) {
-              const el = document.querySelector(sel);
-              if (el && el.getClientRects().length > 0) return sel;
-            }
-            return '';
-          });
-          if (foundSel) {
-            popupFound = true;
-            log('popup appeared after ' + (w + 1) + 's, clicking ' + foundSel);
-            // Force-click bypasses CSS animation stability check (pulse 2s infinite)
-            await page.locator(foundSel).click({ force: true, timeout: 5000 }).catch(() => clickEl(foundSel));
-            for (let nw = 0; nw < 30; nw++) {
-              await ms(1000);
-              if (safeURL() !== startUrl) { log('navigated after popup click'); return true; }
-            }
-            log('popup click did not navigate, marking tried');
-            tried.add(foundSel);
-            break;
-          }
-          if (w % 5 === 0) await safeEval(() => window.scrollBy(0, 200));
-        }
-        if (!popupFound) break;
-        continue;
-      }
-
-      // Parse the tagged return value: __type__value
-      const us = btn.indexOf('__', 2);
-      const btnType = us > 0 ? btn.substring(2, us) : 'normal';
-      const btnValue = us > 0 ? btn.substring(us + 2) : btn;
-
-      log(`clicking: ${btnValue}`);
-      if (btnType === 'popup') {
-        await page.locator(btnValue).click({ force: true, timeout: 5000 }).catch(() => clickEl(btnValue));
-      } else if (btnType === 'text') {
-        await clickText(btnValue);
-      } else {
-        await clickEl(btnValue);
-      }
-
-      // Wait for navigation or countdown
-      for (let w = 0; w < 30; w++) {
-        await ms(1000);
-        if (safeURL() !== startUrl) { log('navigated after click'); return true; }
-      }
-
-      // Only mark non-popup buttons as tried (popup can reappear)
-      if (btnType !== 'popup') tried.add(btnValue);
-      log(`${btnValue} didn't navigate, trying next`);
-    }
-
-    return false;
-  };
-
   // ── Main flow ──
   log('='.repeat(50));
   log(`starting funnel for KEY=${KEY}`);
   if (DEBUG) log('debug mode active');
   const navTimeout = process.env.VPLINK_PROXY ? 90000 : 45000;
 
-  // Navigate to vplink.in
   log(`navigating to vplink.in/${KEY}`);
   await debugShot('01-start');
   try {
@@ -366,7 +529,7 @@ process.on('SIGINT', async () => {
       log(`second goto failed: ${e2.message}`);
     }
   }
-  await ms(2000);
+  await humanDelay(2000, 4000);
   await debugShot('02-after-nav');
 
   // Wait for auto-redirect (vplink.in JS redirects to article page)
@@ -405,20 +568,40 @@ process.on('SIGINT', async () => {
     if (isCf) {
       log('Cloudflare not resolved, reloading...');
       await page.reload({ waitUntil: 'domcontentloaded', timeout: navTimeout }).catch(() => {});
-      await ms(3000);
+      await humanDelay(3000, 5000);
     } else break;
   }
 
   // ── Main loop ──
   let vplinkArrivals = 0;
+  let lastBase = '';
 
   for (let cycle = 0; cycle < 40 && !destinationUrl; cycle++) {
     const url = safeURL();
     if (!url) { await ms(2000); continue; }
+    const base = urlBase(url);
+
+    // Skip hash-only changes (e.g. #goog_rewarded on same article page)
+    if (base === lastBase && url.includes('#')) {
+      log(`[cycle ${cycle + 1}] hash-only change (${url.split('#')[1]}), waiting for real navigation...`);
+      await humanDelay(3000, 5000);
+      // Wait for real navigation away from this page
+      for (let w = 0; w < 15; w++) {
+        await ms(1000);
+        const cur = safeURL();
+        if (urlBase(cur) !== base) {
+          log(`navigated away: ${cur.substring(0, 100)}`);
+          break;
+        }
+      }
+      cycle--; // Don't count this cycle
+      continue;
+    }
+
+    lastBase = base;
     log(`[cycle ${cycle + 1}] ${url.substring(0, 110)}`);
     await debugShot(`cycle-${cycle + 1}`);
 
-    // Check if we're already at destination
     if (isDestination(url)) { destinationUrl = url; log('on destination URL already!'); break; }
 
     // ── vplink.in page ──
@@ -438,8 +621,7 @@ process.on('SIGINT', async () => {
         log('get-link failed, reloading vplink.in');
         for (const p of context.pages()) { if (p !== page) { try { await p.close(); } catch {} } }
         await page.goto(`https://vplink.in/${KEY}`, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch(() => {});
-        await ms(3000);
-        // Wait for potential auto-redirect
+        await humanDelay(3000, 5000);
         for (let i = 0; i < 15; i++) {
           await ms(1000);
           if (!safeURL().includes('vplink.in')) break;
@@ -451,7 +633,7 @@ process.on('SIGINT', async () => {
         if (vplinkArrivals >= 3) {
           log('get-link missing for 3+ cycles, reloading');
           await page.goto(`https://vplink.in/${KEY}`, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch(() => {});
-          await ms(3000);
+          await humanDelay(3000, 5000);
         } else {
           await ms(2000);
         }
@@ -459,7 +641,7 @@ process.on('SIGINT', async () => {
       }
 
       // disabled/hidden (countdown still running)
-      await ms(2000);
+      await humanDelay(1500, 3000);
       continue;
     }
 
@@ -467,18 +649,38 @@ process.on('SIGINT', async () => {
     if (url.startsWith('chrome-error://')) {
       log('chrome-error, force to vplink.in');
       await page.goto(`https://vplink.in/${KEY}`, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch(() => {});
-      await ms(3000);
+      await humanDelay(3000, 5000);
       continue;
     }
 
     // ── Article / unknown page ──
-    // Domains change weekly — treat any non-vplink non-destination as article
     log(`article/unknown: ${url.substring(0,80)}`);
+
+    // Skip intermediate redirect pages (learn_more.php, studieseducates)
+    if (url.includes('learn_more.php') || url.includes('studieseducates')) {
+      log('intermediate redirect page, waiting for auto-redirect...');
+      const intermediateBase = urlBase(url);
+      for (let w = 0; w < 15; w++) {
+        await ms(1000);
+        const cur = safeURL();
+        const curBase = urlBase(cur);
+        if (curBase !== intermediateBase && !cur.includes('learn_more.php') && !cur.includes('studieseducates')) {
+          log(`redirected to: ${cur.substring(0, 100)}`);
+          await humanDelay(500, 1500); // Let page stabilize
+          break;
+        }
+      }
+      // Re-check URL after wait — page may have redirected again
+      lastBase = urlBase(safeURL());
+      continue;
+    }
+
     const navigated = await handleArticle();
     if (!navigated) {
       log('exhausted, force-navigating to vplink.in');
+      lastBase = '';
       await page.goto(`https://vplink.in/${KEY}`, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch(() => {});
-      await ms(2000);
+      await humanDelay(2000, 4000);
       for (let i = 0; i < 15; i++) {
         await ms(1000);
         if (!safeURL().includes('vplink.in')) break;
@@ -489,16 +691,12 @@ process.on('SIGINT', async () => {
   // ── Final fallback ──
   if (!destinationUrl) {
     log('running final fallback...');
-
-    // Try getting destination from current page
     let gotDest = false;
 
-    // 1. Try doGetLink if on vplink.in
     if (safeURL().includes('vplink.in')) {
       gotDest = await doGetLink();
     }
 
-    // 2. Find vplink link on page and go there
     if (!gotDest) {
       const vplinkHref = await safeEval(() => {
         const links = document.querySelectorAll('a[href*="vplink.in"]');
@@ -510,12 +708,11 @@ process.on('SIGINT', async () => {
       if (vplinkHref) {
         log('found vplink link on page');
         await page.goto(vplinkHref, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch(() => {});
-        await ms(3000);
+        await humanDelay(3000, 5000);
         if (safeURL().includes('vplink.in')) gotDest = await doGetLink();
       }
     }
 
-    // 3. Rapid direct attempts (catch GET link before redirect fires)
     if (!gotDest) {
       for (let a = 0; a < 3; a++) {
         log(`direct attempt ${a + 1}`);
@@ -535,9 +732,8 @@ process.on('SIGINT', async () => {
     if (gotDest) destinationUrl = safeURL();
   }
 
-  // ── Output ──
   console.log('\n═════════════════════════════════════════');
-  console.log('  ' + (destinationUrl ? '✅ DESTINATION URL:' : '⚠️  NO DESTINATION'));
+  console.log('  ' + (destinationUrl ? 'DESTINATION URL:' : 'NO DESTINATION'));
   if (destinationUrl) console.log('  ' + destinationUrl);
   if (destinationUrl) fs.writeFileSync(path.join(__dirname, 'destination_url.txt'), destinationUrl);
   await ms(2000);

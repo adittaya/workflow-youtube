@@ -220,18 +220,27 @@ else
   cfg_set "mobile_profile" false
 fi
 
-# ── 7. Virtual desktop (Xvfb) ──────────────────────────
-DESKTOP_NEEDED="y"
+# ── 7. Display mode ────────────────────────────────────
+DESKTOP_NEEDED="n"
 if [ "$TERMUX" = 0 ]; then
-  [ "$SAVED_DESKTOP" = "false" ] && DESKTOP_DEFAULT="n" || DESKTOP_DEFAULT="y"
-  read -p "Use virtual desktop (Xvfb) for headed Chrome? (Y/n) [${DESKTOP_DEFAULT}]: " DESKTOP_CHOICE
-  DESKTOP_CHOICE="${DESKTOP_CHOICE:-$DESKTOP_DEFAULT}"
-  if [[ "$DESKTOP_CHOICE" =~ ^[nN] ]]; then
-    DESKTOP_NEEDED="n"
-    cfg_set "virtual_desktop" false
+  # Check for existing desktop display
+  EXISTING_DISPLAY="${DISPLAY:-}"
+  [ -z "$EXISTING_DISPLAY" ] && command -v xdpyinfo &>/dev/null && EXISTING_DISPLAY=$(xdpyinfo 2>/dev/null | grep 'name of display' | awk '{print $NF}' || true)
+
+  if [ -n "$EXISTING_DISPLAY" ]; then
+    DESKTOP_NEEDED="existing"
+    info "Using existing display: $EXISTING_DISPLAY"
   else
-    DESKTOP_NEEDED="y"
-    cfg_set "virtual_desktop" true
+    [ "$SAVED_DESKTOP" = "false" ] && DESKTOP_DEFAULT="n" || DESKTOP_DEFAULT="y"
+    read -p "Use virtual desktop (Xvfb) for headed Chrome? (y/N) [${DESKTOP_DEFAULT}]: " DESKTOP_CHOICE
+    DESKTOP_CHOICE="${DESKTOP_CHOICE:-$DESKTOP_DEFAULT}"
+    if [[ "$DESKTOP_CHOICE" =~ ^[yY] ]]; then
+      DESKTOP_NEEDED="y"
+      cfg_set "virtual_desktop" true
+    else
+      DESKTOP_NEEDED="n"
+      cfg_set "virtual_desktop" false
+    fi
   fi
 fi
 
@@ -280,10 +289,12 @@ echo "║  YouTube src:  $([[ "$YT_ENABLED" = true ]] && echo "enabled" || echo 
 echo "║  Mobile prof:  $([[ "$MOBILE_ENABLED" = true ]] && echo "enabled" || echo "disabled")"
 if [ "$TERMUX" = 1 ]; then
 echo "║  Mode:          Termux (headless)"
+elif [ "$DESKTOP_NEEDED" = "existing" ]; then
+echo "║  Mode:          Existing display ($DISPLAY)"
 elif [ "$DESKTOP_NEEDED" = "n" ]; then
-echo "║  Mode:          Headless (no Xvfb)"
+echo "║  Mode:          Headless"
 else
-echo "║  Mode:          Virtual desktop"
+echo "║  Mode:          Virtual desktop (Xvfb)"
 fi
 if [[ "$VNC_NEEDED" =~ ^[yY] ]]; then
 echo "║  VNC:          :$VNC_PORT"
@@ -374,8 +385,14 @@ for (( i=1; i<=VIEWS; i++ )); do
     unset VPLINK_USER_AGENT VPLINK_VIEWPORT_WIDTH VPLINK_VIEWPORT_HEIGHT
   fi
 
-  # ── Virtual desktop (Xvfb + VNC via vplink-desktop) ──
-  if [ "$TERMUX" = 1 ] || [ "$DESKTOP_NEEDED" = "n" ]; then
+  # ── Display / Virtual desktop setup ─────────────────
+  if [ "$TERMUX" = 1 ]; then
+    unset DISPLAY
+    export VPLINK_HEADLESS=1
+  elif [ "$DESKTOP_NEEDED" = "existing" ]; then
+    export DISPLAY="${DISPLAY:-:0}"
+    unset VPLINK_HEADLESS
+  elif [ "$DESKTOP_NEEDED" = "n" ]; then
     unset DISPLAY
     export VPLINK_HEADLESS=1
   else

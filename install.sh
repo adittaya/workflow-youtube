@@ -64,12 +64,12 @@ trap cleanup EXIT
 # ═══════════════════════════════════════════════════════════════
 
 detect_os() {
-  OS="linux"
   case "$(uname -s)" in
     Darwin) OS="macos" ;;
     Linux)  OS="linux" ;;
     *)      OS="unknown" ;;
   esac
+  echo "$OS"
 }
 
 detect_distro() {
@@ -396,7 +396,7 @@ install_node_pkg() {
         fi
       fi
       ;;
-    fedora) $SUDO dnf module install -y nodejs:20/common 2>/dev/null || $SUDO dnf install -y nodejs ;;
+    fedora) $SUDO dnf module install -y nodejs:20/common 2>/dev/null || install_node_binary ;;
     arch) $SUDO pacman -S --noconfirm nodejs npm ;;
     suse) $SUDO zypper install -y nodejs20 2>/dev/null || $SUDO zypper install -y nodejs ;;
     alpine) $SUDO apk add nodejs npm ;;
@@ -508,9 +508,11 @@ setup_project() {
     info "Project directory exists at $INSTALL_DIR"
     if [ -d "$INSTALL_DIR/.git" ]; then
       cd "$INSTALL_DIR"
+      local stashed=false
       if ! git diff --quiet 2>/dev/null; then
         warn "Local changes detected — stashing..."
         git stash --include-untracked 2>/dev/null || true
+        stashed=true
       fi
       info "Updating existing installation..."
       git pull --ff-only 2>&1 | tail -2 >> "$LOG_FILE" || {
@@ -521,6 +523,10 @@ setup_project() {
         }
         git reset --hard origin/main 2>/dev/null || git reset --hard HEAD || true
       }
+      # Restore stashed changes if possible
+      if [ "$stashed" = "true" ]; then
+        git stash pop 2>/dev/null || warn "Could not restore stashed changes — check: git stash list"
+      fi
     else
       warn "Directory exists but not a git repo — will use as-is"
     fi
@@ -571,10 +577,13 @@ create_global_command() {
       local rcfile="$HOME/.bashrc"
       [ -f "$HOME/.zshrc" ] && rcfile="$HOME/.zshrc"
       [ -f "$HOME/.profile" ] && rcfile="$HOME/.profile"
-      echo "" >> "$rcfile"
-      echo "# Added by VPLink 3.0 installer" >> "$rcfile"
-      echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$rcfile"
-      warn "Added ~/.local/bin to PATH in $rcfile — restart shell or run: export PATH=\"\$HOME/.local/bin:\$PATH\""
+      # Only add if not already present in rcfile
+      if ! grep -q "Added by VPLink 3.0 installer" "$rcfile" 2>/dev/null; then
+        echo "" >> "$rcfile"
+        echo "# Added by VPLink 3.0 installer" >> "$rcfile"
+        echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$rcfile"
+      fi
+      warn "Added ~/.local/bin to PATH — restart shell or run: export PATH=\"\$HOME/.local/bin:\$PATH\""
     fi
   fi
 
@@ -588,12 +597,13 @@ create_global_command() {
 
 setup_credentials() {
   # Skip if already configured (credentials exist and are valid)
+  [ "$STATE_CREDENTIALS" = "done" ] || [ "$STATE_CREDENTIALS" = "skipped" ] && { log "Credentials already configured"; return 0; }
   if [ -f "$CREDENTIAL_FILE" ]; then
     local cfg
     cfg=$(cat "$CREDENTIAL_FILE" 2>/dev/null || echo '{}')
     local sb_url sb_key
-    sb_url=$(echo "$cfg" | grep -o '"supabase_url"[^,]*' | grep -oP ':"[^"]*"' | tr -d '"' || true)
-    sb_key=$(echo "$cfg" | grep -o '"supabase_key"[^,]*' | grep -oP ':"[^"]*"' | tr -d '"' || true)
+    sb_url=$(echo "$cfg" | sed -n 's/.*"supabase_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || true)
+    sb_key=$(echo "$cfg" | sed -n 's/.*"supabase_key"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || true)
     if [ -n "$sb_url" ] && [ -n "$sb_key" ] && [ "$sb_url" != "''" ] && [ "$sb_key" != "''" ]; then
       STATE_CREDENTIALS="done"
       log "Credentials already configured"
@@ -958,13 +968,14 @@ main_install() {
 
   # Step 1: Environment detection
   step 1 "Detecting environment"
+  detect_os
   detect_distro
   detect_arch
   debug "Distro: $DISTRO, Family: $DISTRO_FAMILY, Arch: $ARCH"
   log "Detected: $DISTRO ($DISTRO_FAMILY) on $ARCH"
 
   # Environment summary
-  echo "  Environment: $(detect_os) / $DISTRO / $ARCH / libc:$(detect_libc)"
+  echo "  Environment: $OS / $DISTRO / $ARCH / libc:$(detect_libc)"
   local mode_info
   mode_info="$(is_root && echo 'Root' || echo 'Non-root')"
   mode_info="$mode_info / $(is_docker && echo 'Container' || echo 'Bare-metal')"

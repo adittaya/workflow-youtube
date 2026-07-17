@@ -1065,7 +1065,7 @@ main_install() {
 # ═══════════════════════════════════════════════════════════════
 
 # Only run dispatch when executed directly (not when sourced for tests)
-if [ "${BASH_SOURCE[0]}" = "$0" ] || [ -z "${BASH_SOURCE[0]}" ]; then
+if [ "${BASH_SOURCE[0]:-}" = "$0" ] || [ -z "${BASH_SOURCE[0]:-}" ]; then
 
 case "${1:-install}" in
   install)

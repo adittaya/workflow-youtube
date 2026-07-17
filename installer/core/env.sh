@@ -151,7 +151,9 @@ env_remove_path() {
     profile="$(env_get_profile)"
 
     # Remove from current session PATH
-    export PATH="$(echo "$PATH" | tr ':' '\n' | grep -v "^${dir}$" | tr '\n' ':' | sed 's/:$//')"
+    local cleaned_path
+    cleaned_path="$(echo "$PATH" | tr ':' '\n' | grep -v "^${dir}$" | tr '\n' ':' | sed 's/:$//')"
+    export PATH="$cleaned_path"
 
     # Remove from profile file
     if [[ -f "$profile" ]]; then
@@ -160,6 +162,7 @@ env_remove_path() {
         if [[ "${SHELL_TYPE:-}" == "fish" ]]; then
             _env_remove_pattern "$profile" "set -gx PATH.*${dir}"
         elif [[ "${SHELL_TYPE:-}" == "powershell" ]]; then
+            # shellcheck disable=SC2154
             _env_remove_pattern "$profile" ".*${dir}.*\\$env:Path"
         else
             _env_remove_pattern "$profile" "export PATH=.*${dir}"
@@ -319,7 +322,8 @@ env_backup_profile() {
     profile="$(env_get_profile)"
 
     if [[ -f "$profile" ]]; then
-        local backup="${profile}.backup.$(date +%s)"
+        local backup
+        backup="${profile}.backup.$(date +%s)"
         cp "$profile" "$backup"
         echo "Backed up $profile -> $backup"
     fi

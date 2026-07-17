@@ -162,7 +162,7 @@ detect_arch() {
         aarch64|arm64|ARM64)     ARCH="aarch64" ;;
         armv7l|armhf|armv7)      ARCH="armv7l" ;;
         armv6l)                   ARCH="armv6l" ;;
-        i*86|i386|i486|i586|i686) ARCH="x86" ;;
+        i386|i486|i586|i686)     ARCH="x86" ;;
         s390x)                    ARCH="s390x" ;;
         ppc64le)                  ARCH="ppc64le" ;;
         riscv64)                  ARCH="riscv64" ;;
@@ -182,7 +182,7 @@ detect_libc() {
         else
             LIBC="glibc"
         fi
-    elif [[ -f /lib/ld-musl-* ]] || [[ -f /lib/ld-musl*.so.1 ]]; then
+    elif ls /lib/ld-musl-* >/dev/null 2>&1 || ls /lib/ld-musl*.so.1 >/dev/null 2>&1; then
         LIBC="musl"
     elif [[ -f /lib/x86_64-linux-gnu/libc.so.6 ]] || \
          [[ -f /lib/aarch64-linux-gnu/libc.so.6 ]] || \

@@ -94,8 +94,6 @@ cmd_uninstall() {
   ui_progress_update 3 "Cleaning PATH entries" "running"
 
   local PROFILES_CLEANED=0
-  local LOCAL_BIN_ESCAPED
-  LOCAL_BIN_ESCAPED=$(echo "$HOME/.local/bin" | sed 's/[\/&]/\\&/g')
 
   for PROFILE in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.config/fish/config.fish"; do
     if [ -f "$PROFILE" ]; then

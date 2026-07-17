@@ -193,7 +193,6 @@ ui_spinner_start() {
 
   # Braille dot spinner frames
   local frames="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-  local frame_len=1  # each braille char is one "frame"
 
   (
     local i=0
@@ -512,7 +511,6 @@ ui_dots_start() {
 ui_table() {
   local headers=()
   local rows=()
-  local parse_mode="headers"
 
   # Parse arguments: ui_table -h "Col1" "Col2" -r "row1col1|row1col2"
   while [ $# -gt 0 ]; do

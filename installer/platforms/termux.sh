@@ -40,6 +40,7 @@ termux_detect_environment() {
   elif [ -f /system/build.prop ]; then
     TERMUX_ANDROID_SDK=$(getprop ro.build.version.sdk 2>/dev/null || echo "")
   fi
+  export TERMUX_ANDROID_SDK
 
   return 0
 }
@@ -189,7 +190,6 @@ _termux_install_node_binary() {
   esac
 
   # Termux uses Android's libc (bionic), use the linux binary
-  local suffix=""
   # Note: Termux has its own libc; standard glibc binaries may not work.
   # The termux package is preferred. This is a last resort.
   local url="https://nodejs.org/dist/v${ver}/node-v${ver}-linux-${arch}.tar.xz"

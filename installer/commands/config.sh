@@ -158,7 +158,6 @@ _config_set() {
     local IFS='.'
     read -ra KEY_PARTS <<< "$KEY"
 
-    local SETTER=""
     local CURRENT=""
     for part in "${KEY_PARTS[@]}"; do
       if [ -n "$CURRENT" ]; then

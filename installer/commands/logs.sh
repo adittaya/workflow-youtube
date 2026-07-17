@@ -102,7 +102,7 @@ cmd_logs() {
       tail -f -n "$NUM_LINES" "$TARGET_LOG" | grep --line-buffered -i "$FILTER" &
       local TAIL_PID=$!
 
-      trap "kill $TAIL_PID 2>/dev/null; exit 0" INT TERM
+      trap 'kill $TAIL_PID 2>/dev/null; exit 0' INT TERM
       wait $TAIL_PID 2>/dev/null
     else
       tail -f -n "$NUM_LINES" "$TARGET_LOG"

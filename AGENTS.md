@@ -8,6 +8,8 @@
 | 2026-07-05–08 | Initial development, iterative fixes, CI, installer (see git log) | AI |
 | 2026-07-16 | **Complete rewrite from live recording**: recorded full flow with network/console/DOM/screenshot capture. Analyzed 3 article templates (TP, CE, LINK1S). Rewrote automation.js with domain-agnostic template detection, human-like behavior (random delays, smooth scrolling, mouse movement), and bot-detection handling. | AI |
 | 2026-07-17 | **macOS CI fixes**: Replaced `grep -oP`/`grep -qP` (PCRE) with POSIX-compatible `grep`+`sed`/`awk` in state.sh and config.sh JSON handling. Fixed multi-line sed `\n` replacement (GNU-only) with `awk`. Replaced `:a;N;$!ba` hold-space loop with `awk`. Fixed `bash -c` subshells inheriting `set -e` from CI. Skipped `declare -A` modules on macOS bash 3.2. CI now passes all 5 jobs (shellcheck, Linux, macOS, Termux, smoke). | AI |
+| 2026-07-17 | **Critical bug fixes**: Fixed `kill 0` in vplink-desktop.sh (VNC_PID=0 killed entire process group). Fixed cleanup_pids trap recursion loop. Added interactive credential setup (`vplink3.0 config --setup`). Polished run summary box with checkmarks. Fixed `BASH_SOURCE[0]` unbound variable in curl pipe. | AI |
+| 2026-07-17 | **#goog_rewarded + stuck-loop fixes**: Fixed `#goog_rewarded` infinite loop (popup click → ad page → kept clicking buttons → loop). `handlePopup` now returns `'rewarded'` state. `waitForCountdown` propagates `'rewarded'` return. `handleArticle` waits 45s for ad redirect. Added `#goog_rewarded` handler in main loop (clears hash). Added stuck-loop detection (3 consecutive same-URL visits → force-navigate, excludes vplink.in + intermediate redirect pages). Fixed CE template: page reloads to same URL after btn7 — handleArticle now returns `true` on button success without requiring base URL change. Added `dumpDOM` helper for debug HTML + screenshots. Max cycles 40→25. E2E test: full funnel completion darkguruji→srtak×3→vplink.in→destination in ~460s. | AI |
 
 ## Overview
 Automated vplink.in URL funnel: navigate auto-redirects, handle article pages (any domain), click "Get Link" on vplink.in, and capture the final destination URL.
@@ -119,6 +121,10 @@ vplink.in/{KEY}
 - **learn_more.php redirector**: all article pages chain through `learn_more.php` to next article or back to vplink.in
 - **Get Link POST**: `POST /links/go` returns `{status: "success", url: "..."}` — the URL is the real destination
 - **New tab IS the destination**: popup opened by `#get-link` click contains the destination URL
+- **#goog_rewarded = ad page**: after popup click, if URL contains `#goog_rewarded`, STOP clicking and wait for ad redirect (45s timeout). `handlePopup` returns `'rewarded'` state, propagated through `waitForCountdown` → template handlers → `handleArticle`
+- **Stuck-loop detection**: track URL visit counts per URL, force-navigate after 3 visits to same article. Excludes vplink.in (needs multiple cycles for countdown) and intermediate redirect pages (learn_more.php, studieseducates, studiiessuniversitiess, etc.)
+- **CE same-URL reload**: CE template btn7 can cause page reload to same URL (with `#/` hash). handleArticle returns `true` on button success regardless of URL change, letting main loop re-evaluate
+- **dumpDOM helper**: saves HTML + screenshot to `screenshots/` when `VPLINK_DEBUG=1`
 
 ## CLI Usage
 ```bash

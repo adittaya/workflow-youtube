@@ -179,7 +179,7 @@ process.on('SIGINT', async () => {
   };
 
   // ── Handle bot-detection popup (#continueBtn) ──
-  // Returns true if popup was found and clicked
+  // Returns 'popup' if popup was clicked, 'rewarded' if we landed on #goog_rewarded, false otherwise
   const handlePopup = async () => {
     const popupVisible = await safeEval(() => {
       const el = document.getElementById('continueBtn');
@@ -199,6 +199,12 @@ process.on('SIGINT', async () => {
       await humanClick('#continueBtn');
     }
     await humanDelay(1000, 2000);
+
+    // Check if we landed on #goog_rewarded (Google Ads reward page)
+    if (safeURL().includes('#goog_rewarded')) {
+      log('landed on #goog_rewarded, waiting for ad to complete...');
+      return 'rewarded';
+    }
     return true;
   };
 
@@ -207,10 +213,13 @@ process.on('SIGINT', async () => {
     const maxIter = maxWaitSec * 2; // check every 500ms
     for (let i = 0; i < maxIter; i++) {
       const remaining = await getCountdown();
-      if (remaining <= 0) return true;
+      if (remaining <= 0) return 'done';
 
       // Handle popup that may appear during countdown
-      if (i % 4 === 0) await handlePopup();
+      if (i % 4 === 0) {
+        const popupResult = await handlePopup();
+        if (popupResult === 'rewarded') return 'rewarded';
+      }
 
       // Occasional scroll to look natural
       if (i % 10 === 0) await humanScroll();
@@ -225,11 +234,23 @@ process.on('SIGINT', async () => {
     log('template: TP (tp-time countdown)');
 
     // Wait for countdown (up to 30s — timer starts at ~23, popup appears at ~6s remaining)
-    const countdownDone = await waitForCountdown('tp', 30);
-    if (!countdownDone) log('TP countdown timeout, trying button anyway');
+    const countdownResult = await waitForCountdown('tp', 30);
 
-    // Popup may appear near end of countdown
-    await handlePopup();
+    // If popup landed us on #goog_rewarded during countdown, return immediately
+    if (countdownResult === 'rewarded') {
+      log('popup sent us to #goog_rewarded during countdown');
+      return 'rewarded';
+    }
+
+    if (countdownResult !== 'done') log('TP countdown timeout, trying button anyway');
+
+    // Popup may appear near end of countdown (after countdown finishes)
+    const popupResult = await handlePopup();
+    if (popupResult === 'rewarded') {
+      log('on #goog_rewarded after countdown, waiting for ad redirect...');
+      return 'rewarded';
+    }
+
     await humanDelay(500, 1500);
 
     // Click #tp-snp2 when visible
@@ -259,8 +280,12 @@ process.on('SIGINT', async () => {
     log('template: CE (ce-time countdown)');
 
     // Wait for countdown (up to 30s — timer starts at ~20)
-    const countdownDone = await waitForCountdown('ce', 30);
-    if (!countdownDone) log('CE countdown timeout, trying buttons anyway');
+    const countdownResult = await waitForCountdown('ce', 30);
+    if (countdownResult === 'rewarded') {
+      log('popup sent us to #goog_rewarded during CE countdown');
+      return 'rewarded';
+    }
+    if (countdownResult !== 'done') log('CE countdown timeout, trying buttons anyway');
 
     await humanDelay(500, 1500);
 
@@ -310,8 +335,14 @@ process.on('SIGINT', async () => {
     }
 
     // Wait for countdown (up to 25s — timer resets to 14s after click)
-    const countdownDone = await waitForCountdown('link1s', 25);
-    if (!countdownDone) log('LINK1S countdown timeout, trying button anyway');
+    const countdownResult = await waitForCountdown('link1s', 25);
+
+    if (countdownResult === 'rewarded') {
+      log('popup sent us to #goog_rewarded during LINK1S countdown');
+      return 'rewarded';
+    }
+
+    if (countdownResult !== 'done') log('LINK1S countdown timeout, trying button anyway');
 
     await humanDelay(500, 1500);
 
@@ -395,6 +426,11 @@ process.on('SIGINT', async () => {
     const template = await detectTemplate();
     log(`detected template: ${template}`);
 
+    // Debug: dump DOM + screenshot when template is unknown
+    if (template === 'unknown') {
+      await dumpDOM(`unknown-${Date.now()}`);
+    }
+
     let navigated = false;
 
     switch (template) {
@@ -412,30 +448,53 @@ process.on('SIGINT', async () => {
         break;
     }
 
-    // Wait for navigation after button click
-    if (navigated) {
-      const startBase = urlBase(startUrl);
-      for (let w = 0; w < 25; w++) {
+    // Special case: TP popup sent us to #goog_rewarded (Google Ads reward page)
+    // Don't click anything — wait for the ad to complete and auto-redirect
+    if (navigated === 'rewarded') {
+      log('waiting for #goog_rewarded ad to complete...');
+      const rewardedBase = urlBase(safeURL());
+      for (let w = 0; w < 45; w++) {
         await ms(1000);
         const cur = safeURL();
-        if (cur !== startUrl && urlBase(cur) !== startBase) {
+        const curBase = urlBase(cur);
+        if (!cur.includes('#goog_rewarded') && curBase !== rewardedBase) {
+          log(`ad completed, redirected to: ${cur.substring(0, 100)}`);
+          return true;
+        }
+      }
+      log('#goog_rewarded ad did not redirect in 45s');
+      // Try clearing the hash fragment
+      await safeEval(() => {
+        if (window.location.hash) {
+          history.replaceState(null, '', window.location.pathname + window.location.search);
+        }
+      });
+      await humanDelay(1000, 2000);
+      return false;
+    }
+
+    // Wait for navigation after button click
+    if (navigated) {
+      const startUrl = safeURL();
+      const startBase = urlBase(startUrl);
+      for (let w = 0; w < 20; w++) {
+        await ms(1000);
+        const cur = safeURL();
+        const curBase = urlBase(cur);
+        if (cur !== startUrl && curBase !== startBase) {
           log(`navigated to: ${cur.substring(0, 100)}`);
           return true;
         }
       }
-      // Hash-only change (#goog_rewarded) — wait for learn_more.php or redirect
-      const curUrl = safeURL();
-      if (curUrl !== startUrl) {
-        log(`hash change detected (${urlBase(curUrl)}), waiting for redirect...`);
-        for (let w = 0; w < 15; w++) {
-          await ms(1000);
-          const cur2 = safeURL();
-          if (urlBase(cur2) !== urlBase(curUrl)) {
-            log(`redirected to: ${cur2.substring(0, 100)}`);
-            return true;
-          }
-        }
+      // Check if URL changed at all (even same domain — page may have reloaded)
+      const finalUrl = safeURL();
+      if (finalUrl !== startUrl) {
+        log(`page changed: ${finalUrl.substring(0, 100)}`);
+        return true;
       }
+      // Buttons were clicked but page stayed the same — let main loop re-evaluate
+      log('buttons clicked but no URL change detected, continuing');
+      return true;
     }
 
     return false;
@@ -598,14 +657,48 @@ process.on('SIGINT', async () => {
     } else break;
   }
 
+  // ── DOM dump helper (debug) ──
+  const dumpDOM = async (label) => {
+    if (!DEBUG) return;
+    const dir = path.join(__dirname, 'screenshots');
+    try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+    try {
+      const html = await page.content();
+      fs.writeFileSync(path.join(dir, `${label}.html`), html);
+    } catch {}
+    await debugShot(label);
+  };
+
   // ── Main loop ──
   let vplinkArrivals = 0;
   let lastBase = '';
+  const urlVisits = {}; // Track how many times each URL is visited
+  const MAX_URL_VISITS = 3; // Abort if same URL seen this many times
 
-  for (let cycle = 0; cycle < 40 && !destinationUrl; cycle++) {
+  for (let cycle = 0; cycle < 25 && !destinationUrl; cycle++) {
     const url = safeURL();
     if (!url) { await ms(2000); continue; }
     const base = urlBase(url);
+
+    // Track URL visit count for stuck-loop detection
+    // Skip vplink.in (needs multiple cycles for countdown)
+    // Skip intermediate/routing pages (learn_more.php, studieseducates, intermediates)
+    const urlKey = url.split('#')[0]; // Normalize without hash
+    const isIntermediate = url.includes('learn_more.php') || url.includes('studieseducates')
+      || url.includes('studiiessuniversitiess') || url.includes('universitesstudiiess')
+      || url.includes('studyscholorships');
+    if (!url.includes('vplink.in') && !isIntermediate) {
+      urlVisits[urlKey] = (urlVisits[urlKey] || 0) + 1;
+      if (urlVisits[urlKey] >= MAX_URL_VISITS) {
+        log(`STUCK: same article visited ${urlVisits[urlKey]} times, force-navigating to vplink.in`);
+        await dumpDOM(`stuck-${cycle + 1}`);
+        lastBase = '';
+        urlVisits[urlKey] = 0;
+        await page.goto(`https://vplink.in/${KEY}`, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch(() => {});
+        await humanDelay(3000, 5000);
+        continue;
+      }
+    }
 
     // Skip hash-only changes (e.g. #goog_rewarded on same article page)
     if (base === lastBase && url.includes('#')) {
@@ -620,7 +713,13 @@ process.on('SIGINT', async () => {
           break;
         }
       }
-      cycle--; // Don't count this cycle
+      // If still on same hash after waiting, force-navigate
+      if (urlBase(safeURL()) === base) {
+        log('still stuck on same page after hash wait, force-navigating');
+        lastBase = '';
+        await page.goto(`https://vplink.in/${KEY}`, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch(() => {});
+        await humanDelay(3000, 5000);
+      }
       continue;
     }
 
@@ -677,6 +776,23 @@ process.on('SIGINT', async () => {
       if (PROXY) await reportProxyFailure('chrome-error');
       await page.goto(`https://vplink.in/${KEY}`, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch(() => {});
       await humanDelay(3000, 5000);
+      continue;
+    }
+
+    // ── Google Ads reward page (#goog_rewarded) — ad didn't redirect ──
+    if (url.includes('#goog_rewarded')) {
+      log('#goog_rewarded detected in main loop, ad did not redirect');
+      await dumpDOM('goog-rewarded');
+      // Try reloading the article without the hash fragment
+      const cleanUrl = url.split('#')[0];
+      log(`reloading without hash: ${cleanUrl.substring(0, 80)}`);
+      lastBase = '';
+      await page.goto(cleanUrl, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch(() => {});
+      await humanDelay(3000, 5000);
+      // If we're back on the same article (without hash), treat it fresh
+      if (!safeURL().includes('#goog_rewarded')) {
+        log('reloaded article without hash, treating as fresh page');
+      }
       continue;
     }
 

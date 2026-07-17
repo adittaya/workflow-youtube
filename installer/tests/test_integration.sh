@@ -102,9 +102,15 @@ for mod in "${_MODULES[@]}"; do
         test_skip "Source ${mod}" "file not found"
         continue
     fi
+    # Skip modules using declare -A (associative arrays) on bash < 4
+    _major="${BASH_VERSINFO[0]:-0}"
+    if [[ "$_major" -lt 4 ]] && grep -q 'declare -A' "$_path" 2>/dev/null; then
+        test_skip "Source ${mod}" "requires bash 4+"
+        continue
+    fi
     _errfile="${_TEST_TMPDIR}/err_$(echo "$mod" | tr '/' '_')"
-    # Source in subshell to isolate; capture stderr
-    if bash -c "source '${_path}' 2>'${_errfile}'" 2>/dev/null; then
+    # Source in subshell to isolate; use running bash (may be newer than /usr/bin/bash on macOS)
+    if "${BASH}" -c "source '${_path}' 2>'${_errfile}'" 2>/dev/null; then
         if [[ -s "$_errfile" ]]; then
             test_skip "Source ${mod}" "warnings on stderr"
         else
@@ -134,7 +140,7 @@ _REQUIRED_FUNCTIONS=(
 )
 
 # Source the platform module which defines most of these
-bash -c "
+"${BASH}" -c "
     source '${INSTALLER_DIR}/core/platform.sh' 2>/dev/null
     source '${INSTALLER_DIR}/core/logger.sh' 2>/dev/null
     source '${INSTALLER_DIR}/core/state.sh' 2>/dev/null
@@ -158,7 +164,7 @@ bash -c "
 done
 
 # Run the check again and capture results for exit code
-_func_results="$(bash -c "
+_func_results="$("${BASH}" -c "
     source '${INSTALLER_DIR}/core/platform.sh' 2>/dev/null
     source '${INSTALLER_DIR}/core/logger.sh' 2>/dev/null
     source '${INSTALLER_DIR}/core/state.sh' 2>/dev/null
@@ -192,7 +198,7 @@ test_end_suite
 test_suite "Doctor Command (Dry Run)"
 
 # Source the installer modules and run doctor-like checks
-bash -c "
+"${BASH}" -c "
     export INSTALLER_DIR='${INSTALLER_DIR}'
     export VPLINK_DRY_RUN=1
     export STATE_FILE='${_TEST_TMPDIR}/state.json'
@@ -240,7 +246,7 @@ test_end_suite
 # ===========================================================================
 test_suite "Config Get/Set Integration"
 
-bash -c "
+"${BASH}" -c "
     export CONFIG_FILE='${_TEST_TMPDIR}/config_integ.json'
     source '${INSTALLER_DIR}/core/config.sh' 2>/dev/null
     config_init 2>/dev/null || true
@@ -286,7 +292,7 @@ test_end_suite
 # ===========================================================================
 test_suite "State Management Integration"
 
-bash -c "
+"${BASH}" -c "
     export STATE_FILE='${_TEST_TMPDIR}/state_integ.json'
     source '${INSTALLER_DIR}/core/state.sh' 2>/dev/null
     state_init 2>/dev/null || true
@@ -335,7 +341,7 @@ test_end_suite
 # ===========================================================================
 test_suite "Platform Detection Outputs"
 
-bash -c "
+"${BASH}" -c "
     source '${INSTALLER_DIR}/core/platform.sh' 2>/dev/null
     detect_all 2>/dev/null
 

@@ -467,7 +467,7 @@ process.on('SIGINT', async () => {
     if (navigated === 'rewarded') {
       log('waiting for #goog_rewarded ad to complete...');
       const rewardedBase = urlBase(safeURL());
-      for (let w = 0; w < 45; w++) {
+      for (let w = 0; w < 15; w++) {
         await ms(1000);
         const cur = safeURL();
         const curBase = urlBase(cur);
@@ -476,7 +476,7 @@ process.on('SIGINT', async () => {
           return true;
         }
       }
-      log('#goog_rewarded ad did not redirect in 45s');
+      log('#goog_rewarded ad did not redirect in 15s');
       // Try clearing the hash fragment
       await safeEval(() => {
         if (window.location.hash) {
@@ -772,9 +772,8 @@ process.on('SIGINT', async () => {
   let forceNavCount = 0;
   let lastStuckArticle = ''; // Track which article we got stuck on
   const MAX_GOOG_REWARD_RETRIES = 2;
-  const MAX_FORCE_NAVS = 4; // Give up after this many force-navigations
+  const MAX_URL_VISITS = 2; // Abort if same URL seen this many times
   const urlVisits = {}; // Track how many times each URL is visited
-  const MAX_URL_VISITS = 3; // Abort if same URL seen this many times
 
   for (let cycle = 0; cycle < 25 && !destinationUrl && !skipMainLoop; cycle++) {
     const url = safeURL();
@@ -792,17 +791,10 @@ process.on('SIGINT', async () => {
       if (urlVisits[urlKey] >= MAX_URL_VISITS) {
         forceNavCount++;
         lastStuckArticle = urlKey;
-        log(`STUCK: same article visited ${urlVisits[urlKey]} times (force-nav #${forceNavCount}), navigating to vplink.in`);
-        if (forceNavCount >= MAX_FORCE_NAVS) {
-          log(`GIVING UP: ${forceNavCount} force-navigations — this key/article is stuck`);
-          break;
-        }
-        await dumpDOM(`stuck-${cycle + 1}`);
-        lastBase = '';
-        urlVisits[urlKey] = 0;
-        await page.goto(`https://vplink.in/${KEY}`, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch(() => {});
-        await humanDelay(3000, 5000);
-        continue;
+        log(`STUCK: same article visited ${urlVisits[urlKey]} times (force-nav #${forceNavCount}), proxy likely blocking redirects`);
+        if (PROXY) await reportProxyFailure('article-stuck-loop');
+        proxyBlocked = true;
+        break;
       }
     }
 
@@ -811,7 +803,7 @@ process.on('SIGINT', async () => {
       log(`[cycle ${cycle + 1}] hash-only change (${url.split('#')[1]}), waiting for real navigation...`);
       await humanDelay(3000, 5000);
       // Wait for real navigation away from this page
-      for (let w = 0; w < 15; w++) {
+      for (let w = 0; w < 8; w++) {
         await ms(1000);
         const cur = safeURL();
         if (urlBase(cur) !== base) {

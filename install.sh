@@ -40,9 +40,9 @@ fi
 mkdir -p "$LOG_DIR" "$CONFIG_DIR"
 touch "$LOG_FILE"
 
-log()   { echo -e "${GREEN}✓${NC} $1"; echo "[$(date +%T)] OK  $1" >> "$LOG_FILE"; }
-warn()  { echo -e "${YELLOW}⚠${NC} $1"; echo "[$(date +%T)] WARN $1" >> "$LOG_FILE"; }
-fail()  { echo -e "${RED}✗${NC} $1"; echo "[$(date +%T)] FAIL $1" >> "$LOG_FILE"; }
+log()   { echo -e "  ${GREEN}$(printf '\xe2\x9c\x93')${NC} $1"; echo "[$(date +%T)] OK  $1" >> "$LOG_FILE"; }
+warn()  { echo -e "  ${YELLOW}$(printf '\xe2\x9a\xa0')${NC} $1"; echo "[$(date +%T)] WARN $1" >> "$LOG_FILE"; }
+fail()  { echo -e "  ${RED}$(printf '\xe2\x9c\x97')${NC} $1"; echo "[$(date +%T)] FAIL $1" >> "$LOG_FILE"; }
 info()  { echo -e "${CYAN}${1}${NC}"; echo "[$(date +%T)] INFO $1" >> "$LOG_FILE"; }
 step()  { echo -e "\n${BOLD}[$1/${TOTAL_STEPS}]${NC} $2"; echo "[$(date +%T)] STEP $1/$TOTAL_STEPS $2" >> "$LOG_FILE"; }
 debug() { [ -n "${VPLINK_DEBUG:-}" ] && echo -e "${DIM}$1${NC}"; echo "[$(date +%T)] DEBUG $1" >> "$LOG_FILE"; }
@@ -286,12 +286,12 @@ install_system_deps() {
       libnss3 libnspr4 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 \
       libdrm2 libdbus-1-3 libxkbcommon0 libxcomposite1 libxdamage1 \
       libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 libcairo2 \
-      libasound2t64 ca-certificates || \
+      libasound2t64 libxshmfence1 ca-certificates || \
     $SUDO apt-get install -y -qq curl git xvfb x11vnc jq chromium-browser \
       libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
       libdrm2 libdbus-1-3 libxkbcommon0 libxcomposite1 libxdamage1 \
       libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 libcairo2 \
-      libasound2 ca-certificates || \
+      libasound2 libxshmfence1 ca-certificates || \
     warn "Some Debian packages failed — proceeding"
   elif [ "$DISTRO_FAMILY" = "arch" ]; then
     $SUDO pacman -Sy --noconfirm curl git xorg-server-xvfb x11vnc jq \
@@ -987,6 +987,15 @@ main_install() {
   is_wsl && mode_info="$mode_info / WSL"
   is_ci && mode_info="$mode_info / CI"
   echo "  $mode_info"
+
+  # Disk space check (need ~500MB for Playwright + deps)
+  local avail_kb
+  avail_kb=$(df -k "$HOME" 2>/dev/null | awk 'NR==2{print $4}' || echo 0)
+  if [ "$avail_kb" -lt 512000 ] 2>/dev/null; then
+    warn "Low disk space: $((avail_kb / 1024))MB available (recommend 500MB+)"
+  else
+    log "Disk space: $((avail_kb / 1024))MB available"
+  fi
   echo "  Log: $LOG_FILE"
   echo ""
 

@@ -14,3 +14,4 @@ recording_*
 recordings/
 record.js
 record.sh
+recorder.log

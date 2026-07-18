@@ -316,8 +316,8 @@ for (( i=1; i<=VIEWS; i++ )); do
   # ── Proxy ─────────────────────────────────────────────
   unset VPLINK_PROXY
   if [ "$PROXY_ENABLED" = "true" ]; then
-    info "Fetching proxy from database..."
-    PROXY_RESULT=$(timeout 120 $NODE_BIN "$PROXY_ROTATOR" "$PROXY_TIER" 2>&1 | tail -1) || true
+    info "Testing all proxies (clean + speed)..."
+    PROXY_RESULT=$(timeout 300 $NODE_BIN "$PROXY_ROTATOR" "$PROXY_TIER" 2>/dev/null | tail -1) || true
     if [ -n "$PROXY_RESULT" ]; then
       export VPLINK_PROXY="http://${PROXY_RESULT}"
       ok "Proxy: $VPLINK_PROXY"

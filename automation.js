@@ -662,14 +662,15 @@ process.on('SIGINT', async () => {
 
   // Wait for auto-redirect (vplink.in JS redirects to article page)
   log('waiting for auto-redirect...');
-  for (let i = 0; i < 30; i++) {
+  const redirectWait = PROXY ? 15 : 30; // Shorter with proxy (detect bad proxy faster)
+  for (let i = 0; i < redirectWait; i++) {
     await ms(1000);
     if (!safeURL().includes('vplink.in')) break;
   }
   await debugShot('03-after-redirect');
 
   // Handle Cloudflare challenge if still on vplink.in
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 2; attempt++) {
     const url = safeURL();
     if (!url.includes('vplink.in') || url.includes('cdn-cgi')) break;
 
@@ -686,7 +687,8 @@ process.on('SIGINT', async () => {
     log(`waiting for page content (attempt ${attempt + 1})...`);
 
     let loaded = false;
-    for (let i = 0; i < 40; i++) {
+    const cfWait = PROXY ? 20 : 40; // Shorter with proxy
+    for (let i = 0; i < cfWait; i++) {
       await ms(1000);
       if (!safeURL().includes('vplink.in')) { loaded = true; break; }
       if (await safeEval(() => !!document.getElementById('get-link'))) { loaded = true; break; }
@@ -819,7 +821,7 @@ process.on('SIGINT', async () => {
       }
 
       if (btnState === 'missing') {
-        if (vplinkArrivals >= 5) {
+        if (vplinkArrivals >= 3) {
           log('stuck on vplink.in with no article page — proxy blocking JS redirects');
           proxyBlocked = true;
           if (PROXY) await reportProxyFailure('vplink-get-link-missing');

@@ -404,6 +404,14 @@ for (( i=1; i<=VIEWS; i++ )); do
       warn "View $i timed out after 480s"
     elif [ "$EXIT_CODE" -eq 2 ]; then
       warn "View $i could not complete (blocked/unavailable path)"
+      # Backup: blacklist proxy locally if automation didn't get to it (e.g., timeout)
+      if [ -n "$VPLINK_PROXY" ]; then
+        PROXY_HOST=$(echo "$VPLINK_PROXY" | sed 's|http[s]*://||; s|:.*||')
+        PROXY_PORT=$(echo "$VPLINK_PROXY" | grep -o ':[0-9]*' | tr -d ':')
+        if [ -n "$PROXY_HOST" ] && [ -n "$PROXY_PORT" ]; then
+          "$NODE_BIN" -e "try{require('./config').addProxyBlacklist('$PROXY_HOST',$PROXY_PORT)}catch{}" 2>/dev/null || true
+        fi
+      fi
     elif [ "$EXIT_CODE" -eq 3 ]; then
       warn "View $i completed without a destination URL"
     else

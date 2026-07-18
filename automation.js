@@ -3,8 +3,9 @@ try { ({ chromium } = require('playwright')); }
 catch { ({ chromium } = require('playwright-core')); }
 const fs = require('fs');
 const path = require('path');
-let markDead;
+let markDead, addProxyBlacklist;
 try { ({ markDead } = require('./proxy-rotator')); } catch { markDead = async () => false; }
+try { ({ addProxyBlacklist } = require('./config')); } catch { addProxyBlacklist = () => {}; }
 
 const KEY = process.argv[2] || process.env.VPLINK_KEY;
 if (!KEY) { console.error('Usage: node automation.js <vplink_key>'); process.exit(1); }
@@ -23,6 +24,7 @@ const safeEval = (fn, ...a) => { try { return page.evaluate(fn, ...a).catch(() =
 
 let proxyFailures = 0;
 let proxyBlocked = false;
+let proxyPunished = false; // Track if we already blacklisted/deleted this proxy
 const PROXY = process.env.VPLINK_PROXY || '';
 const PROXY_HOST = PROXY.replace(/^https?:\/\//, '').replace(/:\d+$/, '');
 
@@ -30,6 +32,16 @@ const reportProxyFailure = async (reason) => {
   if (!PROXY_HOST) return;
   proxyFailures++;
   log(`proxy failure #${proxyFailures}: ${reason} (${PROXY_HOST})`);
+
+  // Blacklist locally + delete from Supabase on first failure
+  if (!proxyPunished) {
+    proxyPunished = true;
+    const [ip, port] = PROXY_HOST.split(':');
+    if (ip && port) {
+      try { addProxyBlacklist(ip, parseInt(port)); log(`blacklisted ${ip}:${port} locally`); } catch {}
+      try { const ok = await markDead(ip, parseInt(port)); if (ok) log(`deleted ${ip}:${port} from Supabase`); } catch {}
+    }
+  }
 };
 
 process.on('SIGINT', async () => {

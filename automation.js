@@ -15,7 +15,7 @@ let browser, context, page;
 let destinationUrl = null;
 let startTime = Date.now();
 
-const log = msg => console.log(`  [${((Date.now()-startTime)/1000).toFixed(1)}s] ${msg}`);
+const log = msg => console.error(`  [${((Date.now()-startTime)/1000).toFixed(1)}s] ${msg}`);
 const ms = t => new Promise(r => setTimeout(r, t));
 const rand = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
 const safeURL = () => { try { return page.url(); } catch { return ''; } };
@@ -751,28 +751,17 @@ process.on('SIGINT', async () => {
   let skipMainLoop = false;
 
   // YouTube referral: navigate to YouTube first so browser naturally sets Referer
+  // OLD approach (page.route header injection) broke vplink.in JS redirects.
+  // Always use YouTube-first navigation — works with and without proxy.
   const REFERER = process.env.VPLINK_REFERER || '';
   if (REFERER) {
-    if (PROXY) {
-      const refererOrigin = new URL(REFERER).origin;
-      log(`setting YouTube Referer via header: ${refererOrigin} (proxy bypass)`);
-      await page.route(`https://vplink.in/${KEY}`, (route, request) => {
-        if (request.isNavigationRequest()) {
-          const headers = { ...request.headers(), 'referer': refererOrigin };
-          route.continue({ headers });
-        } else {
-          route.continue();
-        }
-      });
-    } else {
-      log(`navigating to YouTube first for referral: ${REFERER.substring(0, 60)}`);
-      try {
-        await page.goto(REFERER, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        await humanDelay(2000, 4000);
-        log('YouTube loaded, now navigating to vplink.in (browser will set Referer)');
-      } catch (e) {
-        log(`YouTube navigation failed: ${e.message}, continuing without referral`);
-      }
+    log(`navigating to YouTube first for referral: ${REFERER.substring(0, 60)}`);
+    try {
+      await page.goto(REFERER, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await humanDelay(2000, 4000);
+      log('YouTube loaded, now navigating to vplink.in (browser will set Referer)');
+    } catch (e) {
+      log(`YouTube navigation failed: ${e.message}, continuing without referral`);
     }
   }
 
@@ -810,7 +799,6 @@ process.on('SIGINT', async () => {
       }
     }
   }
-  if (REFERER && PROXY) await page.unroute(`https://vplink.in/${KEY}`).catch(() => {});
   if (!skipMainLoop) await humanDelay(2000, 4000);
   await debugShot('02-after-nav');
 

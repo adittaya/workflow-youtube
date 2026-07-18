@@ -396,99 +396,128 @@ function getRotationIndex(proxies, history) {
   return picked;
 }
 
-// ── Main: get a working proxy (with live test + auto-delete dead) ──
+// ── Main: get a working proxy (batch-by-batch cascade + live test + dead deletion) ──
 async function getProxy(tier = 'premium') {
-  // Fetch all proxies from DB
   console.error('  [Proxy] Fetching proxies from Supabase...');
   const allProxies = await fetchProxies(tier);
   console.error(`  [Proxy] Found ${allProxies.length} ${tier} proxies`);
   if (allProxies.length === 0) return null;
 
-  // Random subset of 100 for fast testing (avoids testing all 500)
-  const subset = allProxies.sort(() => Math.random() - 0.5).slice(0, 100);
-  console.error(`  [Proxy] Testing random subset of ${subset.length}...`);
+  const history = config.loadProxyHistory();
+  const BATCH_SIZE = 100;
+  const QUICK_CONCURRENCY = 30;
 
-  const alive = [];
-  const dead = [];
-  let completed = 0;
-  const concurrency = 15;
+  // Shuffle all proxies once
+  const shuffled = allProxies.sort(() => Math.random() - 0.5);
 
-  for (let i = 0; i < subset.length; i += concurrency) {
-    const batch = subset.slice(i, i + concurrency);
-    const outcomes = await Promise.allSettled(batch.map(async (p) => {
-      // Quick alive test first (fast — 5s timeout)
-      const quick = await testProxyQuick(p, 5000);
-      if (!quick.ok) return { proxy: p, ok: false };
-      // Browser-level test: fetch actual page content (slower — 12s timeout)
-      const browser = await testProxyBrowser(p, 12000);
-      return { proxy: p, ok: browser.ok, latency_ms: browser.latency_ms, protocol: browser.protocol };
-    }));
-    for (const o of outcomes) {
-      if (o.status === 'fulfilled' && o.value.ok) {
-        alive.push({ ...o.value.proxy, latency_ms: o.value.latency_ms, protocol: o.value.protocol });
-      } else {
-        dead.push(batch[outcomes.indexOf(o)] || o.value?.proxy);
-      }
-    }
-    completed += batch.length;
-    process.stderr.write(`  [Proxy] Tested ${completed}/${subset.length} (${alive.length} alive, ${dead.length} dead)\r`);
-  }
-  process.stderr.write('\n');
+  // Process in batches of 100
+  for (let batchStart = 0; batchStart < shuffled.length; batchStart += BATCH_SIZE) {
+    const batch = shuffled.slice(batchStart, batchStart + BATCH_SIZE);
+    const batchNum = Math.floor(batchStart / BATCH_SIZE) + 1;
+    const totalBatches = Math.ceil(shuffled.length / BATCH_SIZE);
+    console.error(`  [Proxy] Batch ${batchNum}/${totalBatches}: testing ${batch.length} proxies...`);
 
-  // Auto-delete dead proxies from DB
-  if (dead.length > 0) {
-    let deleted = 0;
-    for (let i = 0; i < dead.length; i += 50) {
-      const batch = dead.slice(i, i + 50);
-      await Promise.allSettled(batch.filter(Boolean).map(async (p) => {
-        if (await deleteProxy(p.ip, p.port)) deleted++;
-      }));
-    }
-    console.error(`  [Proxy] Auto-deleted ${deleted} dead proxies from DB`);
-  }
-
-  if (alive.length === 0) {
-    console.error('  [Proxy] No alive proxies in subset, testing full pool...');
-    // Fallback: test remaining proxies
-    const remaining = allProxies.filter(p => !subset.some(s => s.ip === p.ip && s.port === p.port));
-    for (let i = 0; i < remaining.length; i += concurrency) {
-      const batch = remaining.slice(i, i + concurrency);
-      const outcomes = await Promise.allSettled(batch.map(async (p) => {
+    // Phase 1: Quick alive test (fast — 5s timeout each)
+    const alive = [];
+    const quickDead = [];
+    let completed = 0;
+    for (let i = 0; i < batch.length; i += QUICK_CONCURRENCY) {
+      const chunk = batch.slice(i, i + QUICK_CONCURRENCY);
+      const outcomes = await Promise.allSettled(chunk.map(async (p) => {
         const quick = await testProxyQuick(p, 5000);
-        if (!quick.ok) return null;
+        return quick.ok ? { ...p, latency_ms: quick.latency_ms } : null;
+      }));
+      for (let j = 0; j < outcomes.length; j++) {
+        const o = outcomes[j];
+        if (o.status === 'fulfilled' && o.value) {
+          alive.push(o.value);
+        } else {
+          quickDead.push(chunk[j]);
+        }
+      }
+      completed += chunk.length;
+      process.stderr.write(`  [Proxy] Quick: ${completed}/${batch.length} (${alive.length} alive, ${quickDead.length} dead)\r`);
+    }
+    process.stderr.write('\n');
+
+    // Delete quick-test dead proxies from DB
+    if (quickDead.length > 0) {
+      let deleted = 0;
+      for (let i = 0; i < quickDead.length; i += 50) {
+        const dBatch = quickDead.slice(i, i + 50);
+        await Promise.allSettled(dBatch.map(async (p) => {
+          if (await deleteProxy(p.ip, p.port)) deleted++;
+        }));
+      }
+      console.error(`  [Proxy] Batch ${batchNum}: deleted ${deleted} dead proxies (quick test failed)`);
+    }
+
+    if (alive.length === 0) {
+      console.error(`  [Proxy] Batch ${batchNum}: no alive proxies, trying next batch...`);
+      continue;
+    }
+
+    console.error(`  [Proxy] Batch ${batchNum}: ${alive.length} alive, running browser test...`);
+
+    // Phase 2: Browser-level test on alive proxies (slower — 12s timeout each)
+    const browserAlive = [];
+    const browserDead = [];
+    let browserCompleted = 0;
+    for (let i = 0; i < alive.length; i += QUICK_CONCURRENCY) {
+      const chunk = alive.slice(i, i + QUICK_CONCURRENCY);
+      const outcomes = await Promise.allSettled(chunk.map(async (p) => {
         const browser = await testProxyBrowser(p, 12000);
         return browser.ok ? { ...p, latency_ms: browser.latency_ms, protocol: browser.protocol } : null;
       }));
-      for (const o of outcomes) {
-        if (o.status === 'fulfilled' && o.value) alive.push(o.value);
+      for (let j = 0; j < outcomes.length; j++) {
+        const o = outcomes[j];
+        if (o.status === 'fulfilled' && o.value) {
+          browserAlive.push(o.value);
+        } else {
+          browserDead.push(chunk[j]);
+        }
       }
-      completed += batch.length;
-      process.stderr.write(`  [Proxy] Tested ${completed}/${allProxies.length} (${alive.length} alive)\r`);
+      browserCompleted += chunk.length;
+      process.stderr.write(`  [Proxy] Browser: ${browserCompleted}/${alive.length} (${browserAlive.length} ok, ${browserDead.length} dead)\r`);
     }
     process.stderr.write('\n');
+
+    // Delete browser-test dead proxies from DB
+    if (browserDead.length > 0) {
+      let deleted = 0;
+      for (let i = 0; i < browserDead.length; i += 50) {
+        const dBatch = browserDead.slice(i, i + 50);
+        await Promise.allSettled(dBatch.map(async (p) => {
+          if (await deleteProxy(p.ip, p.port)) deleted++;
+        }));
+      }
+      console.error(`  [Proxy] Batch ${batchNum}: deleted ${deleted} dead proxies (browser test failed)`);
+    }
+
+    if (browserAlive.length === 0) {
+      console.error(`  [Proxy] Batch ${batchNum}: all alive proxies failed browser test, trying next batch...`);
+      continue;
+    }
+
+    // Sort by latency (faster first), pick from top 30%
+    browserAlive.sort((a, b) => (a.latency_ms || 9999) - (b.latency_ms || 9999));
+    const topN = Math.max(1, Math.ceil(browserAlive.length * 0.3));
+    const shortlist = browserAlive.slice(0, topN);
+
+    const picked = getRotationIndex(shortlist, history);
+    if (!picked) {
+      console.error('  [Proxy] All top proxies used in last 24h, recycling oldest');
+      const fallback = shortlist[Math.floor(Math.random() * Math.min(shortlist.length, 5))];
+      console.error(`  [Proxy] Selected: ${fallback.ip}:${fallback.port} (${fallback.latency_ms}ms)`);
+      return fallback;
+    }
+
+    console.error(`  [Proxy] Selected: ${picked.ip}:${picked.port} (${picked.latency_ms}ms)`);
+    return picked;
   }
 
-  console.error(`  [Proxy] ${alive.length} alive proxies`);
-  if (alive.length === 0) return null;
-
-  // Sort by latency (faster first)
-  alive.sort((a, b) => (a.latency_ms || 9999) - (b.latency_ms || 9999));
-
-  // Random pick from top 30%
-  const topN = Math.max(1, Math.ceil(alive.length * 0.3));
-  const shortlist = alive.slice(0, topN);
-
-  const history = config.loadProxyHistory();
-  const picked = getRotationIndex(shortlist, history);
-  if (!picked) {
-    console.error('  [Proxy] All proxies used in last 24h, recycling oldest');
-    const fallback = shortlist[Math.floor(Math.random() * Math.min(shortlist.length, 5))];
-    console.error(`  [Proxy] Selected: ${fallback.ip}:${fallback.port} (${fallback.latency_ms}ms)`);
-    return fallback;
-  }
-
-  console.error(`  [Proxy] Selected: ${picked.ip}:${picked.port} (${picked.latency_ms}ms)`);
-  return picked;
+  console.error(`  [Proxy] Exhausted all ${Math.ceil(shuffled.length / BATCH_SIZE)} batches — no working proxy found`);
+  return null;
 }
 
 // ── Quick: fetch without live test (DB status only) ──

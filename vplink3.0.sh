@@ -316,16 +316,8 @@ for (( i=1; i<=VIEWS; i++ )); do
   # ── Proxy ─────────────────────────────────────────────
   unset VPLINK_PROXY
   if [ "$PROXY_ENABLED" = "true" ]; then
-    # Check if cache is stale or missing — full scan if needed
-    POOL_AGE=$(node -e "const c=require('$CONFIG_MODULE');const p=c.loadProxyPool();console.log(p.scanned_at||0)" 2>/dev/null || echo 0)
-    NOW_MS=$(date +%s%3N 2>/dev/null || echo 0)
-    AGE_MIN=$(( (NOW_MS - POOL_AGE) / 60000 ))
-    if [ "$POOL_AGE" = "0" ] || [ "$AGE_MIN" -gt 30 ] 2>/dev/null; then
-      info "Scanning all proxies (cache ${AGE_MIN}m old or missing)..."
-      timeout 180 $NODE_BIN "$PROXY_ROTATOR" "$PROXY_TIER" --scan 2>&1 | grep -E "^\s*(║|╚|  \[Scan\])" || true
-    fi
-    info "Fetching proxy from cache..."
-    PROXY_RESULT=$(timeout 10 $NODE_BIN "$PROXY_ROTATOR" "$PROXY_TIER" 2>/dev/null) || true
+    info "Fetching proxy from database..."
+    PROXY_RESULT=$(timeout 120 $NODE_BIN "$PROXY_ROTATOR" "$PROXY_TIER" 2>&1 | tail -1) || true
     if [ -n "$PROXY_RESULT" ]; then
       export VPLINK_PROXY="http://${PROXY_RESULT}"
       ok "Proxy: $VPLINK_PROXY"

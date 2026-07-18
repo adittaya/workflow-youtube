@@ -30,14 +30,6 @@ const reportProxyFailure = async (reason) => {
   if (!PROXY_HOST) return;
   proxyFailures++;
   log(`proxy failure #${proxyFailures}: ${reason} (${PROXY_HOST})`);
-  if (proxyFailures >= 2) {
-    log(`proxy ${PROXY_HOST} failed ${proxyFailures}x, deleting from DB`);
-    const [ip, port] = PROXY_HOST.split(':');
-    if (ip && port) await markDead(ip, parseInt(port));
-  }
-  if (proxyFailures >= 3) {
-    log(`proxy ${PROXY_HOST} failed ${proxyFailures}x, aborting (too many failures)`);
-  }
 };
 
 process.on('SIGINT', async () => {

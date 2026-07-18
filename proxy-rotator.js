@@ -188,8 +188,16 @@ async function getProxy(tier = 'premium') {
   console.error(`  [Engine 1] Found ${allProxies.length} ${tier} proxies in DB`);
   if (allProxies.length === 0) return null;
 
+  // Filter out blacklisted (previously failed) proxies
+  const blacklist = config.loadProxyBlacklist();
+  const proxies = blacklist.length > 0
+    ? allProxies.filter(p => !blacklist.includes(`${p.ip}:${p.port}`))
+    : allProxies;
+  if (blacklist.length > 0) console.error(`  [Engine 1] Blacklist: ${blacklist.length} proxies excluded, ${proxies.length} remaining`);
+  if (proxies.length === 0) return null;
+
   const history = config.loadProxyHistory();
-  const shuffled = allProxies.sort(() => Math.random() - 0.5);
+  const shuffled = proxies.sort(() => Math.random() - 0.5);
 
   // Process in batches of 100 — stop as soon as we find a working proxy
   for (let bStart = 0; bStart < shuffled.length; bStart += BATCH_SIZE) {
@@ -218,16 +226,7 @@ async function getProxy(tier = 'premium') {
     }
     process.stderr.write('\n');
 
-    // Delete dead from DB
-    if (dead.length > 0) {
-      let deleted = 0;
-      for (let i = 0; i < dead.length; i += 50) {
-        const dBatch = dead.slice(i, i + 50);
-        await Promise.allSettled(dBatch.map(async (p) => { if (await deleteProxy(p.ip, p.port)) deleted++; }));
-      }
-      console.error(`  [Engine 1] Batch ${batchNum}: deleted ${deleted} dead from DB`);
-    }
-
+    // Skip dead proxies (don't delete from DB — pool is small, they may recover)
     if (alive.length === 0) {
       console.error(`  [Engine 1] Batch ${batchNum}: no alive proxies, trying next...`);
       continue;
@@ -253,16 +252,6 @@ async function getProxy(tier = 'premium') {
       process.stderr.write(`  [Engine 1] Browser: ${completed}/${alive.length} (${browserAlive.length} ok)\r`);
     }
     process.stderr.write('\n');
-
-    // Delete browser-failed from DB
-    if (browserDead.length > 0) {
-      let deleted = 0;
-      for (let i = 0; i < browserDead.length; i += 50) {
-        const dBatch = browserDead.slice(i, i + 50);
-        await Promise.allSettled(dBatch.map(async (p) => { if (await deleteProxy(p.ip, p.port)) deleted++; }));
-      }
-      console.error(`  [Engine 1] Batch ${batchNum}: deleted ${deleted} more dead (browser failed)`);
-    }
 
     if (browserAlive.length === 0) {
       console.error(`  [Engine 1] Batch ${batchNum}: all alive failed browser test, trying next...`);

@@ -5,6 +5,7 @@ const os = require('os');
 const CONFIG_DIR = path.join(os.homedir(), '.vplink3.0');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 const PROXY_HISTORY_PATH = path.join(CONFIG_DIR, 'proxy_history.json');
+const PROXY_BLACKLIST_PATH = path.join(CONFIG_DIR, 'proxy_blacklist.json');
 
 const DEFAULTS = {
   supabase_url: '',
@@ -55,6 +56,33 @@ function loadProxyHistory() {
 function saveProxyHistory(history) {
   ensureDir();
   fs.writeFileSync(PROXY_HISTORY_PATH, JSON.stringify(history, null, 2), 'utf8');
+}
+
+function loadProxyBlacklist() {
+  try {
+    if (fs.existsSync(PROXY_BLACKLIST_PATH)) {
+      return JSON.parse(fs.readFileSync(PROXY_BLACKLIST_PATH, 'utf8'));
+    }
+  } catch {}
+  return [];
+}
+
+function saveProxyBlacklist(list) {
+  ensureDir();
+  fs.writeFileSync(PROXY_BLACKLIST_PATH, JSON.stringify(list, null, 2), 'utf8');
+}
+
+function addProxyBlacklist(ip, port) {
+  const list = loadProxyBlacklist();
+  const key = `${ip}:${port}`;
+  if (!list.includes(key)) {
+    list.push(key);
+    saveProxyBlacklist(list);
+  }
+}
+
+function clearProxyBlacklist() {
+  saveProxyBlacklist([]);
 }
 
 function isConfigured() {
@@ -168,4 +196,4 @@ function interactiveMenu(cfg) {
   rl.close();
 }
 
-module.exports = { load, save, loadProxyHistory, saveProxyHistory, isConfigured };
+module.exports = { load, save, loadProxyHistory, saveProxyHistory, loadProxyBlacklist, saveProxyBlacklist, addProxyBlacklist, clearProxyBlacklist, isConfigured };

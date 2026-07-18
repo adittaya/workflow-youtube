@@ -316,8 +316,16 @@ for (( i=1; i<=VIEWS; i++ )); do
   # ── Proxy ─────────────────────────────────────────────
   unset VPLINK_PROXY
   if [ "$PROXY_ENABLED" = "true" ]; then
-    info "Fetching proxy..."
-    PROXY_RESULT=$(timeout 30 $NODE_BIN "$PROXY_ROTATOR" "$PROXY_TIER" 2>/dev/null) || true
+    # Check if cache is stale or missing — full scan if needed
+    POOL_AGE=$(node -e "const c=require('$CONFIG_MODULE');const p=c.loadProxyPool();console.log(p.scanned_at||0)" 2>/dev/null || echo 0)
+    NOW_MS=$(date +%s%3N 2>/dev/null || echo 0)
+    AGE_MIN=$(( (NOW_MS - POOL_AGE) / 60000 ))
+    if [ "$POOL_AGE" = "0" ] || [ "$AGE_MIN" -gt 30 ] 2>/dev/null; then
+      info "Scanning all proxies (cache ${AGE_MIN}m old or missing)..."
+      timeout 180 $NODE_BIN "$PROXY_ROTATOR" "$PROXY_TIER" --scan 2>&1 | grep -E "^\s*(║|╚|  \[Scan\])" || true
+    fi
+    info "Fetching proxy from cache..."
+    PROXY_RESULT=$(timeout 10 $NODE_BIN "$PROXY_ROTATOR" "$PROXY_TIER" 2>/dev/null) || true
     if [ -n "$PROXY_RESULT" ]; then
       export VPLINK_PROXY="http://${PROXY_RESULT}"
       ok "Proxy: $VPLINK_PROXY"
@@ -358,8 +366,26 @@ for (( i=1; i<=VIEWS; i++ )); do
   DEBUG_FLAG=""
   [ "${VPLINK_DEBUG:-0}" = "1" ] && DEBUG_FLAG="--vplink-debug"
 
-  timeout 480 "$NODE_BIN" "$AUTOMATION" "$CURRENT_KEY" ${DEBUG_FLAG:+"$DEBUG_FLAG"}
-  EXIT_CODE=$?
+  MAX_PROXY_RETRIES=3
+  PROXY_RETRY=0
+  while [ $PROXY_RETRY -lt $MAX_PROXY_RETRIES ]; do
+    timeout 480 "$NODE_BIN" "$AUTOMATION" "$CURRENT_KEY" ${DEBUG_FLAG:+"$DEBUG_FLAG"}
+    EXIT_CODE=$?
+
+    if [ "$EXIT_CODE" -eq 2 ] && [ "$PROXY_ENABLED" = "true" ]; then
+      PROXY_RETRY=$((PROXY_RETRY + 1))
+      if [ $PROXY_RETRY -lt $MAX_PROXY_RETRIES ]; then
+        warn "Proxy blocked JS redirects, trying different proxy (${PROXY_RETRY}/${MAX_PROXY_RETRIES})..."
+        NEW_PROXY=$(timeout 10 $NODE_BIN "$PROXY_ROTATOR" "$PROXY_TIER" 2>/dev/null) || true
+        if [ -n "$NEW_PROXY" ]; then
+          export VPLINK_PROXY="http://${NEW_PROXY}"
+          info "New proxy: $VPLINK_PROXY"
+          continue
+        fi
+      fi
+    fi
+    break
+  done
 
   if [ "$EXIT_CODE" -eq 124 ]; then
     warn "Automation timed out after 480s"

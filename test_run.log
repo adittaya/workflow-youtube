@@ -1,0 +1,121 @@
+  [5.8s] ==================================================
+  [5.8s] starting funnel for KEY=UbpV2D
+  [5.8s] debug mode active
+  [5.8s] navigating to vplink.in/UbpV2D
+  [7.8s] nav: https://vplink.in/UbpV2D
+  [9.6s] redirect 302 https://vplink.in/cdn-cgi/challenge-platform/scripts/jsd/mai → /cdn-cgi/challenge-platform/h/b/scripts/jsd/3104729c556c/main.js?
+  [10.9s] nav: https://jobskiki.in/studyeducates/studyuniversitiess/?studyinsurance=UbpV2D&uiso=11695
+  [12.2s] nav: https://jobskiki.in/studyeducates/top-universities-in-usa-for-online-mba-with-best-roi-2026/
+  [14.6s] nav: https://jobskiki.in/studyeducates/top-universities-in-usa-for-online-mba-with-best-roi-2026/#/
+  [14.6s] nav: https://jobskiki.in/studyeducates/top-universities-in-usa-for-online-mba-with-best-roi-2026/
+  [16.6s] waiting for auto-redirect...
+  [19.1s] [cycle 1] https://jobskiki.in/studyeducates/top-universities-in-usa-for-online-mba-with-best-roi-2026/
+  [21.1s] article/unknown: https://jobskiki.in/studyeducates/top-universities-in-usa-for-online-mba-with-be
+  [21.1s] article page
+  [23.5s] redirect 302 https://c.clarity.ms/c.gif → https://c.bing.com/c.gif?ctsa=mr&CtsSyncId=829F0DF56B384D5BB29DEFBFE18
+  [25.4s] redirect 302 https://c.bing.com/c.gif?ctsa=mr&CtsSyncId=829F0DF56B384D5BB → https://c.clarity.ms/c.gif?ctsa=mr&CtsSyncId=829F0DF56B384D5BB29DEFBFE
+  [26.7s] no buttons yet — waiting for popup (up to 60s)...
+  [49.8s] popup appeared after 22s, clicking #continueBtn
+  [54.7s] nav: https://jobskiki.in/studyeducates/top-universities-in-usa-for-online-mba-with-best-roi-2026/#goog_rewarded
+  [55.7s] navigated after popup click
+  [55.7s] [cycle 2] https://jobskiki.in/studyeducates/top-universities-in-usa-for-online-mba-with-best-roi-2026/#goog_rewarded
+  [56.8s] article/unknown: https://jobskiki.in/studyeducates/top-universities-in-usa-for-online-mba-with-be
+  [56.8s] article page
+  [57.2s] console: Attestation check for Attribution Reporting on https://ad.doubleclick.net failed.
+  [57.2s] console: Attestation check for Attribution Reporting on https://ad.doubleclick.net failed.
+  [62.0s] no buttons yet — waiting for popup (up to 60s)...
+  [123.3s] exhausted, force-navigating to vplink.in
+  [124.0s] nav: https://vplink.in/UbpV2D
+  [125.9s] nav: https://jobskiki.in/studyeducates/studyuniversitiess/?studyinsurance=UbpV2D&uiso=11695
+  [126.7s] nav: https://jobskiki.in/studyeducates/top-universities-in-usa-for-online-mba-with-best-roi-2026/
+  [128.0s] nav: https://jobskiki.in/studyeducates/top-universities-in-usa-for-online-mba-with-best-roi-2026/#/
+  [128.0s] nav: https://jobskiki.in/studyeducates/top-universities-in-usa-for-online-mba-with-best-roi-2026/
+  [128.4s] [cycle 3] https://jobskiki.in/studyeducates/top-universities-in-usa-for-online-mba-with-best-roi-2026/
+  [129.3s] article/unknown: https://jobskiki.in/studyeducates/top-universities-in-usa-for-online-mba-with-be
+  [129.3s] article page
+  [135.3s] console: Attestation check for Attribution Reporting on https://ad.doubleclick.net failed.
+  [135.6s] no buttons yet — waiting for popup (up to 60s)...
+  [136.2s] console: Attestation check for Attribution Reporting on https://ad.doubleclick.net failed.
+  [136.6s] redirect 302 https://ups.analytics.yahoo.com/ups/58269/sync?_origin=1&gdp → https://ups.analytics.yahoo.com/ups/58269/sync?_origin=1&gdpr=0&redir=
+  [136.9s] redirect 302 https://ups.analytics.yahoo.com/ups/58269/sync?_origin=1&gdp → https://cm.g.doubleclick.net/pixel?google_nid=oath_dbm&google_hm=eS0uM
+  [137.0s] console: Attestation check for Attribution Reporting on https://ad.doubleclick.net failed.
+  [137.1s] console: Attestation check for Attribution Reporting on https://ad.doubleclick.net failed.
+  [137.4s] console: Attestation check for Attribution Reporting on https://ad.doubleclick.net failed.
+  [137.5s] console: Attestation check for Attribution Reporting on https://ad.doubleclick.net failed.
+  [198.3s] exhausted, force-navigating to vplink.in
+  [199.0s] nav: https://vplink.in/UbpV2D
+  [200.5s] nav: https://jobskiki.in/studyeducates/studyuniversitiess/?studyinsurance=UbpV2D&uiso=11695
+  [201.5s] nav: https://jobskiki.in/studyeducates/top-universities-in-usa-for-online-mba-with-best-roi-2026/
+  [202.4s] nav: https://jobskiki.in/studyeducates/top-universities-in-usa-for-online-mba-with-best-roi-2026/#/
+  [202.4s] nav: https://jobskiki.in/studyeducates/top-universities-in-usa-for-online-mba-with-best-roi-2026/
+  [203.0s] [cycle 4] https://jobskiki.in/studyeducates/top-universities-in-usa-for-online-mba-with-best-roi-2026/
+  [204.2s] article/unknown: https://jobskiki.in/studyeducates/top-universities-in-usa-for-online-mba-with-be
+  [204.2s] article page
+  [209.3s] console: Attestation check for Attribution Reporting on https://ad.doubleclick.net failed.
+  [209.8s] console: Attestation check for Attribution Reporting on https://ad.doubleclick.net failed.
+  [209.9s] console: Attestation check for Attribution Reporting on https://ad.doubleclick.net failed.
+  [210.0s] console: Attestation check for Attribution Reporting on https://ad.doubleclick.net failed.
+  [212.3s] console: Attestation check for Attribution Reporting on https://ad.doubleclick.net failed.
+  [212.5s] no buttons yet — waiting for popup (up to 60s)...
+  [276.4s] exhausted, force-navigating to vplink.in
+  [277.4s] nav: https://vplink.in/UbpV2D
+  [280.4s] nav: https://jobskiki.in/studyeducates/studyuniversitiess/?studyinsurance=UbpV2D&uiso=11695
+  [281.6s] nav: https://jobskiki.in/studyeducates/best-medical-insurance-for-international-students-in-australia-2026/
+  [282.2s] nav: https://jobskiki.in/studyeducates/best-medical-insurance-for-international-students-in-australia-2026/#/
+  [282.2s] nav: https://jobskiki.in/studyeducates/best-medical-insurance-for-international-students-in-australia-2026/
+  [282.6s] [cycle 5] https://jobskiki.in/studyeducates/best-medical-insurance-for-international-students-in-australia-2026/
+  [285.4s] article/unknown: https://jobskiki.in/studyeducates/best-medical-insurance-for-international-stude
+  [285.4s] article page
+  [294.2s] console: Attestation check for Attribution Reporting on https://ad.doubleclick.net failed.
+  [294.3s] console: Attestation check for Attribution Reporting on https://ad.doubleclick.net failed.
+  [295.1s] no buttons yet — waiting for popup (up to 60s)...
+  [297.1s] console: Attestation check for Attribution Reporting on https://ad.doubleclick.net failed.
+  [297.6s] console: Attestation check for Attribution Reporting on https://ad.doubleclick.net failed.
+  [297.7s] console: Attestation check for Attribution Reporting on https://ad.doubleclick.net failed.
+  [298.7s] console: Attestation check for Attribution Reporting on https://ad.doubleclick.net failed.
+  [317.7s] popup appeared after 18s, clicking #continueBtn
+  [320.9s] nav: https://jobskiki.in/studyeducates/best-medical-insurance-for-international-students-in-australia-2026/#goog_rewarded
+  [321.1s] navigated after popup click
+  [321.1s] [cycle 6] https://jobskiki.in/studyeducates/best-medical-insurance-for-international-students-in-australia-2026/#goog_re
+  [322.0s] console: Attestation check for Attribution Reporting on https://ad.doubleclick.net failed.
+  [323.1s] article/unknown: https://jobskiki.in/studyeducates/best-medical-insurance-for-international-stude
+  [323.1s] article page
+  [326.9s] no buttons yet — waiting for popup (up to 60s)...
+  [388.2s] exhausted, force-navigating to vplink.in
+  [389.5s] nav: https://vplink.in/UbpV2D
+  [393.7s] nav: https://jobskiki.in/studyeducates/studyuniversitiess/?studyinsurance=UbpV2D&uiso=11695
+  [395.3s] nav: https://jobskiki.in/studyeducates/apply-for-mba-in-usa-2026-complete-admission-and-funding-guide/
+  [396.0s] [cycle 7] https://jobskiki.in/studyeducates/apply-for-mba-in-usa-2026-complete-admission-and-funding-guide/
+  [396.2s] nav: https://jobskiki.in/studyeducates/apply-for-mba-in-usa-2026-complete-admission-and-funding-guide/#/
+  [396.2s] nav: https://jobskiki.in/studyeducates/apply-for-mba-in-usa-2026-complete-admission-and-funding-guide/
+  [397.3s] article/unknown: https://jobskiki.in/studyeducates/apply-for-mba-in-usa-2026-complete-admission-a
+  [397.3s] article page
+  [401.1s] no buttons yet — waiting for popup (up to 60s)...
+  [432.1s] popup appeared after 25s, clicking #continueBtn
+  [435.0s] nav: https://jobskiki.in/studyeducates/apply-for-mba-in-usa-2026-complete-admission-and-funding-guide/#goog_rewarded
+  [435.8s] navigated after popup click
+  [435.8s] [cycle 8] https://jobskiki.in/studyeducates/apply-for-mba-in-usa-2026-complete-admission-and-funding-guide/#goog_rewarde
+  [437.4s] article/unknown: https://jobskiki.in/studyeducates/apply-for-mba-in-usa-2026-complete-admission-a
+  [437.4s] article page
+  [441.3s] no buttons yet — waiting for popup (up to 60s)...
+  [503.2s] exhausted, force-navigating to vplink.in
+  [506.2s] nav: https://vplink.in/UbpV2D
+  [508.6s] nav: https://jobskiki.in/studyeducates/studyuniversitiess/?studyinsurance=UbpV2D&uiso=11695
+  [509.7s] nav: https://jobskiki.in/studyeducates/top-universities-in-usa-for-online-mba-with-best-roi-2026/
+  [510.1s] nav: https://jobskiki.in/studyeducates/top-universities-in-usa-for-online-mba-with-best-roi-2026/#/
+  [510.1s] nav: https://jobskiki.in/studyeducates/top-universities-in-usa-for-online-mba-with-best-roi-2026/
+  [510.7s] [cycle 9] https://jobskiki.in/studyeducates/top-universities-in-usa-for-online-mba-with-best-roi-2026/
+  [511.5s] article/unknown: https://jobskiki.in/studyeducates/top-universities-in-usa-for-online-mba-with-be
+  [511.5s] article page
+  [518.5s] no buttons yet — waiting for popup (up to 60s)...
+  [521.5s] console: Attestation check for Attribution Reporting on https://ad.doubleclick.net failed.
+  [524.1s] console: Attestation check for Attribution Reporting on https://ad.doubleclick.net failed.
+  [584.7s] exhausted, force-navigating to vplink.in
+  [586.2s] nav: https://vplink.in/UbpV2D
+  [588.3s] nav: https://jobskiki.in/studyeducates/studyuniversitiess/?studyinsurance=UbpV2D&uiso=11695
+  [589.4s] nav: https://jobskiki.in/studyeducates/top-universities-in-usa-for-online-mba-with-best-roi-2026/
+  [590.7s] [cycle 10] https://jobskiki.in/studyeducates/top-universities-in-usa-for-online-mba-with-best-roi-2026/
+  [590.9s] nav: https://jobskiki.in/studyeducates/top-universities-in-usa-for-online-mba-with-best-roi-2026/#/
+  [590.9s] nav: https://jobskiki.in/studyeducates/top-universities-in-usa-for-online-mba-with-best-roi-2026/
+  [593.5s] article/unknown: https://jobskiki.in/studyeducates/top-universities-in-usa-for-online-mba-with-be
+  [593.5s] article page

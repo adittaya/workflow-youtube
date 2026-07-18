@@ -851,7 +851,16 @@ process.on('SIGINT', async () => {
 
     // ── Google Ads reward page (#goog_rewarded) — ad didn't redirect ──
     if (url.includes('#goog_rewarded')) {
+      const articleUrl = url.split('#')[0];
+      // If same article hit #goog_rewarded before, report proxy failure and break
+      if (lastStuckArticle === articleUrl) {
+        log('same article stuck on #goog_rewarded again — proxy blocked');
+        proxyBlocked = true;
+        if (PROXY) await reportProxyFailure('goog-rewarded-stuck');
+        break;
+      }
       googRewardRetries++;
+      lastStuckArticle = articleUrl;
       log('#goog_rewarded detected in main loop, ad did not redirect');
       await dumpDOM('goog-rewarded');
       if (googRewardRetries > MAX_GOOG_REWARD_RETRIES) {

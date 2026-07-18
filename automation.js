@@ -944,12 +944,13 @@ process.on('SIGINT', async () => {
       if (!redirected) {
         intermediateStuckCount++;
         log(`intermediate page not redirecting (stuck #${intermediateStuckCount})`);
-        if (intermediateStuckCount >= 3) {
-          log('intermediate stuck 3x — force-navigating to vplink.in');
+        if (intermediateStuckCount >= 2) {
+          log('intermediate stuck 2x — proxy blocking JS redirects on intermediate page');
+          if (PROXY) await reportProxyFailure('intermediate-stuck');
+          proxyBlocked = true;
           intermediateStuckCount = 0;
           lastBase = '';
-          await page.goto(`https://vplink.in/${KEY}`, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch(() => {});
-          await humanDelay(3000, 5000);
+          break;
         }
       } else {
         intermediateStuckCount = 0;
@@ -972,8 +973,8 @@ process.on('SIGINT', async () => {
     }
   }
 
-  // ── Final fallback ──
-  if (!destinationUrl) {
+  // ── Final fallback (skip if proxy already blocked) ──
+  if (!destinationUrl && !proxyBlocked) {
     log('running final fallback...');
     let gotDest = false;
 

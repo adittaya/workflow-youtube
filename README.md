@@ -8,7 +8,7 @@ Automated vplink.in funnel — runs views in rotation, captures final destinatio
 curl -fsSL https://raw.githubusercontent.com/adittaya/VPLINK-3.0/main/install.sh | bash
 ```
 
-Works on: **Ubuntu**, **Debian**, **Fedora**, **RHEL**, **Arch**, **openSUSE**, **Alpine**, **Termux** (Android).
+Works on: **Ubuntu**, **Debian**, **Fedora**, **RHEL**, **Arch**, **openSUSE**, **Alpine**, **macOS**, and **Termux** (Android).
 
 After install, just run:
 
@@ -18,7 +18,7 @@ vplink3.0
 
 ## What it does
 
-1. Installs system dependencies (Xvfb, x11vnc, Playwright libs — or Chromium on Termux)
+1. Installs the required Playwright/Chromium dependencies
 2. Installs Node.js 20+ if missing
 3. Clones the repo to `~/vplink3.0`
 4. Installs npm packages & Playwright Chromium browser
@@ -33,9 +33,9 @@ vplink3.0
 Prompts for:
 - **vplink key** — the key from vplink.in URL
 - **views** — how many times to run
-- **VNC** — optional display viewer (skipped on Termux)
+- optional profile settings
 
-Results saved to `destination_url_*.txt`.
+Each invocation stores results in `results/<timestamp-pid>/`, preserving results from earlier runs.
 
 ## Manual setup
 

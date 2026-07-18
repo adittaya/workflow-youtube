@@ -22,7 +22,7 @@ const urlBase = u => { try { const x = new URL(u); return x.origin + x.pathname;
 const safeEval = (fn, ...a) => { try { return page.evaluate(fn, ...a).catch(() => null); } catch { return null; } };
 
 let proxyFailures = 0;
-let proxyBlocked = false; // Set true when proxy blocks JS redirects
+let proxyBlocked = false;
 const PROXY = process.env.VPLINK_PROXY || '';
 const PROXY_HOST = PROXY.replace(/^https?:\/\//, '').replace(/:\d+$/, '');
 
@@ -135,7 +135,7 @@ process.on('SIGINT', async () => {
 
   const DEST_PATTERNS = ['12indiaplay.com', 'vv53243', 'casino', 'one-',
     'apkmirror.com', 'play.google.com', 'download', '.apk', 'one-vv',
-    'capecutapk.com', 'amazingbaba.com'];
+    'capecutapk.com', 'amazingbaba.com', 'wistfulseverely.com'];
 
   const isDestination = url => {
     if (!url || !url.startsWith('http')) return false;
@@ -146,8 +146,18 @@ process.on('SIGINT', async () => {
     return false;
   };
 
+  // ── Ad domain detection ──
+  // golaso.org hijacks pages via Google Ads. Must detect and navigate back.
+  const AD_DOMAINS = ['golaso.org', 'doubleclick.net', 'googlesyndication.com', 'googleadservices.com'];
+  const isAdDomain = url => {
+    if (!url || !url.startsWith('http')) return false;
+    for (const d of AD_DOMAINS) {
+      if (url.includes(d)) return true;
+    }
+    return false;
+  };
+
   // ── Template detection ──
-  // Returns: 'tp' | 'ce' | 'link1s' | 'unknown'
   const detectTemplate = async () => {
     const result = await safeEval(() => {
       if (document.getElementById('tp-time') || document.getElementById('tp-wait1')) return 'tp';
@@ -159,8 +169,6 @@ process.on('SIGINT', async () => {
   };
 
   // ── Get countdown seconds remaining ──
-  // Returns: positive number = seconds left, 0 = done, -1 = element not found
-  // IMPORTANT: parseInt on empty/non-numeric text returns NaN → treat as "timer not ready yet" (-1)
   const getCountdown = async () => {
     const result = await safeEval(() => {
       const tpTime = document.getElementById('tp-time');
@@ -183,8 +191,26 @@ process.on('SIGINT', async () => {
     return result ?? -1;
   };
 
+  // ── Close ad overlay ──
+  // Recording showed #block-cont-1 > div:nth-child(1) "X" button on every article page
+  const closeAdOverlay = async () => {
+    const closed = await safeEval(() => {
+      const el = document.querySelector('#block-cont-1 > div:nth-child(1)');
+      if (!el) return false;
+      const style = getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+      if (el.getClientRects().length === 0) return false;
+      el.click();
+      return true;
+    });
+    if (closed) {
+      log('closed ad overlay');
+      await humanDelay(300, 800);
+    }
+    return closed;
+  };
+
   // ── Handle bot-detection popup (#continueBtn) ──
-  // Returns 'popup' if popup was clicked, 'rewarded' if we landed on #goog_rewarded, false otherwise
   const handlePopup = async () => {
     const popupVisible = await safeEval(() => {
       const el = document.getElementById('continueBtn');
@@ -197,7 +223,6 @@ process.on('SIGINT', async () => {
 
     log('popup detected, clicking...');
     await humanDelay(500, 1500);
-    // Popup has CSS pulse animation — force click to bypass stability wait
     try {
       await page.locator('#continueBtn').click({ force: true, timeout: 5000 });
     } catch {
@@ -205,7 +230,6 @@ process.on('SIGINT', async () => {
     }
     await humanDelay(1000, 2000);
 
-    // Check if we landed on #goog_rewarded (Google Ads reward page)
     if (safeURL().includes('#goog_rewarded')) {
       log('landed on #goog_rewarded, waiting for ad to complete...');
       return 'rewarded';
@@ -213,48 +237,154 @@ process.on('SIGINT', async () => {
     return true;
   };
 
+  // ── Handle #goog_rewarded ad page ──
+  // Recording showed: #goog_rewarded hash appears, video ad plays,
+  // user clicks skip button on #google-rewarded-video, then ad completes.
+  // Timeout 90s — recording showed ads take 30-60s to show skip button.
+  const handleGoogRewarded = async () => {
+    log('handling #goog_rewarded ad...');
+
+    // Wait up to 90s for the ad to complete and redirect
+    for (let w = 0; w < 90; w++) {
+      await ms(1000);
+      const cur = safeURL();
+
+      // Check if ad redirected us away from #goog_rewarded
+      if (!cur.includes('#goog_rewarded') && !isAdDomain(cur)) {
+        log(`ad completed, redirected to: ${cur.substring(0, 100)}`);
+        return true;
+      }
+
+      // Try to click skip button if visible (every 3s)
+      if (w % 3 === 0) {
+        const skipped = await safeEval(() => {
+          // Try Skip button on video ad
+          const skipBtns = document.querySelectorAll(
+            '#google-rewarded-video .rewardDialogueWrapper button, ' +
+            '#google-rewarded-video .videoAdUiSkipButton, ' +
+            '.videoAdUiSkipButton, ' +
+            '[class*="skip" i], ' +
+            '.reward-overlay button, ' +
+            '#skip-button, ' +
+            'button[aria-label*="Skip" i]'
+          );
+          for (const btn of skipBtns) {
+            const style = getComputedStyle(btn);
+            if (style.display !== 'none' && style.visibility !== 'hidden' && btn.offsetParent !== null) {
+              btn.click();
+              return true;
+            }
+          }
+          // Also try the X close button
+          const closeBtn = document.querySelector('#google-rewarded-video > button');
+          if (closeBtn && closeBtn.offsetParent !== null) {
+            closeBtn.click();
+            return true;
+          }
+          return false;
+        });
+        if (skipped) log('clicked skip/close button on ad');
+      }
+
+      // Check if timer is still counting (LINK1S case — #goog_rewarded appeared but
+      // the article timer is still running underneath). If countdown is still active
+      // and approaching 0, the ad may just be an overlay.
+      if (w % 5 === 0) {
+        const remaining = await getCountdown();
+        if (remaining === 0 || remaining === -1) {
+          // Timer done or gone — ad may have auto-completed
+          log('countdown finished while on #goog_rewarded, clearing hash');
+          await safeEval(() => {
+            history.replaceState(null, '', window.location.pathname + window.location.search);
+          });
+          await humanDelay(500, 1000);
+          if (!safeURL().includes('#goog_rewarded')) {
+            log('hash cleared, no longer on #goog_rewarded');
+            return true;
+          }
+        }
+      }
+    }
+
+    log('#goog_rewarded ad did not complete in 90s');
+    // Try clearing the hash fragment as last resort
+    await safeEval(() => {
+      if (window.location.hash) {
+        history.replaceState(null, '', window.location.pathname + window.location.search);
+      }
+    });
+    await humanDelay(1000, 2000);
+    return safeURL().includes('#goog_rewarded') ? false : true;
+  };
+
   // ── Wait for countdown to finish ──
   const waitForCountdown = async (template, maxWaitSec) => {
-    const maxIter = maxWaitSec * 2; // check every 500ms
+    const maxIter = maxWaitSec * 2;
     for (let i = 0; i < maxIter; i++) {
       const remaining = await getCountdown();
-      if (remaining === 0) return 'done';       // timer reached 0
-      // remaining === -1 means element not found or timer not ready yet — keep waiting
+      if (remaining === 0) return 'done';
+      if (remaining === -1 && i > 4) return 'done'; // Timer element gone after initial load = done
 
       // Handle popup that may appear during countdown
       if (i % 4 === 0) {
+        await closeAdOverlay();
         const popupResult = await handlePopup();
         if (popupResult === 'rewarded') return 'rewarded';
       }
 
-      // Occasional scroll to look natural
       if (i % 10 === 0) await humanScroll();
-
       await ms(500);
     }
     return false;
   };
 
-  // ── Template A (TP): tp-time countdown → tp-snp2 ──
+  // ── Detect ad hijack (golaso.org etc.) and navigate back ──
+  const checkAdHijack = async () => {
+    const url = safeURL();
+    if (isAdDomain(url) && !url.includes('vplink.in')) {
+      log(`AD HIJACK detected: ${url.substring(0, 80)}, navigating back...`);
+      await page.goBack({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(async () => {
+        // goBack failed, force navigate to vplink.in
+        log('goBack failed, force-navigating to vplink.in');
+        lastBase = '';
+        await page.goto(`https://vplink.in/${KEY}`, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch(() => {});
+      });
+      await humanDelay(2000, 4000);
+      return true;
+    }
+    return false;
+  };
+
+  // ── Template A (TP): tp-time countdown → #continueBtn → #goog_rewarded → tp-snp2 ──
   const handleTP = async () => {
     log('template: TP (tp-time countdown)');
 
-    // Wait for countdown (up to 30s — timer starts at ~23, popup appears at ~6s remaining)
-    const countdownResult = await waitForCountdown('tp', 30);
+    // Close ad overlay first (recording showed it on every page)
+    await closeAdOverlay();
 
-    // If popup landed us on #goog_rewarded during countdown, return immediately
+    // Wait for countdown (up to 40s — timer starts at ~23, popup appears at ~6s remaining)
+    const countdownResult = await waitForCountdown('tp', 40);
+
     if (countdownResult === 'rewarded') {
       log('popup sent us to #goog_rewarded during countdown');
-      return 'rewarded';
+      await handleGoogRewarded();
+      // After ad completes, try clicking tp-snp2
+      await humanDelay(500, 1500);
+      const clicked = await humanClick('#tp-snp2');
+      if (clicked) log('clicked tp-snp2 after rewarded ad');
+      return true;
     }
 
     if (countdownResult !== 'done') log('TP countdown timeout, trying button anyway');
 
-    // Popup may appear near end of countdown (after countdown finishes)
+    // Popup may appear near end of countdown
     const popupResult = await handlePopup();
     if (popupResult === 'rewarded') {
-      log('on #goog_rewarded after countdown, waiting for ad redirect...');
-      return 'rewarded';
+      log('on #goog_rewarded after countdown, waiting for ad...');
+      await handleGoogRewarded();
+      await humanDelay(500, 1500);
+      await humanClick('#tp-snp2');
+      return true;
     }
 
     await humanDelay(500, 1500);
@@ -263,7 +393,7 @@ process.on('SIGINT', async () => {
     const clicked = await humanClick('#tp-snp2');
     if (!clicked) {
       // Fallback: find anchor with learn_more.php href
-      const altClicked = await safeEval(() => {
+      await safeEval(() => {
         const links = document.querySelectorAll('a');
         for (const a of links) {
           if (a.href && a.href.includes('learn_more.php') && a.offsetParent !== null) {
@@ -273,10 +403,6 @@ process.on('SIGINT', async () => {
         }
         return false;
       });
-      if (!altClicked) {
-        // Last resort: text click
-        await clickText('Continue');
-      }
     }
     return true;
   };
@@ -285,17 +411,20 @@ process.on('SIGINT', async () => {
   const handleCE = async () => {
     log('template: CE (ce-time countdown)');
 
-    // Wait for countdown (up to 30s — timer starts at ~20)
-    const countdownResult = await waitForCountdown('ce', 30);
+    await closeAdOverlay();
+
+    // Wait for countdown (up to 40s — timer starts at ~23)
+    const countdownResult = await waitForCountdown('ce', 40);
     if (countdownResult === 'rewarded') {
       log('popup sent us to #goog_rewarded during CE countdown');
-      return 'rewarded';
+      await handleGoogRewarded();
+      return true;
     }
     if (countdownResult !== 'done') log('CE countdown timeout, trying buttons anyway');
 
     await humanDelay(500, 1500);
 
-    // Click #btn6 (Verify) first — may trigger navigation OR just hide itself
+    // Click #btn6 (Verify) first
     const startUrl = safeURL();
     const btn6Clicked = await humanClick('#btn6');
     if (btn6Clicked) {
@@ -307,7 +436,6 @@ process.on('SIGINT', async () => {
           log('btn6 triggered navigation');
           return true;
         }
-        // Check if btn7 became visible (btn6 just hid itself)
         const btn7Visible = await safeEval(() => {
           const el = document.querySelector('#btn7 > button');
           if (!el) return false;
@@ -321,17 +449,18 @@ process.on('SIGINT', async () => {
 
     // Click #btn7 > button (Continue)
     const btn7Clicked = await humanClick('#btn7 > button');
-    if (!btn7Clicked) {
-      // Fallback: click #btn7 directly
-      await humanClick('#btn7');
-    }
+    if (!btn7Clicked) await humanClick('#btn7');
     log('clicked btn7 (Continue)');
     return true;
   };
 
   // ── Template C (LINK1S): startCountdownBtn → countdown → cross-snp2 ──
+  // Recording showed: click #startCountdownBtn → #goog_rewarded appears immediately →
+  // timer continues counting underneath → skip ad → timer reaches 0 → #cross-snp2 appears
   const handleLINK1S = async () => {
     log('template: LINK1S (startCountdownBtn)');
+
+    await closeAdOverlay();
 
     // Click #startCountdownBtn to start the countdown
     const started = await humanClick('#startCountdownBtn');
@@ -340,12 +469,21 @@ process.on('SIGINT', async () => {
       await humanDelay(500, 1000);
     }
 
-    // Wait for countdown (up to 25s — timer resets to 14s after click)
-    const countdownResult = await waitForCountdown('link1s', 25);
+    // #goog_rewarded may appear immediately after clicking startCountdownBtn
+    const curUrl = safeURL();
+    if (curUrl.includes('#goog_rewarded')) {
+      log('#goog_rewarded appeared after startCountdownBtn click, handling ad...');
+      await handleGoogRewarded();
+      await humanDelay(500, 1500);
+    }
+
+    // Wait for countdown (up to 30s — timer resets to ~14s after click)
+    const countdownResult = await waitForCountdown('link1s', 30);
 
     if (countdownResult === 'rewarded') {
       log('popup sent us to #goog_rewarded during LINK1S countdown');
-      return 'rewarded';
+      await handleGoogRewarded();
+      await humanDelay(500, 1500);
     }
 
     if (countdownResult !== 'done') log('LINK1S countdown timeout, trying button anyway');
@@ -375,7 +513,6 @@ process.on('SIGINT', async () => {
     log('template: UNKNOWN — trying all known buttons');
     await humanDelay(3000, 5000);
 
-    // Try each button in priority order
     const buttons = [
       '#tp-snp2', '#cross-snp2', '#btn6',
       '#btn7 > button', '#btn7',
@@ -384,6 +521,7 @@ process.on('SIGINT', async () => {
     ];
 
     for (const sel of buttons) {
+      await closeAdOverlay();
       await handlePopup();
       const visible = await safeEval(s => {
         const el = document.querySelector(s);
@@ -398,7 +536,6 @@ process.on('SIGINT', async () => {
         await humanClick(sel);
         await humanDelay(1000, 2000);
 
-        // Wait for navigation
         const startUrl = safeURL();
         for (let w = 0; w < 15; w++) {
           await ms(1000);
@@ -407,7 +544,6 @@ process.on('SIGINT', async () => {
       }
     }
 
-    // Text-based fallback
     for (const txt of ['Continue', 'Verify', 'Get Link']) {
       if (await clickText(txt)) {
         await humanDelay(1000, 2000);
@@ -424,15 +560,15 @@ process.on('SIGINT', async () => {
     await debugShot('article-start');
     const startUrl = safeURL();
 
-    // Initial settle — let page load and JS initialize
+    // Initial settle
     await humanDelay(2000, 4000);
     await humanScroll();
+    await closeAdOverlay();
 
     // Detect template by DOM structure (NOT by domain)
     const template = await detectTemplate();
     log(`detected template: ${template}`);
 
-    // Debug: dump DOM + screenshot when template is unknown
     if (template === 'unknown') {
       await dumpDOM(`unknown-${Date.now()}`);
     }
@@ -454,51 +590,31 @@ process.on('SIGINT', async () => {
         break;
     }
 
-    // Special case: TP popup sent us to #goog_rewarded (Google Ads reward page)
-    // Don't click anything — wait for the ad to complete and auto-redirect
-    if (navigated === 'rewarded') {
-      log('waiting for #goog_rewarded ad to complete...');
-      const rewardedBase = urlBase(safeURL());
-      for (let w = 0; w < 15; w++) {
-        await ms(1000);
-        const cur = safeURL();
-        const curBase = urlBase(cur);
-        if (!cur.includes('#goog_rewarded') && curBase !== rewardedBase) {
-          log(`ad completed, redirected to: ${cur.substring(0, 100)}`);
-          return true;
-        }
-      }
-      log('#goog_rewarded ad did not redirect in 15s');
-      // Try clearing the hash fragment
-      await safeEval(() => {
-        if (window.location.hash) {
-          history.replaceState(null, '', window.location.pathname + window.location.search);
-        }
-      });
-      await humanDelay(1000, 2000);
-      return false;
-    }
-
     // Wait for navigation after button click
     if (navigated) {
-      const startUrl = safeURL();
-      const startBase = urlBase(startUrl);
+      const waitStart = safeURL();
+      const waitBase = urlBase(waitStart);
       for (let w = 0; w < 20; w++) {
         await ms(1000);
         const cur = safeURL();
         const curBase = urlBase(cur);
-        if (cur !== startUrl && curBase !== startBase) {
+        if (cur !== waitStart && curBase !== waitBase) {
           log(`navigated to: ${cur.substring(0, 100)}`);
           return true;
         }
+        // Detect ad hijack during navigation wait
+        if (isAdDomain(cur)) {
+          log(`ad hijack during nav wait: ${cur.substring(0, 80)}`);
+          await page.goBack({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+          await humanDelay(2000, 4000);
+          return true;
+        }
       }
-      // Check if URL changed at all (even same domain — page may have reloaded)
       const finalUrl = safeURL();
       if (finalUrl !== startUrl) {
         log(`page changed: ${finalUrl.substring(0, 100)}`);
         return true;
       }
-      // Buttons were clicked but page stayed the same — let main loop re-evaluate
       log('buttons clicked but no URL change detected, continuing');
       return true;
     }
@@ -507,9 +623,10 @@ process.on('SIGINT', async () => {
   };
 
   // ── Get Link handler ──
+  // Recording showed: #get-link href already contains destination URL (apkmirror.com/...)
+  // Click opens new tab → tracking redirects → final destination
   const doGetLink = async () => {
     try {
-      // Close leftover popups
       for (const p of context.pages()) {
         if (p !== page) { try { await p.close(); } catch {} }
       }
@@ -517,7 +634,7 @@ process.on('SIGINT', async () => {
       const btn = await page.waitForSelector('#get-link', { timeout: 40000 }).catch(() => null);
       if (!btn) return false;
 
-      // Capture href before clicking
+      // Capture href BEFORE clicking — recording showed it already has the destination
       const linkHref = await btn.evaluate(el => el.href).catch(() => '');
 
       // Wait for countdown completion (disabled class removal)
@@ -531,7 +648,6 @@ process.on('SIGINT', async () => {
       const countdownElapsed = Date.now() - t0;
       if (countdownElapsed > 500) log(`get-link countdown: ${countdownElapsed}ms`);
 
-      // Human-like delay before clicking
       await humanDelay(800, 2000);
       await humanMouseMove('#get-link');
       await humanDelay(300, 700);
@@ -555,12 +671,13 @@ process.on('SIGINT', async () => {
             popupUrl = newTab.url();
           } catch { newTab = null; }
           if (popupUrl && !popupUrl.includes('about:blank') && !popupUrl.includes('chrome-error')) {
-            // If URL is a redirect wrapper, wait for it to resolve to final destination
+            // If URL is a redirect wrapper, wait for it to resolve
             const isRedirect = popupUrl.includes('linkedin.com/redir') || popupUrl.includes('google.com/url')
-              || popupUrl.includes('facebook.com/l.php') || popupUrl.includes('t.co/');
+              || popupUrl.includes('facebook.com/l.php') || popupUrl.includes('t.co/')
+              || popupUrl.includes('wistfulseverely.com');
             if (isRedirect) {
               log(`redirect wrapper detected, waiting for final URL...`);
-              for (let r = 0; r < 15; r++) {
+              for (let r = 0; r < 20; r++) {
                 await ms(1000);
                 try {
                   const newUrl = newTab.url();
@@ -599,6 +716,7 @@ process.on('SIGINT', async () => {
         }
       }
 
+      // Fallback: use href captured before clicking
       if (linkHref && linkHref.startsWith('http')) {
         destinationUrl = linkHref;
         log(`destination (href): ${linkHref.substring(0,100)}`);
@@ -607,7 +725,9 @@ process.on('SIGINT', async () => {
         if (wait > 500) { log(`tracking wait: ${wait}ms`); await ms(wait); }
         return true;
       }
-    } catch {}
+    } catch (error) {
+      log(`get-link handler failed: ${error.message || 'unknown error'}`);
+    }
     return false;
   };
 
@@ -622,7 +742,6 @@ process.on('SIGINT', async () => {
   const REFERER = process.env.VPLINK_REFERER || '';
   if (REFERER) {
     if (PROXY) {
-      // Proxy blocks YouTube HTTPS — set Referer header on vplink.in request instead
       const refererOrigin = new URL(REFERER).origin;
       log(`setting YouTube Referer via header: ${refererOrigin} (proxy bypass)`);
       await page.route(`https://vplink.in/${KEY}`, (route, request) => {
@@ -648,7 +767,6 @@ process.on('SIGINT', async () => {
   log(`navigating to vplink.in/${KEY}`);
   await debugShot('01-start');
 
-  // Hard timeout wrapper: if page.goto hangs (broken proxy), abort after 30s
   const hardGoto = async (url, opts) => {
     const gotoPromise = page.goto(url, opts);
     const abortPromise = new Promise((_, reject) => {
@@ -680,24 +798,22 @@ process.on('SIGINT', async () => {
       }
     }
   }
-  // Clean up Referer route after vplink.in navigation
   if (REFERER && PROXY) await page.unroute(`https://vplink.in/${KEY}`).catch(() => {});
   if (!skipMainLoop) await humanDelay(2000, 4000);
   await debugShot('02-after-nav');
 
-  // Skip redirect/CF detection if proxy already blocked during goto
   if (!skipMainLoop) {
 
-  // Wait for auto-redirect (vplink.in JS redirects to article page)
+  // Wait for auto-redirect
   log('waiting for auto-redirect...');
-  const redirectWait = PROXY ? 15 : 30; // Shorter with proxy (detect bad proxy faster)
+  const redirectWait = PROXY ? 15 : 30;
   for (let i = 0; i < redirectWait; i++) {
     await ms(1000);
     if (!safeURL().includes('vplink.in')) break;
   }
   await debugShot('03-after-redirect');
 
-  // Handle Cloudflare challenge if still on vplink.in
+  // Handle Cloudflare challenge
   for (let attempt = 0; attempt < 2; attempt++) {
     const url = safeURL();
     if (!url.includes('vplink.in') || url.includes('cdn-cgi')) break;
@@ -715,7 +831,7 @@ process.on('SIGINT', async () => {
     log(`waiting for page content (attempt ${attempt + 1})...`);
 
     let loaded = false;
-    const cfWait = PROXY ? 20 : 40; // Shorter with proxy
+    const cfWait = PROXY ? 20 : 40;
     for (let i = 0; i < cfWait; i++) {
       await ms(1000);
       if (!safeURL().includes('vplink.in')) { loaded = true; break; }
@@ -730,21 +846,20 @@ process.on('SIGINT', async () => {
     } else break;
   }
 
-  // Check if we're stuck on vplink.in — proxy may be blocking JS redirects
+  // Check stuck on vplink.in
   if (safeURL().includes('vplink.in') && !safeURL().includes('cdn-cgi')) {
     const hasGl = await safeEval(() => !!document.getElementById('get-link'));
     if (!hasGl && PROXY) {
       log('stuck on vplink.in — proxy may be blocking JS redirects');
       proxyBlocked = true;
       await reportProxyFailure('vplink-no-redirect');
-      // Skip to final fallback — main loop won't help
       skipMainLoop = true;
     }
   }
 
-  } // end if (!skipMainLoop) — redirect/CF detection block
+  } // end if (!skipMainLoop)
 
-  // ── DOM dump helper (debug) ──
+  // ── DOM dump helper ──
   const dumpDOM = async (label) => {
     if (!DEBUG) return;
     const dir = path.join(__dirname, 'screenshots');
@@ -761,40 +876,66 @@ process.on('SIGINT', async () => {
   let intermediateStuckCount = 0;
   let lastBase = '';
   let googRewardRetries = 0;
-  let forceNavCount = 0;
-  let lastStuckArticle = ''; // Track which article we got stuck on
-  const MAX_GOOG_REWARD_RETRIES = 2;
-  const MAX_URL_VISITS = 2; // Abort if same URL seen this many times
-  const urlVisits = {}; // Track how many times each URL is visited
+  let adHijackCount = 0;
+  let lastStuckArticle = '';
+  const MAX_GOOG_REWARD_RETRIES = 3;
+  const MAX_URL_VISITS = 4; // Recording showed 4 articles is normal
+  const MAX_AD_HIJACKS = 5; // Allow multiple ad hijacks before giving up
+  const urlVisits = {};
 
-  for (let cycle = 0; cycle < 25 && !destinationUrl && !skipMainLoop; cycle++) {
+  for (let cycle = 0; cycle < 30 && !destinationUrl && !skipMainLoop; cycle++) {
     const url = safeURL();
     if (!url) { await ms(2000); continue; }
     const base = urlBase(url);
 
+    // Check for ad hijack first
+    if (await checkAdHijack()) {
+      adHijackCount++;
+      if (adHijackCount > MAX_AD_HIJACKS) {
+        log(`too many ad hijacks (${adHijackCount}), proxy likely injecting ads`);
+        if (PROXY) await reportProxyFailure('too-many-ad-hijacks');
+        proxyBlocked = true;
+        break;
+      }
+      lastBase = '';
+      continue;
+    }
+
     // Track URL visit count for stuck-loop detection
-    // Skip vplink.in (needs multiple cycles for countdown)
-    // Skip intermediate/routing pages (learn_more.php, studieseducates, intermediates)
-    const urlKey = url.split('#')[0]; // Normalize without hash
+    const urlKey = url.split('#')[0];
     const isIntermediate = url.includes('learn_more.php') || url.includes('studieseducates')
       || url.includes('studiiessuniversitiess') || url.includes('universitesstudiiess');
     if (!url.includes('vplink.in') && !isIntermediate) {
       urlVisits[urlKey] = (urlVisits[urlKey] || 0) + 1;
       if (urlVisits[urlKey] >= MAX_URL_VISITS) {
-        forceNavCount++;
         lastStuckArticle = urlKey;
-        log(`STUCK: same article visited ${urlVisits[urlKey]} times (force-nav #${forceNavCount}), proxy likely blocking redirects`);
+        log(`STUCK: same article visited ${urlVisits[urlKey]} times, force-navigating`);
         if (PROXY) await reportProxyFailure('article-stuck-loop');
-        proxyBlocked = true;
-        break;
+        lastBase = '';
+        await page.goto(`https://vplink.in/${KEY}`, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch(() => {});
+        await humanDelay(3000, 5000);
+        continue;
       }
     }
 
-    // Skip hash-only changes (e.g. #goog_rewarded on same article page)
+    // Skip hash-only changes (#goog_rewarded etc.)
     if (base === lastBase && url.includes('#')) {
-      log(`[cycle ${cycle + 1}] hash-only change (${url.split('#')[1]}), waiting for real navigation...`);
+      const hash = url.split('#')[1];
+      log(`[cycle ${cycle + 1}] hash-only change (${hash}), waiting...`);
+
+      // Handle #goog_rewarded hash
+      if (hash === 'goog_rewarded') {
+        await handleGoogRewarded();
+        await humanDelay(500, 1500);
+        // After ad, try to continue
+        const clicked = await humanClick('#tp-snp2') || await humanClick('#cross-snp2');
+        if (clicked) log('clicked button after #goog_rewarded ad');
+        await humanDelay(1000, 2000);
+        lastBase = urlBase(safeURL());
+        continue;
+      }
+
       await humanDelay(3000, 5000);
-      // Wait for real navigation away from this page
       for (let w = 0; w < 8; w++) {
         await ms(1000);
         const cur = safeURL();
@@ -803,9 +944,8 @@ process.on('SIGINT', async () => {
           break;
         }
       }
-      // If still on same hash after waiting, force-navigate
       if (urlBase(safeURL()) === base) {
-        log('still stuck on same page after hash wait, force-navigating');
+        log('still stuck on same page after hash wait, navigating to vplink.in');
         lastBase = '';
         await page.goto(`https://vplink.in/${KEY}`, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch(() => {});
         await humanDelay(3000, 5000);
@@ -846,7 +986,7 @@ process.on('SIGINT', async () => {
       }
 
       if (btnState === 'missing' || btnState === null) {
-        if (vplinkArrivals >= 3) {
+        if (vplinkArrivals >= 5) {
           log('stuck on vplink.in with no article page — proxy blocking JS redirects');
           proxyBlocked = true;
           if (PROXY) await reportProxyFailure('vplink-get-link-missing');
@@ -870,45 +1010,29 @@ process.on('SIGINT', async () => {
       continue;
     }
 
-    // ── Google Ads reward page (#goog_rewarded) — ad didn't redirect ──
+    // ── #goog_rewarded in main loop ──
     if (url.includes('#goog_rewarded')) {
-      const articleUrl = url.split('#')[0];
-      // If same article hit #goog_rewarded before, report proxy failure and break
-      if (lastStuckArticle === articleUrl) {
-        log('same article stuck on #goog_rewarded again — proxy blocked');
-        proxyBlocked = true;
-        if (PROXY) await reportProxyFailure('goog-rewarded-stuck');
-        break;
-      }
       googRewardRetries++;
-      lastStuckArticle = articleUrl;
-      log('#goog_rewarded detected in main loop, ad did not redirect');
-      await dumpDOM('goog-rewarded');
+      log(`#goog_rewarded in main loop (attempt ${googRewardRetries})`);
       if (googRewardRetries > MAX_GOOG_REWARD_RETRIES) {
-        log(`#goog_rewarded stuck after ${googRewardRetries} retries, force-navigating to vplink.in`);
+        log(`#goog_rewarded stuck after ${googRewardRetries} retries, force-navigating`);
         googRewardRetries = 0;
         lastBase = '';
         await page.goto(`https://vplink.in/${KEY}`, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch(() => {});
         await humanDelay(3000, 5000);
         continue;
       }
-      // Try reloading the article without the hash fragment
-      const cleanUrl = url.split('#')[0];
-      log(`reloading without hash: ${cleanUrl.substring(0, 80)}`);
-      lastBase = '';
-      await page.goto(cleanUrl, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch(() => {});
-      await humanDelay(3000, 5000);
-      // If we're back on the same article (without hash), treat it fresh
-      if (!safeURL().includes('#goog_rewarded')) {
-        log('reloaded article without hash, treating as fresh page');
+      const rewardedOk = await handleGoogRewarded();
+      if (rewardedOk) {
+        await humanDelay(500, 1500);
+        const clicked = await humanClick('#tp-snp2') || await humanClick('#cross-snp2');
+        if (clicked) log('clicked button after #goog_rewarded');
       }
+      lastBase = urlBase(safeURL());
       continue;
     }
 
-    // ── Article / unknown page ──
-    log(`article/unknown: ${url.substring(0,80)}`);
-
-    // Skip intermediate redirect pages (learn_more.php, intermediate domains)
+    // ── Intermediate redirect pages ──
     if (url.includes('learn_more.php') || url.includes('studieseducates')
       || url.includes('studiiessuniversitiess') || url.includes('universitesstudiiess')) {
       log('intermediate redirect page, waiting for auto-redirect...');
@@ -928,8 +1052,8 @@ process.on('SIGINT', async () => {
       if (!redirected) {
         intermediateStuckCount++;
         log(`intermediate page not redirecting (stuck #${intermediateStuckCount})`);
-        if (intermediateStuckCount >= 2) {
-          log('intermediate stuck 2x — proxy blocking JS redirects on intermediate page');
+        if (intermediateStuckCount >= 3) {
+          log('intermediate stuck 3x — forcing');
           if (PROXY) await reportProxyFailure('intermediate-stuck');
           proxyBlocked = true;
           intermediateStuckCount = 0;
@@ -939,11 +1063,11 @@ process.on('SIGINT', async () => {
       } else {
         intermediateStuckCount = 0;
       }
-      // Re-check URL after wait — page may have redirected again
       lastBase = urlBase(safeURL());
       continue;
     }
 
+    // ── Article / unknown page ──
     const navigated = await handleArticle();
     if (!navigated) {
       log('exhausted, force-navigating to vplink.in');
@@ -957,7 +1081,7 @@ process.on('SIGINT', async () => {
     }
   }
 
-  // ── Final fallback (skip if proxy already blocked) ──
+  // ── Final fallback ──
   if (!destinationUrl && !proxyBlocked) {
     log('running final fallback...');
     let gotDest = false;
@@ -1007,6 +1131,9 @@ process.on('SIGINT', async () => {
   if (destinationUrl) fs.writeFileSync(path.join(__dirname, 'destination_url.txt'), destinationUrl);
   await ms(2000);
   await browser.close().catch(() => {});
-  // Exit code: 0 = success or no proxy issue, 2 = proxy blocked JS (caller should retry)
-  if (proxyBlocked && !destinationUrl) process.exit(2);
-})();
+  process.exit(destinationUrl ? 0 : (proxyBlocked ? 2 : 3));
+})().catch(async (error) => {
+  console.error(`Fatal automation error: ${error.message || error}`);
+  if (browser) await browser.close().catch(() => {});
+  process.exit(1);
+});

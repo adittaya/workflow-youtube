@@ -51,8 +51,39 @@ is_termux() {
 if is_termux; then TERMUX=1; else TERMUX=0; fi
 
 # ── Config helpers ─────────────────────────────────────
-cfg_get() { $NODE_BIN "$CONFIG_MODULE" --get "$1" 2>/dev/null; }
-cfg_set() { $NODE_BIN "$CONFIG_MODULE" --set "$1" "$2" 2>/dev/null; }
+cfg_get() { "$NODE_BIN" "$CONFIG_MODULE" --get "$1" 2>/dev/null; }
+cfg_set() { "$NODE_BIN" "$CONFIG_MODULE" --set "$1" "$2" 2>/dev/null; }
+
+# GNU timeout is not available on a default macOS installation. Use it when
+# present, otherwise apply a Bash-based timeout with the same 124 status.
+run_with_timeout() {
+  local seconds="$1"
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$seconds" "$@"
+    return $?
+  fi
+  if command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$seconds" "$@"
+    return $?
+  fi
+
+  "$@" &
+  local child_pid=$!
+  local elapsed=0
+  while kill -0 "$child_pid" 2>/dev/null; do
+    if [ "$elapsed" -ge "$seconds" ]; then
+      kill -TERM "$child_pid" 2>/dev/null || true
+      sleep 2
+      kill -KILL "$child_pid" 2>/dev/null || true
+      wait "$child_pid" 2>/dev/null || true
+      return 124
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  wait "$child_pid"
+}
 
 # ════════════════════════════════════════════════════════
 #  PROCESS TRACKING & CLEANUP
@@ -103,10 +134,6 @@ trap 'on_signal TERM' SIGTERM
 
 deep_cleanup() {
   local cleaned=0
-  # Destination files
-  for f in "$SCRIPT_DIR"/destination_url_*.txt "$SCRIPT_DIR/destination_url.txt"; do
-    [ -f "$f" ] && rm -f "$f" && cleaned=$((cleaned + 1))
-  done
   # Debug captures
   for f in "$SCRIPT_DIR"/debug_*.png "$SCRIPT_DIR"/debug_*.html; do
     [ -f "$f" ] && rm -f "$f" && cleaned=$((cleaned + 1))
@@ -160,27 +187,27 @@ echo ""
 
 # ── 1. Link / Key ──────────────────────────────────────
 DEFAULT_INPUT="${SAVED_KEY:-}"
-read -p "Enter vplink URL or key [${DEFAULT_INPUT}]: " INPUT
+read -r -p "Enter vplink URL or key [${DEFAULT_INPUT}]: " INPUT
 INPUT="${INPUT:-$DEFAULT_INPUT}"
 # Strip protocol + domain, trailing slash, query params, fragments
 KEY=$(echo "$INPUT" | sed 's|https\?://vplink.in/||' | sed 's|[/?#].*||' | xargs)
 while [ -z "$KEY" ]; do
-  read -p "Key cannot be empty. Enter vplink URL or key: " INPUT
+  read -r -p "Key cannot be empty. Enter vplink URL or key: " INPUT
   KEY=$(echo "$INPUT" | sed 's|https\?://vplink.in/||' | sed 's|[/?#].*||' | xargs)
 done
 cfg_set "last_key" "$KEY"
 
 # ── 2. Multiple URLs ──────────────────────────────────
 MULTI_URLS=""
-read -p "Use multiple vplink URLs (random rotation)? (y/N): " MULTI_CHOICE
+read -r -p "Use multiple vplink URLs (random rotation)? (y/N): " MULTI_CHOICE
 if [[ "$MULTI_CHOICE" =~ ^[yY] ]]; then
-  read -p "Enter all URLs/keys (comma-separated): " MULTI_INPUT
+  read -r -p "Enter all URLs/keys (comma-separated): " MULTI_INPUT
   MULTI_URLS=$(echo "$MULTI_INPUT" | xargs)
   cfg_set "random_urls" "$MULTI_URLS"
 fi
 
 # ── 3. Views ───────────────────────────────────────────
-read -p "How many views? (${SAVED_VIEWS}): " VIEWS
+read -r -p "How many views? (${SAVED_VIEWS}): " VIEWS
 VIEWS="${VIEWS:-$SAVED_VIEWS}"
 [[ ! "$VIEWS" =~ ^[0-9]+$ ]] || [ "$VIEWS" -eq 0 ] && VIEWS=$SAVED_VIEWS
 cfg_set "views" "$VIEWS"
@@ -192,11 +219,11 @@ if [ -z "$PROXY_ENABLED" ] || [ "$PROXY_ENABLED" = "false" ]; then
 else
   PROXY_DEFAULT="y"
 fi
-read -p "Enable proxy rotation? (y/N) [${PROXY_DEFAULT}]: " PROXY_CHOICE
+read -r -p "Enable proxy rotation? (y/N) [${PROXY_DEFAULT}]: " PROXY_CHOICE
 PROXY_CHOICE="${PROXY_CHOICE:-$PROXY_DEFAULT}"
 if [[ "$PROXY_CHOICE" =~ ^[yY] ]]; then
   PROXY_ENABLED="true"
-  read -p "Proxy tier? (normal/premium) [${SAVED_TIER:-premium}]: " PROXY_TIER
+  read -r -p "Proxy tier? (normal/premium) [${SAVED_TIER:-premium}]: " PROXY_TIER
   PROXY_TIER="${PROXY_TIER:-${SAVED_TIER:-premium}}"
   cfg_set "proxy_enabled" true
   cfg_set "proxy_tier" "$PROXY_TIER"
@@ -212,7 +239,7 @@ if [ -z "$YT_ENABLED" ] || [ "$YT_ENABLED" = "false" ]; then
 else
   YT_DEFAULT="y"
 fi
-read -p "Simulate YouTube traffic source? (y/N) [${YT_DEFAULT}]: " YT_CHOICE
+read -r -p "Simulate YouTube traffic source? (y/N) [${YT_DEFAULT}]: " YT_CHOICE
 YT_CHOICE="${YT_CHOICE:-$YT_DEFAULT}"
 if [[ "$YT_CHOICE" =~ ^[yY] ]]; then
   YT_ENABLED="true"
@@ -229,7 +256,7 @@ if [ -z "$MOBILE_ENABLED" ] || [ "$MOBILE_ENABLED" = "false" ]; then
 else
   MOB_DEFAULT="y"
 fi
-read -p "Use random mobile profile per view? (y/N) [${MOB_DEFAULT}]: " MOB_CHOICE
+read -r -p "Use random mobile profile per view? (y/N) [${MOB_DEFAULT}]: " MOB_CHOICE
 MOB_CHOICE="${MOB_CHOICE:-$MOB_DEFAULT}"
 if [[ "$MOB_CHOICE" =~ ^[yY] ]]; then
   MOBILE_ENABLED="true"
@@ -270,7 +297,7 @@ fi
 echo -e "${BOLD}╚══════════════════════════════════════════════╝${NC}"
 echo ""
 
-read -p "Proceed? (Y/n): " CONFIRM
+read -r -p "Proceed? (Y/n): " CONFIRM
 [[ "$CONFIRM" =~ ^[nN] ]] && { echo "Aborted."; exit 0; }
 echo ""
 
@@ -283,6 +310,10 @@ export VPLINK_TERMUX="$TERMUX"
 
 TOTAL_OK=0
 TOTAL_FAIL=0
+RUN_ID="$(date '+%Y%m%d-%H%M%S')-$$"
+RESULTS_DIR="$SCRIPT_DIR/results/$RUN_ID"
+mkdir -p "$RESULTS_DIR"
+deep_cleanup
 
 for (( i=1; i<=VIEWS; i++ )); do
   echo -e "${BOLD}══════════════════════════════════════════════${NC}"
@@ -292,7 +323,7 @@ for (( i=1; i<=VIEWS; i++ )); do
 
   # ── Clean previous iteration ──────────────────────────
   full_cleanup
-  deep_cleanup
+  rm -f "$SCRIPT_DIR/destination_url.txt"
   sleep 1
 
   # ── Pick key ──────────────────────────────────────────
@@ -317,7 +348,7 @@ for (( i=1; i<=VIEWS; i++ )); do
   unset VPLINK_PROXY
   if [ "$PROXY_ENABLED" = "true" ]; then
     info "Testing all proxies (clean + speed)..."
-    PROXY_RESULT=$(timeout 120 $NODE_BIN "$PROXY_ROTATOR" "$PROXY_TIER" | tail -1) || true
+    PROXY_RESULT=$(run_with_timeout 120 "$NODE_BIN" "$PROXY_ROTATOR" "$PROXY_TIER" | tail -1) || true
     if [ -n "$PROXY_RESULT" ]; then
       export VPLINK_PROXY="http://${PROXY_RESULT}"
       ok "Proxy: $VPLINK_PROXY"
@@ -358,25 +389,26 @@ for (( i=1; i<=VIEWS; i++ )); do
   DEBUG_FLAG=""
   [ "${VPLINK_DEBUG:-0}" = "1" ] && DEBUG_FLAG="--vplink-debug"
 
-  timeout 480 "$NODE_BIN" "$AUTOMATION" "$CURRENT_KEY" ${DEBUG_FLAG:+"$DEBUG_FLAG"}
+  run_with_timeout 480 "$NODE_BIN" "$AUTOMATION" "$CURRENT_KEY" ${DEBUG_FLAG:+"$DEBUG_FLAG"}
   EXIT_CODE=$?
-
-  if [ "$EXIT_CODE" -eq 124 ]; then
-    warn "Automation timed out after 480s"
-    TOTAL_FAIL=$((TOTAL_FAIL + 1))
-  elif [ "$EXIT_CODE" -ne 0 ]; then
-    warn "View $i failed (exit $EXIT_CODE), skipping..."
-    TOTAL_FAIL=$((TOTAL_FAIL + 1))
-  fi
 
   # ── Save result ───────────────────────────────────────
   if [ -f "$SCRIPT_DIR/destination_url.txt" ]; then
     DEST=$(cat "$SCRIPT_DIR/destination_url.txt")
-    mv "$SCRIPT_DIR/destination_url.txt" "$SCRIPT_DIR/destination_url_${i}.txt"
+    mv "$SCRIPT_DIR/destination_url.txt" "$RESULTS_DIR/destination_url_${i}.txt"
     ok "Result $i: $DEST"
     TOTAL_OK=$((TOTAL_OK + 1))
   else
-    warn "No destination URL captured for view $i"
+    TOTAL_FAIL=$((TOTAL_FAIL + 1))
+    if [ "$EXIT_CODE" -eq 124 ]; then
+      warn "View $i timed out after 480s"
+    elif [ "$EXIT_CODE" -eq 2 ]; then
+      warn "View $i could not complete (blocked/unavailable path)"
+    elif [ "$EXIT_CODE" -eq 3 ]; then
+      warn "View $i completed without a destination URL"
+    else
+      warn "View $i failed (exit $EXIT_CODE)"
+    fi
   fi
   echo ""
 done
@@ -391,8 +423,8 @@ echo -e "${BOLD}═════════════════════�
 
 RESULTS=()
 for (( i=1; i<=VIEWS; i++ )); do
-  if [ -f "$SCRIPT_DIR/destination_url_${i}.txt" ]; then
-    URL=$(cat "$SCRIPT_DIR/destination_url_${i}.txt")
+  if [ -f "$RESULTS_DIR/destination_url_${i}.txt" ]; then
+    URL=$(cat "$RESULTS_DIR/destination_url_${i}.txt")
     echo "  View $i: $URL"
     RESULTS+=("$URL")
   fi
@@ -406,5 +438,6 @@ if [ ${#RESULTS[@]} -gt 0 ]; then
 else
   echo "  No destinations captured."
 fi
+echo "  Failed: $TOTAL_FAIL / $VIEWS"
 echo ""
-echo "Results saved in $SCRIPT_DIR/destination_url_*.txt"
+echo "Results saved in $RESULTS_DIR"

@@ -22,7 +22,22 @@ const DEFAULTS = {
 
 function ensureDir() {
   if (!fs.existsSync(CONFIG_DIR)) {
-    fs.mkdirSync(CONFIG_DIR, { recursive: true });
+    fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+  }
+  // Config files may contain credentials. Tighten an existing directory too.
+  try { fs.chmodSync(CONFIG_DIR, 0o700); } catch {}
+}
+
+function writeJsonSecurely(filePath, value) {
+  ensureDir();
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(tempPath, JSON.stringify(value, null, 2), { encoding: 'utf8', mode: 0o600 });
+    fs.renameSync(tempPath, filePath);
+    try { fs.chmodSync(filePath, 0o600); } catch {}
+  } catch (error) {
+    try { fs.unlinkSync(tempPath); } catch {}
+    throw error;
   }
 }
 
@@ -37,10 +52,9 @@ function load() {
 }
 
 function save(config) {
-  ensureDir();
   const existing = load();
   const merged = { ...existing, ...config };
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(merged, null, 2), 'utf8');
+  writeJsonSecurely(CONFIG_PATH, merged);
   return merged;
 }
 
@@ -54,8 +68,7 @@ function loadProxyHistory() {
 }
 
 function saveProxyHistory(history) {
-  ensureDir();
-  fs.writeFileSync(PROXY_HISTORY_PATH, JSON.stringify(history, null, 2), 'utf8');
+  writeJsonSecurely(PROXY_HISTORY_PATH, history);
 }
 
 function loadProxyBlacklist() {
@@ -68,8 +81,7 @@ function loadProxyBlacklist() {
 }
 
 function saveProxyBlacklist(list) {
-  ensureDir();
-  fs.writeFileSync(PROXY_BLACKLIST_PATH, JSON.stringify(list, null, 2), 'utf8');
+  writeJsonSecurely(PROXY_BLACKLIST_PATH, list);
 }
 
 function addProxyBlacklist(ip, port) {

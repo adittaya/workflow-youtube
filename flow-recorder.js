@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 const KEY = process.argv[2] || 'UbpV2D';
-const RECORDING_DIR = path.join(__dirname, 'recording_' + new Date().toISOString().replace(/[:.]/g, '-'));
+const RECORDING_DIR = path.join(__dirname, 'recordings', 'recording_' + new Date().toISOString().replace(/[:.]/g, '-'));
 const SCREENSHOTS_DIR = path.join(RECORDING_DIR, 'screenshots');
 const SNAPSHOTS_DIR = path.join(RECORDING_DIR, 'snapshots');
 const NETWORK_LOG = path.join(RECORDING_DIR, 'network.jsonl');

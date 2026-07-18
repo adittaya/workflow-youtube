@@ -11,5 +11,6 @@ summary.json
 screen_recording*
 destination_url_*.txt
 recording_*
+recordings/
 record.js
 record.sh

@@ -563,6 +563,22 @@ process.on('SIGINT', async () => {
             popupUrl = newTab.url();
           } catch { newTab = null; }
           if (popupUrl && !popupUrl.includes('about:blank') && !popupUrl.includes('chrome-error')) {
+            // If URL is a redirect wrapper, wait for it to resolve to final destination
+            const isRedirect = popupUrl.includes('linkedin.com/redir') || popupUrl.includes('google.com/url')
+              || popupUrl.includes('facebook.com/l.php') || popupUrl.includes('t.co/');
+            if (isRedirect) {
+              log(`redirect wrapper detected, waiting for final URL...`);
+              for (let r = 0; r < 15; r++) {
+                await ms(1000);
+                try {
+                  const newUrl = newTab.url();
+                  if (newUrl && newUrl !== popupUrl && !newUrl.includes('about:blank')) {
+                    popupUrl = newUrl;
+                    break;
+                  }
+                } catch { break; }
+              }
+            }
             destinationUrl = popupUrl;
             log(`destination (popup): ${popupUrl.substring(0,100)}`);
             const elapsed = Date.now() - clickTime;
@@ -607,7 +623,8 @@ process.on('SIGINT', async () => {
   log('='.repeat(50));
   log(`starting funnel for KEY=${KEY}`);
   if (DEBUG) log('debug mode active');
-  const navTimeout = process.env.VPLINK_PROXY ? 90000 : 45000;
+  const navTimeout = process.env.VPLINK_PROXY ? 45000 : 45000;
+  let skipMainLoop = false;
 
   // YouTube referral: navigate to YouTube first so browser naturally sets Referer
   const REFERER = process.env.VPLINK_REFERER || '';
@@ -638,27 +655,46 @@ process.on('SIGINT', async () => {
 
   log(`navigating to vplink.in/${KEY}`);
   await debugShot('01-start');
+
+  // Hard timeout wrapper: if page.goto hangs (broken proxy), abort after 30s
+  const hardGoto = async (url, opts) => {
+    const gotoPromise = page.goto(url, opts);
+    const abortPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('hard-timeout')), 30000);
+    });
+    return Promise.race([gotoPromise, abortPromise]);
+  };
+
   try {
-    await page.goto(`https://vplink.in/${KEY}`, { waitUntil: 'domcontentloaded', timeout: navTimeout });
+    await hardGoto(`https://vplink.in/${KEY}`, { waitUntil: 'domcontentloaded', timeout: navTimeout });
   } catch (e) {
     log(`first goto failed: ${e.message}, retrying...`);
-    if (PROXY && (e.message.includes('ERR_TUNNEL') || e.message.includes('ERR_PROXY') || e.message.includes('ERR_CONNECTION'))) {
-      await reportProxyFailure('first-goto-tunnel-error');
+    if (PROXY && !e.message.includes('hard-timeout')) {
+      await reportProxyFailure('first-goto-error');
+    } else if (PROXY && e.message.includes('hard-timeout')) {
+      await reportProxyFailure('first-goto-hang');
+      proxyBlocked = true;
+      skipMainLoop = true;
     }
     await ms(2000);
-    try {
-      await page.goto(`https://vplink.in/${KEY}`, { waitUntil: 'domcontentloaded', timeout: navTimeout });
-    } catch (e2) {
-      log(`second goto failed: ${e2.message}`);
-      if (PROXY && (e2.message.includes('ERR_TUNNEL') || e2.message.includes('ERR_PROXY') || e2.message.includes('ERR_CONNECTION'))) {
-        await reportProxyFailure('second-goto-tunnel-error');
+    if (!skipMainLoop) {
+      try {
+        await hardGoto(`https://vplink.in/${KEY}`, { waitUntil: 'domcontentloaded', timeout: navTimeout });
+      } catch (e2) {
+        log(`second goto failed: ${e2.message}`);
+        if (PROXY) await reportProxyFailure('second-goto-error');
+        proxyBlocked = true;
+        skipMainLoop = true;
       }
     }
   }
   // Clean up Referer route after vplink.in navigation
   if (REFERER && PROXY) await page.unroute(`https://vplink.in/${KEY}`).catch(() => {});
-  await humanDelay(2000, 4000);
+  if (!skipMainLoop) await humanDelay(2000, 4000);
   await debugShot('02-after-nav');
+
+  // Skip redirect/CF detection if proxy already blocked during goto
+  if (!skipMainLoop) {
 
   // Wait for auto-redirect (vplink.in JS redirects to article page)
   log('waiting for auto-redirect...');
@@ -709,8 +745,12 @@ process.on('SIGINT', async () => {
       log('stuck on vplink.in — proxy may be blocking JS redirects');
       proxyBlocked = true;
       await reportProxyFailure('vplink-no-redirect');
+      // Skip to final fallback — main loop won't help
+      skipMainLoop = true;
     }
   }
+
+  } // end if (!skipMainLoop) — redirect/CF detection block
 
   // ── DOM dump helper (debug) ──
   const dumpDOM = async (label) => {
@@ -726,6 +766,7 @@ process.on('SIGINT', async () => {
 
   // ── Main loop ──
   let vplinkArrivals = 0;
+  let intermediateStuckCount = 0;
   let lastBase = '';
   let googRewardRetries = 0;
   let forceNavCount = 0;
@@ -735,7 +776,7 @@ process.on('SIGINT', async () => {
   const urlVisits = {}; // Track how many times each URL is visited
   const MAX_URL_VISITS = 3; // Abort if same URL seen this many times
 
-  for (let cycle = 0; cycle < 25 && !destinationUrl; cycle++) {
+  for (let cycle = 0; cycle < 25 && !destinationUrl && !skipMainLoop; cycle++) {
     const url = safeURL();
     if (!url) { await ms(2000); continue; }
     const base = urlBase(url);
@@ -820,20 +861,14 @@ process.on('SIGINT', async () => {
         continue;
       }
 
-      if (btnState === 'missing') {
+      if (btnState === 'missing' || btnState === null) {
         if (vplinkArrivals >= 3) {
           log('stuck on vplink.in with no article page — proxy blocking JS redirects');
           proxyBlocked = true;
           if (PROXY) await reportProxyFailure('vplink-get-link-missing');
           break;
         }
-        if (vplinkArrivals >= 3) {
-          log('get-link missing for 3+ cycles, reloading');
-          await page.goto(`https://vplink.in/${KEY}`, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch(() => {});
-          await humanDelay(3000, 5000);
-        } else {
-          await ms(2000);
-        }
+        await ms(2000);
         continue;
       }
 
@@ -889,19 +924,35 @@ process.on('SIGINT', async () => {
     // ── Article / unknown page ──
     log(`article/unknown: ${url.substring(0,80)}`);
 
-    // Skip intermediate redirect pages (learn_more.php, studieseducates)
-    if (url.includes('learn_more.php') || url.includes('studieseducates')) {
+    // Skip intermediate redirect pages (learn_more.php, intermediate domains)
+    if (url.includes('learn_more.php') || url.includes('studieseducates')
+      || url.includes('studiiessuniversitiess') || url.includes('universitesstudiiess')) {
       log('intermediate redirect page, waiting for auto-redirect...');
       const intermediateBase = urlBase(url);
+      let redirected = false;
       for (let w = 0; w < 15; w++) {
         await ms(1000);
         const cur = safeURL();
         const curBase = urlBase(cur);
         if (curBase !== intermediateBase && !cur.includes('learn_more.php') && !cur.includes('studieseducates')) {
           log(`redirected to: ${cur.substring(0, 100)}`);
-          await humanDelay(500, 1500); // Let page stabilize
+          await humanDelay(500, 1500);
+          redirected = true;
           break;
         }
+      }
+      if (!redirected) {
+        intermediateStuckCount++;
+        log(`intermediate page not redirecting (stuck #${intermediateStuckCount})`);
+        if (intermediateStuckCount >= 3) {
+          log('intermediate stuck 3x — force-navigating to vplink.in');
+          intermediateStuckCount = 0;
+          lastBase = '';
+          await page.goto(`https://vplink.in/${KEY}`, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch(() => {});
+          await humanDelay(3000, 5000);
+        }
+      } else {
+        intermediateStuckCount = 0;
       }
       // Re-check URL after wait — page may have redirected again
       lastBase = urlBase(safeURL());

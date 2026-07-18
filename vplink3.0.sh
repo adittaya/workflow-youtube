@@ -317,7 +317,7 @@ for (( i=1; i<=VIEWS; i++ )); do
   unset VPLINK_PROXY
   if [ "$PROXY_ENABLED" = "true" ]; then
     info "Testing all proxies (clean + speed)..."
-    PROXY_RESULT=$(timeout 300 $NODE_BIN "$PROXY_ROTATOR" "$PROXY_TIER" 2>/dev/null | tail -1) || true
+    PROXY_RESULT=$(timeout 120 $NODE_BIN "$PROXY_ROTATOR" "$PROXY_TIER" | tail -1) || true
     if [ -n "$PROXY_RESULT" ]; then
       export VPLINK_PROXY="http://${PROXY_RESULT}"
       ok "Proxy: $VPLINK_PROXY"
@@ -368,7 +368,7 @@ for (( i=1; i<=VIEWS; i++ )); do
       PROXY_RETRY=$((PROXY_RETRY + 1))
       if [ $PROXY_RETRY -lt $MAX_PROXY_RETRIES ]; then
         warn "Proxy blocked JS redirects, trying different proxy (${PROXY_RETRY}/${MAX_PROXY_RETRIES})..."
-        NEW_PROXY=$(timeout 10 $NODE_BIN "$PROXY_ROTATOR" "$PROXY_TIER" 2>/dev/null) || true
+        NEW_PROXY=$(timeout 120 $NODE_BIN "$PROXY_ROTATOR" "$PROXY_TIER" 2>/dev/null) || true
         if [ -n "$NEW_PROXY" ]; then
           export VPLINK_PROXY="http://${NEW_PROXY}"
           info "New proxy: $VPLINK_PROXY"

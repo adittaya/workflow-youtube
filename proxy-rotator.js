@@ -22,9 +22,7 @@ async function fetchProxies(tier = 'premium') {
   const field = tier === 'premium' ? 'vplink_ok' : 'e2_ok';
   const url = `/proxy_results?select=ip,port,proto,country,latency_ms&${field}=eq.true&order=latency_ms.asc&limit=500`;
   const resp = await supabaseFetch(url);
-  if (!resp.ok) {
-    throw new Error(`Supabase query failed: ${resp.status} ${await resp.text().catch(() => '')}`);
-  }
+  if (!resp.ok) throw new Error(`Supabase failed: ${resp.status}`);
   return resp.json();
 }
 
@@ -36,21 +34,19 @@ async function deleteProxy(ip, port) {
 
 async function markDead(ip, port) {
   const ok = await deleteProxy(ip, port);
-  if (ok) console.error(`  [Proxy] Deleted dead proxy ${ip}:${port} from DB`);
+  if (ok) console.error(`  [Proxy] Deleted dead ${ip}:${port} from DB`);
   return ok;
 }
 
-// ── Quick alive check: HTTPS CONNECT to vplink.in ──
 async function testProxyQuick(proxy, timeoutMs = 5000) {
   const start = Date.now();
-  const result = await tryConnectQuick(proxy, 'vplink.in', '/gbd1b', timeoutMs);
-  if (result) return { ok: true, latency_ms: Date.now() - start };
-  const httpResult = await tryHttpQuick(proxy, 'vplink.in', '/gbd1b', timeoutMs);
-  if (httpResult) return { ok: true, latency_ms: Date.now() - start };
+  const r = await tryConnectQuick(proxy, 'vplink.in', '/gbd1b', timeoutMs);
+  if (r) return { ok: true, latency_ms: Date.now() - start };
+  const h = await tryHttpQuick(proxy, 'vplink.in', '/gbd1b', timeoutMs);
+  if (h) return { ok: true, latency_ms: Date.now() - start };
   return { ok: false, latency_ms: Date.now() - start };
 }
 
-// ── Browser-level test: fetch actual page through proxy like Chrome ──
 async function testProxyBrowser(proxy, timeoutMs = 12000) {
   const start = Date.now();
   const httpsOk = await tryBrowserConnect(proxy, 'vplink.in', '/gbd1b', timeoutMs);
@@ -68,19 +64,11 @@ function tryBrowserPage(proxy, scheme, host, path, timeoutMs) {
     const req = http.request({
       hostname: proxy.ip, port: parseInt(proxy.port),
       path: url, method: 'GET',
-      headers: {
-        'Host': host,
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 15; Pixel 9 Pro) AppleWebKit/537.36 Chrome/127.0 Mobile Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml',
-        'Accept-Language': 'en-US,en;q=0.9',
-      },
+      headers: { 'Host': host, 'User-Agent': 'Mozilla/5.0 (Linux; Android 15; Pixel 9 Pro) AppleWebKit/537.36 Chrome/127.0 Mobile Safari/537.36', 'Accept': 'text/html' },
       timeout: timeoutMs,
     }, (res) => {
       let data = '';
-      res.on('data', (chunk) => {
-        data += chunk;
-        if (data.length > 500 && !resolved) { resolved = true; clearTimeout(timer); res.destroy(); resolve(true); }
-      });
+      res.on('data', (chunk) => { data += chunk; if (data.length > 500 && !resolved) { resolved = true; clearTimeout(timer); res.destroy(); resolve(true); } });
       res.on('end', () => { if (!resolved) { resolved = true; clearTimeout(timer); resolve(data.length > 100); } });
     });
     req.on('error', () => { if (!resolved) { resolved = true; clearTimeout(timer); resolve(false); } });
@@ -96,8 +84,7 @@ function tryBrowserConnect(proxy, host, path, timeoutMs) {
     const timer = setTimeout(fail, timeoutMs);
     const connReq = http.request({
       hostname: proxy.ip, port: parseInt(proxy.port),
-      method: 'CONNECT', path: host + ':443',
-      timeout: timeoutMs,
+      method: 'CONNECT', path: host + ':443', timeout: timeoutMs,
     });
     connReq.on('connect', (res, socket) => {
       if (resolved) { socket.destroy(); return; }
@@ -128,8 +115,7 @@ function tryConnectQuick(proxy, host, path, timeoutMs) {
     const timer = setTimeout(() => { connReq.destroy(); resolve(false); }, timeoutMs);
     const connReq = http.request({
       hostname: proxy.ip, port: proxy.port,
-      method: 'CONNECT', path: host + ':443',
-      timeout: timeoutMs,
+      method: 'CONNECT', path: host + ':443', timeout: timeoutMs,
     });
     connReq.on('connect', (res, socket) => {
       const sockTimer = setTimeout(() => { socket.destroy(); resolve(false); }, timeoutMs);
@@ -143,9 +129,7 @@ function tryConnectQuick(proxy, host, path, timeoutMs) {
         clearTimeout(sockTimer);
         let data = '';
         tlsRes.on('data', (chunk) => data += chunk);
-        tlsRes.on('end', () => {
-          resolve(tlsRes.statusCode >= 200 && tlsRes.statusCode < 400);
-        });
+        tlsRes.on('end', () => resolve(tlsRes.statusCode >= 200 && tlsRes.statusCode < 400));
       });
       tlsReq.on('error', () => { clearTimeout(sockTimer); resolve(false); });
       tlsReq.on('timeout', () => { clearTimeout(sockTimer); tlsReq.destroy(); resolve(false); });
@@ -181,180 +165,177 @@ function getRotationIndex(proxies, history) {
   const recent = new Set(
     history.used.filter(e => e.timestamp > cutoff).map(e => `${e.ip}:${e.port}`)
   );
-
   const available = proxies.filter(p => !recent.has(`${p.ip}:${p.port}`));
   if (available.length === 0) return null;
-
   const picked = available[Math.floor(Math.random() * available.length)];
-
   history.used.push({ ip: picked.ip, port: picked.port, timestamp: now });
   history.used = history.used.filter(e => e.timestamp > cutoff);
   config.saveProxyHistory(history);
-
   return picked;
 }
 
 // ══════════════════════════════════════════════════════════════════
-// ENGINE 1 (Clean): Fetch ALL → alive test → delete dead from DB
-// ENGINE 2 (Speed): Speed test alive → pick fastest
+// Engine 1 (Clean): Quick alive test batch-by-batch, delete dead from DB
+// Engine 2 (Speed): Browser test + speed test alive, pick fastest
+// Returns FIRST working proxy found — does not test all 500.
 // ══════════════════════════════════════════════════════════════════
 async function getProxy(tier = 'premium') {
   const CONCURRENCY = 50;
+  const BATCH_SIZE = 100;
 
-  // ═══ Engine 1: Fetch + Alive test + Delete dead ═══
-  console.error('  [Engine 1] Fetching ALL proxies from Supabase...');
+  console.error('  [Engine 1] Fetching proxies from Supabase...');
   const allProxies = await fetchProxies(tier);
   console.error(`  [Engine 1] Found ${allProxies.length} ${tier} proxies in DB`);
   if (allProxies.length === 0) return null;
 
+  const history = config.loadProxyHistory();
   const shuffled = allProxies.sort(() => Math.random() - 0.5);
 
-  console.error(`  [Engine 1] Quick alive test (${CONCURRENCY} parallel)...`);
-  const alive = [];
-  const dead = [];
-  let completed = 0;
-  for (let i = 0; i < shuffled.length; i += CONCURRENCY) {
-    const batch = shuffled.slice(i, i + CONCURRENCY);
-    const outcomes = await Promise.allSettled(batch.map(async (p) => {
-      const quick = await testProxyQuick(p, 5000);
-      return quick.ok ? { ...p, latency_ms: quick.latency_ms } : null;
-    }));
-    for (let j = 0; j < outcomes.length; j++) {
-      const o = outcomes[j];
-      if (o.status === 'fulfilled' && o.value) alive.push(o.value);
-      else dead.push(batch[j]);
-    }
-    completed += batch.length;
-    process.stderr.write(`  [Engine 1] Alive: ${completed}/${allProxies.length} (${alive.length} ok, ${dead.length} dead)\r`);
-  }
-  process.stderr.write('\n');
-  console.error(`  [Engine 1] ${alive.length} alive, ${dead.length} dead`);
+  // Process in batches of 100 — stop as soon as we find a working proxy
+  for (let bStart = 0; bStart < shuffled.length; bStart += BATCH_SIZE) {
+    const batch = shuffled.slice(bStart, bStart + BATCH_SIZE);
+    const batchNum = Math.floor(bStart / BATCH_SIZE) + 1;
+    const totalBatches = Math.ceil(shuffled.length / BATCH_SIZE);
 
-  if (dead.length > 0) {
-    let deleted = 0;
-    for (let i = 0; i < dead.length; i += 50) {
-      const batch = dead.slice(i, i + 50);
-      await Promise.allSettled(batch.map(async (p) => {
-        if (await deleteProxy(p.ip, p.port)) deleted++;
+    // ── Engine 1: Quick alive test this batch ──
+    console.error(`  [Engine 1] Batch ${batchNum}/${totalBatches}: alive test (${batch.length} proxies)...`);
+    const alive = [];
+    const dead = [];
+    let completed = 0;
+    for (let i = 0; i < batch.length; i += CONCURRENCY) {
+      const chunk = batch.slice(i, i + CONCURRENCY);
+      const outcomes = await Promise.allSettled(chunk.map(async (p) => {
+        const q = await testProxyQuick(p, 5000);
+        return q.ok ? { ...p, latency_ms: q.latency_ms } : null;
       }));
-      process.stderr.write(`  [Engine 1] Deleted ${deleted}/${dead.length}\r`);
+      for (let j = 0; j < outcomes.length; j++) {
+        const o = outcomes[j];
+        if (o.status === 'fulfilled' && o.value) alive.push(o.value);
+        else dead.push(batch[j]);
+      }
+      completed += chunk.length;
+      process.stderr.write(`  [Engine 1] Alive: ${completed}/${batch.length} (${alive.length} ok, ${dead.length} dead)\r`);
     }
     process.stderr.write('\n');
-    console.error(`  [Engine 1] Purged ${deleted} dead proxies from DB`);
-  }
 
-  if (alive.length === 0) {
-    console.error('  [Engine 1] No alive proxies found');
-    return null;
-  }
-
-  console.error(`  [Engine 1] Browser test (${alive.length} alive)...`);
-  const browserAlive = [];
-  const browserDead = [];
-  completed = 0;
-  for (let i = 0; i < alive.length; i += CONCURRENCY) {
-    const batch = alive.slice(i, i + CONCURRENCY);
-    const outcomes = await Promise.allSettled(batch.map(async (p) => {
-      const browser = await testProxyBrowser(p, 12000);
-      return browser.ok ? { ...p, latency_ms: browser.latency_ms, protocol: browser.protocol } : null;
-    }));
-    for (let j = 0; j < outcomes.length; j++) {
-      const o = outcomes[j];
-      if (o.status === 'fulfilled' && o.value) browserAlive.push(o.value);
-      else browserDead.push(batch[j]);
+    // Delete dead from DB
+    if (dead.length > 0) {
+      let deleted = 0;
+      for (let i = 0; i < dead.length; i += 50) {
+        const dBatch = dead.slice(i, i + 50);
+        await Promise.allSettled(dBatch.map(async (p) => { if (await deleteProxy(p.ip, p.port)) deleted++; }));
+      }
+      console.error(`  [Engine 1] Batch ${batchNum}: deleted ${deleted} dead from DB`);
     }
-    completed += batch.length;
-    process.stderr.write(`  [Engine 1] Browser: ${completed}/${alive.length} (${browserAlive.length} ok, ${browserDead.length} dead)\r`);
-  }
-  process.stderr.write('\n');
 
-  if (browserDead.length > 0) {
-    let deleted = 0;
-    for (let i = 0; i < browserDead.length; i += 50) {
-      const batch = browserDead.slice(i, i + 50);
-      await Promise.allSettled(batch.map(async (p) => {
-        if (await deleteProxy(p.ip, p.port)) deleted++;
+    if (alive.length === 0) {
+      console.error(`  [Engine 1] Batch ${batchNum}: no alive proxies, trying next...`);
+      continue;
+    }
+
+    // ── Engine 2: Browser test + speed test alive proxies ──
+    console.error(`  [Engine 1] Batch ${batchNum}: ${alive.length} alive → browser test...`);
+    const browserAlive = [];
+    const browserDead = [];
+    completed = 0;
+    for (let i = 0; i < alive.length; i += CONCURRENCY) {
+      const chunk = alive.slice(i, i + CONCURRENCY);
+      const outcomes = await Promise.allSettled(chunk.map(async (p) => {
+        const b = await testProxyBrowser(p, 12000);
+        return b.ok ? { ...p, latency_ms: b.latency_ms, protocol: b.protocol } : null;
       }));
+      for (let j = 0; j < outcomes.length; j++) {
+        const o = outcomes[j];
+        if (o.status === 'fulfilled' && o.value) browserAlive.push(o.value);
+        else browserDead.push(batch[j]);
+      }
+      completed += chunk.length;
+      process.stderr.write(`  [Engine 1] Browser: ${completed}/${alive.length} (${browserAlive.length} ok)\r`);
     }
-    console.error(`  [Engine 1] Purged ${deleted} more dead (failed browser test)`);
-  }
-  console.error(`  [Engine 1] ${browserAlive.length} proxies survived`);
+    process.stderr.write('\n');
 
-  if (browserAlive.length === 0) {
-    console.error('  [Engine 1] All dead');
-    return null;
-  }
+    // Delete browser-failed from DB
+    if (browserDead.length > 0) {
+      let deleted = 0;
+      for (let i = 0; i < browserDead.length; i += 50) {
+        const dBatch = browserDead.slice(i, i + 50);
+        await Promise.allSettled(dBatch.map(async (p) => { if (await deleteProxy(p.ip, p.port)) deleted++; }));
+      }
+      console.error(`  [Engine 1] Batch ${batchNum}: deleted ${deleted} more dead (browser failed)`);
+    }
 
-  // ═══ Engine 2: Speed test + Pick fastest ═══
-  console.error(`  [Engine 2] Speed testing ${browserAlive.length} proxies (${CONCURRENCY} parallel)...`);
-  const speedResults = [];
-  completed = 0;
-  for (let i = 0; i < browserAlive.length; i += CONCURRENCY) {
-    const batch = browserAlive.slice(i, i + CONCURRENCY);
-    const outcomes = await Promise.allSettled(batch.map(async (p) => {
-      const start = Date.now();
-      let speed_kbps = 0;
-      try {
-        const total = await new Promise((resolve) => {
-          const req = http.request({
-            hostname: p.ip, port: parseInt(p.port),
-            path: 'http://speedtest.tele2.net/100KB.zip', method: 'GET',
-            headers: { 'Host': 'speedtest.tele2.net' }, timeout: 8000,
-          }, (res) => {
-            let t = 0;
-            res.on('data', (chunk) => t += chunk.length);
-            res.on('end', () => resolve(t));
-            res.on('error', () => resolve(0));
+    if (browserAlive.length === 0) {
+      console.error(`  [Engine 1] Batch ${batchNum}: all alive failed browser test, trying next...`);
+      continue;
+    }
+
+    // ── Engine 2: Speed test ──
+    console.error(`  [Engine 2] Speed testing ${browserAlive.length} proxies...`);
+    const speedResults = [];
+    completed = 0;
+    for (let i = 0; i < browserAlive.length; i += CONCURRENCY) {
+      const chunk = browserAlive.slice(i, i + CONCURRENCY);
+      const outcomes = await Promise.allSettled(chunk.map(async (p) => {
+        const start = Date.now();
+        let speed_kbps = 0;
+        try {
+          const total = await new Promise((resolve) => {
+            const req = http.request({
+              hostname: p.ip, port: parseInt(p.port),
+              path: 'http://speedtest.tele2.net/100KB.zip', method: 'GET',
+              headers: { 'Host': 'speedtest.tele2.net' }, timeout: 8000,
+            }, (res) => {
+              let t = 0;
+              res.on('data', (chunk) => t += chunk.length);
+              res.on('end', () => resolve(t));
+              res.on('error', () => resolve(0));
+            });
+            req.on('error', () => resolve(0));
+            req.on('timeout', () => { req.destroy(); resolve(0); });
+            req.end();
           });
-          req.on('error', () => resolve(0));
-          req.on('timeout', () => { req.destroy(); resolve(0); });
-          req.end();
-        });
-        const elapsed = (Date.now() - start) / 1000;
-        speed_kbps = elapsed > 0 ? Math.round(total / elapsed / 1024) : 0;
-      } catch {}
-      return { ...p, speed_kbps };
-    }));
-    for (const o of outcomes) {
-      if (o.status === 'fulfilled') speedResults.push(o.value);
+          const elapsed = (Date.now() - start) / 1000;
+          speed_kbps = elapsed > 0 ? Math.round(total / elapsed / 1024) : 0;
+        } catch {}
+        return { ...p, speed_kbps };
+      }));
+      for (const o of outcomes) {
+        if (o.status === 'fulfilled') speedResults.push(o.value);
+      }
+      completed += chunk.length;
+      process.stderr.write(`  [Engine 2] Speed: ${completed}/${browserAlive.length}\r`);
     }
-    completed += batch.length;
-    process.stderr.write(`  [Engine 2] Speed: ${completed}/${browserAlive.length}\r`);
+    process.stderr.write('\n');
+
+    speedResults.sort((a, b) => (b.speed_kbps || 0) - (a.speed_kbps || 0) || (a.latency_ms || 9999) - (b.latency_ms || 9999));
+
+    const fast = speedResults.filter(p => p.speed_kbps >= 100).length;
+    const medium = speedResults.filter(p => p.speed_kbps >= 50 && p.speed_kbps < 100).length;
+    console.error(`  [Engine 2] ${fast} fast, ${medium} medium`);
+
+    // Pick from top 30% with rotation
+    const topN = Math.max(1, Math.ceil(speedResults.length * 0.3));
+    const shortlist = speedResults.slice(0, topN);
+    const picked = getRotationIndex(shortlist, history);
+    if (!picked) {
+      const fallback = shortlist[0];
+      console.error(`  [Engine 2] Selected: ${fallback.ip}:${fallback.port} (${fallback.speed_kbps}KB/s)`);
+      return fallback;
+    }
+    console.error(`  [Engine 2] Selected: ${picked.ip}:${picked.port} (${picked.speed_kbps}KB/s)`);
+    return picked;
   }
-  process.stderr.write('\n');
 
-  speedResults.sort((a, b) => (b.speed_kbps || 0) - (a.speed_kbps || 0) || (a.latency_ms || 9999) - (b.latency_ms || 9999));
-
-  const fast = speedResults.filter(p => p.speed_kbps >= 100).length;
-  const medium = speedResults.filter(p => p.speed_kbps >= 50 && p.speed_kbps < 100).length;
-  const slow = speedResults.filter(p => p.speed_kbps > 0 && p.speed_kbps < 50).length;
-  console.error(`  [Engine 2] ${fast} fast, ${medium} medium, ${slow} slow`);
-
-  const topN = Math.max(1, Math.ceil(speedResults.length * 0.3));
-  const shortlist = speedResults.slice(0, topN);
-  const history = config.loadProxyHistory();
-  const picked = getRotationIndex(shortlist, history);
-  if (!picked) {
-    const fallback = shortlist[0];
-    console.error(`  [Engine 2] Selected: ${fallback.ip}:${fallback.port} (${fallback.speed_kbps}KB/s, ${fallback.latency_ms}ms)`);
-    return fallback;
-  }
-
-  console.error(`  [Engine 2] Selected: ${picked.ip}:${picked.port} (${picked.speed_kbps}KB/s, ${picked.latency_ms}ms)`);
-  return picked;
+  console.error('  [Engine] Exhausted all batches — no working proxy');
+  return null;
 }
 
-// ── Quick: fetch from DB without live test ──
 async function getProxyQuick(tier = 'premium') {
   const proxies = await fetchProxies(tier);
   if (proxies.length === 0) return null;
-
   const history = config.loadProxyHistory();
   const picked = getRotationIndex(proxies, history);
-  if (!picked) {
-    return proxies[Math.floor(Math.random() * proxies.length)];
-  }
-  return picked;
+  return picked || proxies[Math.floor(Math.random() * proxies.length)];
 }
 
 // CLI: node proxy-rotator.js <tier> [--quick|--test <ip:port>]
@@ -370,17 +351,13 @@ if (require.main === module) {
       if (!ip || !port) { console.error('Usage: --test ip:port'); process.exit(1); }
       const proxy = { ip, port: parseInt(port), proto: 'https' };
       console.error(`  [Proxy] Testing ${ip}:${port}...`);
-      const quickResult = await testProxyQuick(proxy, 5000);
-      console.error(`  [Proxy] Quick alive: ${quickResult.ok} (${quickResult.latency_ms}ms)`);
-      if (quickResult.ok) {
-        const browserResult = await testProxyBrowser(proxy, 12000);
-        console.error(`  [Proxy] Browser test: ${browserResult.ok} (${browserResult.latency_ms}ms, ${browserResult.protocol || 'none'})`);
-        if (browserResult.ok) {
-          console.log(`${ip}:${port}`);
-          process.exit(0);
-        }
+      const qr = await testProxyQuick(proxy, 5000);
+      console.error(`  [Proxy] Quick: ${qr.ok} (${qr.latency_ms}ms)`);
+      if (qr.ok) {
+        const br = await testProxyBrowser(proxy, 12000);
+        console.error(`  [Proxy] Browser: ${br.ok} (${br.latency_ms}ms)`);
+        if (br.ok) { console.log(`${ip}:${port}`); process.exit(0); }
       }
-      console.error(`  [Proxy] ${ip}:${port} FAILED`);
       process.exit(1);
     } else {
       const fn = quick ? getProxyQuick : getProxy;

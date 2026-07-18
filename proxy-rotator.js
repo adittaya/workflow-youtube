@@ -13,7 +13,9 @@ function supabaseFetch(endpoint, options = {}) {
     'Content-Type': 'application/json',
     ...options.headers,
   };
-  return fetch(url, { ...options, headers });
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 25000);
+  return fetch(url, { ...options, headers, signal: ac.signal }).finally(() => clearTimeout(timer));
 }
 
 async function fetchProxies(tier = 'premium') {

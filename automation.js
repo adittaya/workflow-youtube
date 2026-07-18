@@ -47,16 +47,17 @@ process.on('SIGINT', async () => {
 (async () => {
   const stealthArgs = ['--no-sandbox', '--disable-gpu', '--disable-blink-features=AutomationControlled',
     '--disable-dev-shm-usage', '--disable-accelerated-2d-canvas', '--disable-setuid-sandbox',
-    '--disable-automation'];
+    '--disable-automation', '--use-gl=swiftshader'];
   const launchOpts = {};
-  if (process.env.VPLINK_TERMUX === '1') {
-    launchOpts.headless = true;
+  const isTermux = process.env.VPLINK_TERMUX === '1';
+  const headless = isTermux || process.env.VPLINK_HEADLESS === '1';
+  launchOpts.headless = headless;
+  if (isTermux) {
     launchOpts.executablePath = process.env.CHROMIUM_PATH || '/data/data/com.termux/files/usr/bin/chromium-browser';
-    launchOpts.args = [...stealthArgs];
-  } else {
-    launchOpts.headless = false;
-    launchOpts.args = [...stealthArgs];
+  } else if (process.env.CHROMIUM_PATH) {
+    launchOpts.executablePath = process.env.CHROMIUM_PATH;
   }
+  launchOpts.args = [...stealthArgs];
   if (process.env.VPLINK_PROXY) launchOpts.args.push(`--proxy-server=${process.env.VPLINK_PROXY}`);
   if (process.env.VPLINK_EXTRA_ARGS) launchOpts.args.push(...process.env.VPLINK_EXTRA_ARGS.split(' '));
 
@@ -165,14 +166,25 @@ process.on('SIGINT', async () => {
   };
 
   // ── Get countdown seconds remaining ──
+  // Returns: positive number = seconds left, 0 = done, -1 = element not found
+  // IMPORTANT: parseInt on empty/non-numeric text returns NaN → treat as "timer not ready yet" (-1)
   const getCountdown = async () => {
     const result = await safeEval(() => {
       const tpTime = document.getElementById('tp-time');
-      if (tpTime) return parseInt(tpTime.textContent) || 0;
+      if (tpTime) {
+        const v = parseInt(tpTime.textContent);
+        return isNaN(v) ? -1 : v;
+      }
       const ceTime = document.getElementById('ce-time');
-      if (ceTime) return parseInt(ceTime.textContent) || 0;
+      if (ceTime) {
+        const v = parseInt(ceTime.textContent);
+        return isNaN(v) ? -1 : v;
+      }
       const link1sTime = document.getElementById('link1s-time');
-      if (link1sTime) return parseInt(link1sTime.textContent) || 0;
+      if (link1sTime) {
+        const v = parseInt(link1sTime.textContent);
+        return isNaN(v) ? -1 : v;
+      }
       return -1;
     });
     return result ?? -1;
@@ -213,7 +225,8 @@ process.on('SIGINT', async () => {
     const maxIter = maxWaitSec * 2; // check every 500ms
     for (let i = 0; i < maxIter; i++) {
       const remaining = await getCountdown();
-      if (remaining <= 0) return 'done';
+      if (remaining === 0) return 'done';       // timer reached 0
+      // remaining === -1 means element not found or timer not ready yet — keep waiting
 
       // Handle popup that may appear during countdown
       if (i % 4 === 0) {
@@ -685,6 +698,8 @@ process.on('SIGINT', async () => {
   // ── Main loop ──
   let vplinkArrivals = 0;
   let lastBase = '';
+  let googRewardRetries = 0;
+  const MAX_GOOG_REWARD_RETRIES = 2;
   const urlVisits = {}; // Track how many times each URL is visited
   const MAX_URL_VISITS = 3; // Abort if same URL seen this many times
 
@@ -737,6 +752,7 @@ process.on('SIGINT', async () => {
     }
 
     lastBase = base;
+    googRewardRetries = 0;
     log(`[cycle ${cycle + 1}] ${url.substring(0, 110)}`);
     await debugShot(`cycle-${cycle + 1}`);
 
@@ -794,8 +810,17 @@ process.on('SIGINT', async () => {
 
     // ── Google Ads reward page (#goog_rewarded) — ad didn't redirect ──
     if (url.includes('#goog_rewarded')) {
+      googRewardRetries++;
       log('#goog_rewarded detected in main loop, ad did not redirect');
       await dumpDOM('goog-rewarded');
+      if (googRewardRetries > MAX_GOOG_REWARD_RETRIES) {
+        log(`#goog_rewarded stuck after ${googRewardRetries} retries, force-navigating to vplink.in`);
+        googRewardRetries = 0;
+        lastBase = '';
+        await page.goto(`https://vplink.in/${KEY}`, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch(() => {});
+        await humanDelay(3000, 5000);
+        continue;
+      }
       // Try reloading the article without the hash fragment
       const cleanUrl = url.split('#')[0];
       log(`reloading without hash: ${cleanUrl.substring(0, 80)}`);
@@ -885,7 +910,7 @@ process.on('SIGINT', async () => {
       }
     }
 
-    if (gotDest) destinationUrl = safeURL();
+    if (gotDest && !destinationUrl) destinationUrl = safeURL();
   }
 
   console.log('\n═════════════════════════════════════════');

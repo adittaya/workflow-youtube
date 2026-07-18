@@ -47,8 +47,9 @@ const DESKTOP_VIEWPORTS = [
 ];
 
 const YOUTUBE_REFERRERS = [
-  'https://www.youtube.com/',
+  'https://www.youtube.com/watch?v=8A2LHzyevJA',
   'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+  'https://www.youtube.com/',
   'https://m.youtube.com/',
   'https://www.youtube.com/shorts/',
   'https://www.youtube.com/results?search_query=video',

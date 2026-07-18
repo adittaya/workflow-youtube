@@ -293,7 +293,6 @@ for (( i=1; i<=VIEWS; i++ )); do
   # ── Clean previous iteration ──────────────────────────
   full_cleanup
   deep_cleanup
-  $NODE_BIN -e "require('$SCRIPT_DIR/config').clearProxyBlacklist()" 2>/dev/null || true
   sleep 1
 
   # ── Pick key ──────────────────────────────────────────
@@ -359,35 +358,14 @@ for (( i=1; i<=VIEWS; i++ )); do
   DEBUG_FLAG=""
   [ "${VPLINK_DEBUG:-0}" = "1" ] && DEBUG_FLAG="--vplink-debug"
 
-  MAX_PROXY_RETRIES=3
-  PROXY_RETRY=0
-  while [ $PROXY_RETRY -lt $MAX_PROXY_RETRIES ]; do
-    timeout 480 "$NODE_BIN" "$AUTOMATION" "$CURRENT_KEY" ${DEBUG_FLAG:+"$DEBUG_FLAG"}
-    EXIT_CODE=$?
-
-    if [ "$EXIT_CODE" -eq 2 ] && [ "$PROXY_ENABLED" = "true" ]; then
-      PROXY_RETRY=$((PROXY_RETRY + 1))
-      # Blacklist the failed proxy so it won't be picked again
-      FAILED_HOST=$(echo "$VPLINK_PROXY" | sed 's|http[s]*://||')
-      $NODE_BIN -e "require('$SCRIPT_DIR/config').addProxyBlacklist('$FAILED_HOST')" 2>/dev/null || true
-      if [ $PROXY_RETRY -lt $MAX_PROXY_RETRIES ]; then
-        warn "Proxy blocked JS redirects, trying different proxy (${PROXY_RETRY}/${MAX_PROXY_RETRIES})..."
-        NEW_PROXY=$(timeout 120 $NODE_BIN "$PROXY_ROTATOR" "$PROXY_TIER" 2>/dev/null) || true
-        if [ -n "$NEW_PROXY" ]; then
-          export VPLINK_PROXY="http://${NEW_PROXY}"
-          info "New proxy: $VPLINK_PROXY"
-          continue
-        fi
-      fi
-    fi
-    break
-  done
+  timeout 480 "$NODE_BIN" "$AUTOMATION" "$CURRENT_KEY" ${DEBUG_FLAG:+"$DEBUG_FLAG"}
+  EXIT_CODE=$?
 
   if [ "$EXIT_CODE" -eq 124 ]; then
     warn "Automation timed out after 480s"
     TOTAL_FAIL=$((TOTAL_FAIL + 1))
   elif [ "$EXIT_CODE" -ne 0 ]; then
-    warn "Automation exited with code $EXIT_CODE"
+    warn "View $i failed (exit $EXIT_CODE), skipping..."
     TOTAL_FAIL=$((TOTAL_FAIL + 1))
   fi
 

@@ -39,10 +39,15 @@ RED='\033[0;31m'
 BOLD='\033[1m'
 NC='\033[0m'
 
+CHECK=$(printf '\xe2\x9c\x93')
+WARN_CH=$(printf '\xe2\x9a\xa0')
+CROSS=$(printf '\xe2\x9c\x97')
+DASH=$(printf '\xe2\x80\x94')
+
 info()  { echo -e "  ${CYAN}${1}${NC}"; }
-ok()    { echo -e "  ${GREEN}\u2713${NC} ${1}"; }
-warn()  { echo -e "  ${YELLOW}\u26a0${NC} ${1}"; }
-fail()  { echo -e "  ${RED}\u2717${NC} ${1}"; }
+ok()    { echo -e "  ${GREEN}${CHECK}${NC} ${1}"; }
+warn()  { echo -e "  ${YELLOW}${WARN_CH}${NC} ${1}"; }
+fail()  { echo -e "  ${RED}${CROSS}${NC} ${1}"; }
 
 # ── Termux detection ───────────────────────────────────
 is_termux() {
@@ -277,22 +282,22 @@ printf "║  %-13s %s\n" "Views:" "$VIEWS"
 printf "║  %-13s %s\n" "Key:" "$KEY"
 if [ -n "$MULTI_URLS" ]; then
   MULTI_COUNT=$(echo "$MULTI_URLS" | tr ',' '\n' | grep -c '[^ ]' || echo 0)
-  printf "║  %-13s %s\n" "Multi-URL:" "\u2713 enabled ($MULTI_COUNT keys)"
+  printf "║  %-13s %s\n" "Multi-URL:" "${CHECK} enabled ($MULTI_COUNT keys)"
 fi
 if [ "$PROXY_ENABLED" = "true" ]; then
-  printf "║  %-13s %s\n" "Proxy:" "\u2713 enabled (${PROXY_TIER})"
+  printf "║  %-13s %s\n" "Proxy:" "${CHECK} enabled (${PROXY_TIER})"
 else
-  printf "║  %-13s %s\n" "Proxy:" "\u2014 disabled"
+  printf "║  %-13s %s\n" "Proxy:" "${DASH} disabled"
 fi
 if [ "$YT_ENABLED" = "true" ]; then
-  printf "║  %-13s %s\n" "YouTube src:" "\u2713 enabled"
+  printf "║  %-13s %s\n" "YouTube src:" "${CHECK} enabled"
 else
-  printf "║  %-13s %s\n" "YouTube src:" "\u2014 disabled"
+  printf "║  %-13s %s\n" "YouTube src:" "${DASH} disabled"
 fi
 if [ "$MOBILE_ENABLED" = "true" ]; then
-  printf "║  %-13s %s\n" "Mobile prof:" "\u2713 enabled"
+  printf "║  %-13s %s\n" "Mobile prof:" "${CHECK} enabled"
 else
-  printf "║  %-13s %s\n" "Mobile prof:" "\u2014 disabled"
+  printf "║  %-13s %s\n" "Mobile prof:" "${DASH} disabled"
 fi
 echo -e "${BOLD}╚══════════════════════════════════════════════╝${NC}"
 echo ""

@@ -27,20 +27,20 @@ let proxyBlocked = false;
 let proxyPunished = false; // Track if we already blacklisted/deleted this proxy
 const PROXY = process.env.VPLINK_PROXY || '';
 const PROXY_HOST = PROXY.replace(/^https?:\/\//, '').replace(/:\d+$/, '');
+// Parse IP and port from full proxy URL for deletion
+const PROXY_IP = PROXY.replace(/^https?:\/\//, '').split(':')[0] || '';
+const PROXY_PORT = parseInt((PROXY.match(/:(\d+)$/) || [])[1]) || 0;
 
 const reportProxyFailure = async (reason) => {
-  if (!PROXY_HOST) return;
+  if (!PROXY_IP) return;
   proxyFailures++;
-  log(`proxy failure #${proxyFailures}: ${reason} (${PROXY_HOST})`);
+  log(`proxy failure #${proxyFailures}: ${reason} (${PROXY_IP}:${PROXY_PORT})`);
 
   // Blacklist locally + delete from Supabase on first failure
-  if (!proxyPunished) {
+  if (!proxyPunished && PROXY_PORT) {
     proxyPunished = true;
-    const [ip, port] = PROXY_HOST.split(':');
-    if (ip && port) {
-      try { addProxyBlacklist(ip, parseInt(port)); log(`blacklisted ${ip}:${port} locally`); } catch {}
-      try { const ok = await markDead(ip, parseInt(port)); if (ok) log(`deleted ${ip}:${port} from Supabase`); } catch {}
-    }
+    try { addProxyBlacklist(PROXY_IP, PROXY_PORT); log(`blacklisted ${PROXY_IP}:${PROXY_PORT} locally`); } catch {}
+    try { const ok = await markDead(PROXY_IP, PROXY_PORT); if (ok) log(`deleted ${PROXY_IP}:${PROXY_PORT} from Supabase`); } catch {}
   }
 };
 

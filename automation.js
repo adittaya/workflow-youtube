@@ -55,7 +55,7 @@ const reportProxyFailure = async (reason) => {
   }
 };
 
-process.on('SIGINT', async () => {
+  process.on('SIGINT', async () => {
   if (browser) await browser.close().catch(() => {});
   process.exit(130);
 });
@@ -414,9 +414,12 @@ process.on('SIGINT', async () => {
   };
 
   // ── Wait for countdown to finish ──
-  // Recording showed: TP timer takes ~44s from 23→0, each "second" = ~1.9s real
-  // LINK1S timer takes ~22.5s from 15→-1, each "second" = ~1.5s real
-  // Also check for #goog_rewarded URL directly (handlePopup may have missed it)
+  // TP timer: count starts at 24 (no adcadg cookie) or 15 (with cookie), interval 1900ms.
+  // When count<=0: shows #tp-snp2, hides #tp-wait1. tp-time innerHTML never shows 0.
+  // CRITICAL: Do NOT click overlays during TP countdown — clicking #gcont SVG causes ad
+  // iframe to gain focus → page's monitor detects IFRAME active element → schedules
+  // clearInterval(counter) after 15s → KILLS the timer → tp-snp2 never shows.
+  // LINK1S timer: takes ~22.5s from 15→-1, each "second" = ~1.5s real
   const waitForCountdown = async (template, maxWaitSec) => {
     const maxIter = maxWaitSec * 2;
     let lastVal = -2;
@@ -446,8 +449,10 @@ process.on('SIGINT', async () => {
       // Log countdown value periodically for debugging
       if (i % 10 === 0 && remaining > 0) log(`countdown ${template}: ${remaining}s remaining`);
 
-      // Handle popup that may appear during countdown
-      if (i % 4 === 0) {
+      // TP: NEVER touch overlays during countdown — the page's iframe-focus monitor
+      // kills the timer if any iframe gains focus. Just wait for the timer to finish.
+      // Non-TP templates: close overlays periodically (they don't have this monitor issue).
+      if (template !== 'tp' && i % 4 === 0) {
         await closeAdOverlay();
         const popupResult = await handlePopup();
         if (popupResult === 'rewarded') return 'rewarded';
@@ -476,15 +481,56 @@ process.on('SIGINT', async () => {
     return false;
   };
 
-  // ── Template A (TP): tp-time countdown → #continueBtn → #goog_rewarded → tp-snp2 ──
-  // Recording showed: timer 23→0 over ~44s, popup appears at tp-time=6, tp-snp2 visible at tp-time=1
+  // ── Navigate to learn_more.php (DO NOT click #tp-snp2 — its onclick blocks navigation) ──
+  // DOM revealed: #tp-snp2 is at y=22000+ (off-screen), parent <a> has onclick that calls
+  // e.preventDefault() + window.open("","_blank"). So clicking NEVER navigates.
+  const navigateLearnMore = async () => {
+    const navResult = await safeEval(() => {
+      const snp2 = document.getElementById('tp-snp2');
+      const a = snp2?.closest('a');
+      if (a && a.href && a.href.includes('learn_more.php')) {
+        window.location.href = a.href;
+        return a.href;
+      }
+      const links = document.querySelectorAll('a');
+      for (const link of links) {
+        if (link.href && link.href.includes('learn_more.php')) {
+          window.location.href = link.href;
+          return link.href;
+        }
+      }
+      return false;
+    });
+    if (navResult) {
+      log(`navigated to learn_more.php: ${navResult}`);
+      return true;
+    }
+    return false;
+  };
+
+  // ── Template A (TP): tp-time countdown → tp-snp2 → learn_more.php ──
+  // DOM analysis confirmed: timer is a simple setInterval that counts down.
+  // CRITICAL: Do NOT click #gcont overlay SVG — it causes iframe focus → kills timer.
+  // Just close #block-cont-1 (safe) and wait for timer to finish naturally.
   const handleTP = async () => {
     log('template: TP (tp-time countdown)');
 
-    // Close ad overlay first (recording showed it on every page)
-    await closeAdOverlay();
+    // Close ONLY #block-cont-1 ad overlay (safe — no iframe focus trigger).
+    // Do NOT close #gcont — clicking its SVG triggers iframe-focus monitor that kills timer.
+    await safeEval(() => {
+      const container = document.getElementById('block-cont-1');
+      if (container && getComputedStyle(container).display !== 'none') {
+        const closeDiv = container.querySelector('div');
+        if (closeDiv && closeDiv.textContent.trim() === 'X') {
+          closeDiv.click();
+          return 'block-cont-1';
+        }
+      }
+      return false;
+    });
 
-    // Wait for countdown (up to 50s — recording showed TP timer takes ~44s from 23→0)
+    // Wait for countdown (up to 50s — timer takes 24*1.9s=45.6s without cookie, 15*1.9s=28.5s with)
+    // waitForCountdown will NOT touch overlays during TP countdown (safe mode).
     const countdownResult = await waitForCountdown('tp', 50);
 
     if (countdownResult === 'rewarded') {
@@ -512,9 +558,9 @@ process.on('SIGINT', async () => {
         }
       });
       await humanDelay(1000, 2000);
-      const clicked = await humanClick('#tp-snp2');
-      if (clicked) log('clicked tp-snp2 after rewarded ad');
-      return clicked;
+      const navOk = await navigateLearnMore();
+      if (navOk) log('navigated via learn_more.php after rewarded ad');
+      return navOk;
     }
 
     if (countdownResult === 'stuck') {
@@ -535,70 +581,50 @@ process.on('SIGINT', async () => {
 
     if (countdownResult !== 'done' && countdownResult !== 'stuck') log('TP countdown timeout, trying button anyway');
 
-    // Popup may appear near end of countdown
-    const popupResult = await handlePopup();
-    if (popupResult === 'rewarded') {
+    // After countdown: dismiss any blocking overlays via JS (NOT clicks — clicks trigger iframe monitor)
+    // and force-show tp-snp2 if the timer didn't show it already.
+    await safeEval(() => {
+      // Dismiss #gcont overlay safely (set display:none, don't click)
+      const gcont = document.getElementById('gcont');
+      if (gcont) gcont.style.display = 'none';
+      // Dismiss #continueBtn overlay safely
+      const btn = document.getElementById('continueBtn');
+      if (btn) {
+        const overlay = btn.closest('div[style*="position: fixed"]') || btn.parentElement;
+        if (overlay) overlay.style.display = 'none';
+      }
+      // Dismiss #block-cont-1 overlay safely
+      const block = document.getElementById('block-cont-1');
+      if (block) block.style.display = 'none';
+      // Force-show tp-snp2 if timer didn't already
+      const snp2 = document.getElementById('tp-snp2');
+      const wait1 = document.getElementById('tp-wait1');
+      if (snp2 && getComputedStyle(snp2).display === 'none') {
+        if (wait1) wait1.style.display = 'none';
+        snp2.style.display = 'block';
+      }
+    });
+
+    // Check for #goog_rewarded after overlay dismissal
+    if (safeURL().includes('#goog_rewarded')) {
       log('on #goog_rewarded after countdown, waiting for ad...');
       await handleGoogRewarded();
       await safeEval(() => {
         if (window.location.hash) history.replaceState(null, '', window.location.pathname + window.location.search);
-      });
-      await humanDelay(500, 1000);
-      // Force button visibility — timer JS likely disrupted by ad
-      await safeEval(() => {
         const wait1 = document.getElementById('tp-wait1');
-        const wait2 = document.getElementById('tp-wait2');
         const snp2 = document.getElementById('tp-snp2');
         if (wait1) wait1.style.display = 'none';
-        if (wait2) wait2.style.display = 'none';
-        if (snp2) snp2.style.display = 'inline-block';
-        if (typeof showNextProcess === 'function') {
-          try { showNextProcess(); } catch {}
-        }
+        if (snp2) snp2.style.display = 'block';
       });
-      await humanDelay(1000, 2000);
-      const clicked = await humanClick('#tp-snp2');
-      return clicked;
+      await humanDelay(500, 1000);
+      const navOk2 = await navigateLearnMore();
+      return navOk2;
     }
 
     await humanDelay(1000, 2000);
 
-    // Wait for #tp-snp2 to become visible (recording showed it appears at tp-time=1)
-    // Don't click hidden elements — humanClick JS fallback clicks hidden elements which don't navigate
-    let clicked = false;
-    for (let w = 0; w < 15; w++) {
-      const visible = await safeEval(() => {
-        const el = document.getElementById('tp-snp2');
-        if (!el) return false;
-        const style = getComputedStyle(el);
-        return style.display !== 'none' && style.visibility !== 'hidden'
-          && el.getClientRects().length > 0;
-      });
-      if (visible) {
-        clicked = await humanClick('#tp-snp2');
-        if (clicked) {
-          log('clicked #tp-snp2');
-          break;
-        }
-      }
-      await ms(1000);
-    }
-
-    if (!clicked) {
-      // Fallback: find anchor with learn_more.php href
-      const fallback = await safeEval(() => {
-        const links = document.querySelectorAll('a');
-        for (const a of links) {
-          if (a.href && a.href.includes('learn_more.php') && a.offsetParent !== null) {
-            a.click();
-            return true;
-          }
-        }
-        return false;
-      });
-      if (fallback) log('clicked learn_more.php fallback link');
-    }
-    return clicked || false;
+    return await navigateLearnMore();
+    return false;
   };
 
   // ── Template B (CE): ce-time countdown → btn6 Verify → btn7 Continue ──
@@ -782,10 +808,21 @@ process.on('SIGINT', async () => {
   // - #cross-snp2 appears when timer reaches -1 (NOT 0)
   // - #goog_rewarded appears after clicking startCountdownBtn (ad triggered by button click)
   // - #cross-snp2 click goes to learn_more.php
+  // ── Template C (LINK1S): startCountdownBtn → cross-snp2 → learn_more.php ──
+  // DOM confirmed: timer counts from 15 at 1.5s intervals = 22.5s total.
+  // #cross-snp2 appears when count=-1. Click goes to learn_more.php.
+  // Same iframe-focus monitor issue as TP — do NOT click overlays during countdown.
   const handleLINK1S = async () => {
     log('template: LINK1S (startCountdownBtn)');
 
-    await closeAdOverlay();
+    // Close ONLY #block-cont-1 (safe). Do NOT click #gcont SVG.
+    await safeEval(() => {
+      const container = document.getElementById('block-cont-1');
+      if (container && getComputedStyle(container).display !== 'none') {
+        const closeDiv = container.querySelector('div');
+        if (closeDiv && closeDiv.textContent.trim() === 'X') closeDiv.click();
+      }
+    });
 
     // Click #startCountdownBtn to start the countdown
     let started = await humanClick('#startCountdownBtn');
@@ -838,7 +875,7 @@ process.on('SIGINT', async () => {
           await humanDelay(500, 1000);
         }
         if (await checkAdHijack()) return true;
-        await closeAdOverlay();
+        // Do NOT call closeAdOverlay() here — clicking #gcont SVG triggers iframe monitor
       }
 
       const visible = await safeEval(() => {
@@ -878,6 +915,34 @@ process.on('SIGINT', async () => {
         log(`[LINK1S wait ${w}s] cross-snp2 not visible, countdown=${cd}`);
       }
       await ms(1000);
+    }
+
+    // Force-show cross-snp2 if timer reached -1 but button didn't appear
+    if (!clicked) {
+      log('cross-snp2 not visible, forcing button visibility...');
+      await safeEval(() => {
+        const gcont = document.getElementById('gcont');
+        if (gcont) gcont.style.display = 'none';
+        const block = document.getElementById('block-cont-1');
+        if (block) block.style.display = 'none';
+        const snp2 = document.getElementById('cross-snp2');
+        if (snp2) snp2.style.display = 'block';
+        const a = snp2?.closest('a');
+        if (a) a.style.display = 'block';
+      });
+      await humanDelay(1000, 2000);
+      const navDone = await safeEval(() => {
+        const el = document.getElementById('cross-snp2');
+        if (!el) return false;
+        const a = el.closest('a');
+        if (a && a.href && a.href.includes('learn_more.php')) {
+          window.location.href = a.href;
+          return true;
+        }
+        el.click();
+        return true;
+      });
+      if (navDone) { log('clicked #cross-snp2 after force-show'); clicked = true; }
     }
 
     if (!clicked) {
@@ -1074,11 +1139,32 @@ process.on('SIGINT', async () => {
       const newTabPromise = context.waitForEvent('page', { timeout: 20000 }).catch(() => null);
       await humanClick('#get-link');
       let newTab = await newTabPromise;
+      if (newTab) log(`new tab opened: ${newTab.url()}`);
+
+      // Step 1: Check if initial popup URL has base64-encoded destination
+      // vplink.in tracking pages encode the real URL as base64 in params like eduuniversty=
+      if (newTab) {
+        try {
+          const tabUrl = newTab.url();
+          const u = new URL(tabUrl);
+          for (const [, val] of u.searchParams) {
+            try {
+              const decoded = Buffer.from(val, 'base64').toString('utf8');
+              if (decoded.startsWith('http')) {
+                log(`decoded destination from base64 param: ${decoded}`);
+                destinationUrl = decoded;
+                await newTab.close().catch(() => {});
+                return true;
+              }
+            } catch {}
+          }
+        } catch {}
+      }
 
       const clickTime = Date.now();
       let stableUrl = '', stableCount = 0;
 
-      // Poll for destination URL
+      // Poll for destination URL — track full redirect chain
       for (let i = 0; i < 60; i++) {
         await ms(1000);
         let popupUrl = '';
@@ -1089,21 +1175,26 @@ process.on('SIGINT', async () => {
             popupUrl = newTab.url();
           } catch { newTab = null; }
           if (popupUrl && !popupUrl.includes('about:blank') && !popupUrl.includes('chrome-error')) {
+            if (i < 15 || i % 5 === 0) log(`[get-link ${i}s] popup: ${popupUrl.substring(0, 100)}`);
             // If URL is a redirect wrapper, wait for it to resolve
             const isRedirect = popupUrl.includes('linkedin.com/redir') || popupUrl.includes('google.com/url')
               || popupUrl.includes('facebook.com/l.php') || popupUrl.includes('t.co/')
-              || popupUrl.includes('wistfulseverely.com') || popupUrl.includes('one-vv');
+              || popupUrl.includes('wistfulseverely.com') || popupUrl.includes('one-vv')
+              || popupUrl.includes('amazingbaba.com');
             if (isRedirect) {
-              log(`redirect wrapper detected (${popupUrl.substring(0,50)}), waiting for final URL...`);
-              for (let r = 0; r < 45; r++) {
+              log(`redirect/tracking URL detected (${popupUrl.substring(0,60)}), waiting for final...`);
+              for (let r = 0; r < 60; r++) {
                 await ms(1000);
                 try {
                   const newUrl = newTab.url();
                   if (newUrl && !newUrl.includes('about:blank')) {
+                    if (newUrl !== popupUrl) log(`[redirect ${r}s] ${newUrl.substring(0, 100)}`);
                     popupUrl = newUrl;
-                    // Keep waiting if still on tracking domain
+                    // Keep waiting if still on tracking/redirect domain
                     if (!popupUrl.includes('wistfulseverely.com') && !popupUrl.includes('one-vv')
-                      && !popupUrl.includes('linkedin.com/redir') && !popupUrl.includes('google.com/url')) break;
+                      && !popupUrl.includes('linkedin.com/redir') && !popupUrl.includes('google.com/url')
+                      && !popupUrl.includes('facebook.com/l.php') && !popupUrl.includes('t.co/')
+                      && !popupUrl.includes('amazingbaba.com')) break;
                   }
                 } catch { break; }
               }
@@ -1356,8 +1447,8 @@ process.on('SIGINT', async () => {
           await waitForCountdown('tp', 30);
           await humanDelay(500, 1000);
         }
-        // Try all known template buttons
-        const clicked = await humanClick('#tp-snp2') || await humanClick('#cross-snp2')
+        // Try all known template buttons (use navigateLearnMore for TP instead of click)
+        const clicked = await navigateLearnMore() || await humanClick('#cross-snp2')
           || await humanClick('#btn7 > button') || await humanClick('#btn7')
           || await humanClick('#gt-link');
         if (clicked) log('clicked button after #goog_rewarded ad');
@@ -1469,7 +1560,7 @@ process.on('SIGINT', async () => {
           await waitForCountdown(null, remaining + 10);
           await humanDelay(500, 1000);
         }
-        const clicked = await humanClick('#tp-snp2') || await humanClick('#cross-snp2')
+        const clicked = await navigateLearnMore() || await humanClick('#cross-snp2')
           || await humanClick('#btn7 > button') || await humanClick('#btn7')
           || await humanClick('#gt-link');
         if (clicked) log('clicked button after #goog_rewarded');

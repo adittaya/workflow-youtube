@@ -29,6 +29,10 @@ case "${1:-}" in
     shift
     exec node "$CONFIG_MODULE" "$@"
     ;;
+  proxy)
+    shift
+    exec node "$PROXY_ROTATOR" "$@"
+    ;;
 esac
 
 # ── Colors ─────────────────────────────────────────────

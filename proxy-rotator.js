@@ -378,9 +378,206 @@ async function testProxyBrowser(proxy, timeoutMs = 12000) {
   return { ok: result.ok, latency_ms: result.latency_ms, protocol: 'playwright' };
 }
 
-// CLI: node proxy-rotator.js <tier> [--quick|--test <ip:port>]
+// ══════════════════════════════════════════════════════════════════
+//  Proxy Setup Wizard — question-based CLI for proxy configuration
+// ══════════════════════════════════════════════════════════════════
+
+async function proxySetupWizard() {
+  const readline = require('readline');
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const ask = (q) => new Promise(r => rl.question(q, a => r(a.trim())));
+  const askSecret = (q) => new Promise(r => {
+    const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+    rl2.question(q, a => { rl2.close(); console.log(''); r(a.trim()); });
+  });
+
+  const cfg = config.load();
+  const GREEN = '\x1b[32m', YELLOW = '\x1b[33m', CYAN = '\x1b[36m', BOLD = '\x1b[1m', DIM = '\x1b[2m', NC = '\x1b[0m';
+  const check = '\u2713', cross = '\u2717', warn = '\u26a0';
+
+  console.log('');
+  console.log(`${BOLD}╔══════════════════════════════════════════════════════════╗${NC}`);
+  console.log(`${BOLD}║         VPLink 3.0 — Proxy Setup Wizard                ║${NC}`);
+  console.log(`${BOLD}╚══════════════════════════════════════════════════════════╝${NC}`);
+  console.log('');
+  console.log(`${DIM}  VPLink uses rotating proxies from a Supabase database.`);
+  console.log(`  You need a Supabase project with a proxy_results table.`);
+  console.log(`  Press Enter to keep current values (shown in brackets).${NC}`);
+  console.log('');
+
+  // ── Step 1: Enable/disable ──
+  const currentEnabled = cfg.proxy_enabled ? 'Y' : 'n';
+  const ena = await ask(`  Enable proxy rotation? [${currentEnabled}]: `);
+  let proxyEnabled = cfg.proxy_enabled;
+  if (ena !== '') proxyEnabled = ena !== 'n' && ena !== 'N';
+
+  if (!proxyEnabled) {
+    console.log('');
+    console.log(`  ${GREEN}${check}${NC} Proxy disabled — running without proxy`);
+    config.save({ proxy_enabled: false });
+    rl.close();
+    return;
+  }
+
+  // ── Step 2: Supabase URL ──
+  const defaultUrl = cfg.supabase_url || 'https://bytemjjijgwwcrxlgutf.supabase.co';
+  const urlDisplay = defaultUrl.length > 40 ? defaultUrl.slice(0, 40) + '...' : defaultUrl;
+  const url = await ask(`  Supabase URL [${urlDisplay}]: `);
+  const supabaseUrl = url || defaultUrl;
+
+  // ── Step 3: Supabase Anon Key ──
+  const keyDisplay = cfg.supabase_key ? cfg.supabase_key.slice(0, 12) + '...' : 'empty';
+  const key = await ask(`  Supabase Anon Key [${keyDisplay}]: `);
+  const supabaseKey = key || cfg.supabase_key || '';
+
+  // ── Step 4: Supabase Secret Key ──
+  const secretDisplay = cfg.supabase_secret ? '(set)' : 'empty';
+  const secret = await askSecret(`  Supabase Secret Key [${secretDisplay}]: `);
+  const supabaseSecret = secret || cfg.supabase_secret || '';
+
+  // ── Step 5: Tier ──
+  const tierDefault = cfg.proxy_tier || 'premium';
+  const tier = await ask(`  Proxy tier (free/premium) [${tierDefault}]: `);
+  const proxyTier = tier || tierDefault;
+
+  // ── Validate credentials ──
+  console.log('');
+  console.log(`  ${CYAN}Validating credentials...${NC}`);
+
+  // Temporarily save to test
+  config.save({
+    supabase_url: supabaseUrl,
+    supabase_key: supabaseKey,
+    supabase_secret: supabaseSecret,
+    proxy_enabled: true,
+    proxy_tier: proxyTier,
+  });
+
+  let proxies = [];
+  try {
+    proxies = await fetchProxies(proxyTier);
+    console.log(`  ${GREEN}${check}${NC} Connected to Supabase — ${proxies.length} ${proxyTier} proxies found`);
+  } catch (e) {
+    console.log(`  ${RED}${cross}${NC} Supabase connection failed: ${e.message}`);
+    console.log('');
+    const retry = await ask(`  Fix credentials now? [Y/n]: `);
+    if (retry !== 'n' && retry !== 'N') {
+      rl.close();
+      return proxySetupWizard(); // retry
+    }
+    console.log(`  ${YELLOW}${warn}${NC} Saving anyway — proxy will fail at runtime`);
+    rl.close();
+    return;
+  }
+
+  if (proxies.length === 0) {
+    console.log(`  ${YELLOW}${warn}${NC} No ${proxyTier} proxies in database — proxy will be unavailable`);
+    rl.close();
+    return;
+  }
+
+  // ── Health check: TCP test 5 random proxies ──
+  console.log(`  ${CYAN}Testing proxy pool health...${NC}`);
+  const sample = proxies.sort(() => Math.random() - 0.5).slice(0, 5);
+  let alive = 0;
+  const results = await Promise.allSettled(sample.map(p => testProxyQuick(p, 3000)));
+  for (const r of results) {
+    if (r.status === 'fulfilled' && r.value.ok) alive++;
+  }
+
+  if (alive > 0) {
+    console.log(`  ${GREEN}${check}${NC} Pool healthy — ${alive}/${sample.length} test proxies alive`);
+  } else {
+    console.log(`  ${YELLOW}${warn}${NC} 0/${sample.length} test proxies alive — pool may be depleted`);
+    console.log(`  ${DIM}  (This is normal after many runs. Engine 2 Playwright validation will find working ones.)${NC}`);
+  }
+
+  // ── Summary ──
+  console.log('');
+  console.log(`  ${GREEN}${check}${NC} Proxy configured:`);
+  console.log(`     URL:    ${supabaseUrl}`);
+  console.log(`     Key:    ${supabaseKey ? supabaseKey.slice(0, 12) + '...' : '(empty)'}`);
+  console.log(`     Secret: ${supabaseSecret ? '(set)' : '(empty)'}`);
+  console.log(`     Tier:   ${proxyTier}`);
+  console.log(`     Pool:   ${proxies.length} proxies in DB`);
+  console.log('');
+  console.log(`  Run ${BOLD}vplink3.0${NC} to start with proxy rotation`);
+  console.log(`  Run ${BOLD}vplink3.0 proxy --status${NC} to check pool health`);
+  console.log('');
+
+  rl.close();
+}
+
+async function proxyStatus() {
+  const cfg = config.load();
+  const GREEN = '\x1b[32m', YELLOW = '\x1b[33m', CYAN = '\x1b[36m', RED = '\x1b[31m', BOLD = '\x1b[1m', DIM = '\x1b[2m', NC = '\x1b[0m';
+  const check = '\u2713', cross = '\u2717', warn = '\u26a0';
+
+  console.log('');
+  console.log(`${BOLD}  Proxy Status${NC}`);
+  console.log(`  ${DIM}─────────────${NC}`);
+  console.log(`  Enabled: ${cfg.proxy_enabled ? `${GREEN}yes${NC}` : `${YELLOW}no${NC}`}`);
+  console.log(`  Tier:    ${cfg.proxy_tier || 'premium'}`);
+  console.log(`  URL:     ${cfg.supabase_url ? cfg.supabase_url.slice(0, 40) + '...' : '(not set)'}`);
+  console.log(`  Key:     ${cfg.supabase_key ? 'set' : '(not set)'}`);
+  console.log(`  Secret:  ${cfg.supabase_secret ? 'set' : '(not set)'}`);
+
+  const bl = config.loadProxyBlacklist();
+  console.log(`  Blacklist: ${bl.length} entries`);
+  console.log('');
+
+  if (!cfg.proxy_enabled) {
+    console.log(`  ${YELLOW}${warn}${NC} Proxy disabled. Run ${BOLD}vplink3.0 proxy --setup${NC} to enable`);
+    return;
+  }
+  if (!cfg.supabase_url || !cfg.supabase_key || !cfg.supabase_secret) {
+    console.log(`  ${RED}${cross}${NC} Credentials incomplete. Run ${BOLD}vplink3.0 proxy --setup${NC}`);
+    return;
+  }
+
+  console.log(`  ${CYAN}Fetching proxies...${NC}`);
+  let proxies;
+  try {
+    proxies = await fetchProxies(cfg.proxy_tier || 'premium');
+  } catch (e) {
+    console.log(`  ${RED}${cross}${NC} Fetch failed: ${e.message}`);
+    return;
+  }
+  console.log(`  ${GREEN}${check}${NC} ${proxies.length} proxies in DB`);
+
+  if (proxies.length === 0) {
+    console.log(`  ${YELLOW}${warn}${NC} Empty pool — add proxies to Supabase proxy_results table`);
+    return;
+  }
+
+  console.log(`  ${CYAN}TCP health check (5 random)...${NC}`);
+  const sample = proxies.sort(() => Math.random() - 0.5).slice(0, 5);
+  let alive = 0;
+  const results = await Promise.allSettled(sample.map(p => testProxyQuick(p, 3000)));
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    const p = sample[i];
+    const ok = r.status === 'fulfilled' && r.value.ok;
+    if (ok) alive++;
+    console.log(`    ${ok ? GREEN + check : RED + cross}${NC} ${p.ip}:${p.port} ${ok ? '(' + r.value.latency_ms + 'ms)' : 'FAIL'}`);
+  }
+  console.log('');
+  console.log(`  ${alive > 0 ? GREEN + check : YELLOW + warn}${NC} ${alive}/${sample.length} alive`);
+  console.log('');
+}
+
+// CLI: node proxy-rotator.js <tier> [--quick|--test <ip:port>|--setup|--status]
 if (require.main === module) {
   (async () => {
+    if (process.argv.includes('--setup')) {
+      await proxySetupWizard();
+      process.exit(0);
+    }
+    if (process.argv.includes('--status')) {
+      await proxyStatus();
+      process.exit(0);
+    }
+
     const tier = process.argv[2] || 'premium';
     const quick = process.argv.includes('--quick');
     const testIdx = process.argv.indexOf('--test');
@@ -413,4 +610,4 @@ if (require.main === module) {
   })();
 }
 
-module.exports = { getProxy, getProxyQuick, fetchProxies, testProxyQuick, testProxyBrowser, testProxyPlaywright, markDead, deleteProxy, batchDeleteDead };
+module.exports = { getProxy, getProxyQuick, fetchProxies, testProxyQuick, testProxyBrowser, testProxyPlaywright, markDead, deleteProxy, batchDeleteDead, proxySetupWizard, proxyStatus };

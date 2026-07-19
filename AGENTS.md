@@ -28,6 +28,7 @@
 | 2026-07-19 | **Real-time logging + YouTube-first nav fix**: Changed `console.log` → `console.error` for all automation logs — stdout was fully buffered when piped through `timeout`, causing 478s gaps in output with no visibility. Removed broken `page.route` intercept for proxy+REFERER (was injecting Referer header via route.continue, which broke JS redirects). Now always uses YouTube-first navigation for both proxy and non-proxy cases. Removed `page.unroute` call. | AI |
 | 2026-07-19 | **DOM analysis-driven 10-bug fix**: Comprehensive analysis of 4 recording data sources (154 screenshots, 16 DOM snapshots, 1198 events, 3481 network requests) + NVIDIA VLM API. Fixed 10 bugs: (1) `doGetLink()` now checks `#gt-link` (real destination button) in addition to `#get-link` (placeholder). (2) `handlePopup()` now detects both `#continueBtn` AND `#gcont` overlay (TP template uses `#gcont`, not `#continueBtn`). (3) `closeAdOverlay()` now handles both `#block-cont-1` (CE/LINK1S) AND `#gcont` (TP) overlay structures. (4) `handleCE()` now explicitly clicks ad area (`#overcn` iframe/link) to trigger `eonudb` cookie + `iorghupt` localStorage for timer start. (5) CE `#btn7` handler now clicks `<a>` directly via `window.location.href` (DOM confirmed `<a>` wrapping `<button>` structure). (6) LINK1S `#cross-snp2` handler clicks parent `<a>` for `learn_more.php` navigation. (7) `waitForCountdown()` handles LINK1S timer=-1 (not 0) as completion signal. (8) vplink.in page handler checks `#gt-link` visibility for "ready" state. (9) `DEST_PATTERNS` added `ti.com`, `1xbet`, `whotop.cc` (found in recording tracking chain). (10) Intermediate page detection added `studiessuniversitiess` variant. `handleUnknown` template tries `#gt-link` and `#gcont`. Redirect wrapper wait increased from 20s→30s with wistfulseverely.com loop detection. | AI |
 | 2026-07-19 | **Proxy pool depletion fix**: Removed `batchDeleteDead()` from Engine 1 — TCP alive test with 3s timeout was deleting slow-but-functional proxies from Supabase, depleting pool from 500+ to 30 after 18 views. Now Engine 1 only filters locally. DB deletion moved to Engine 2 (Playwright validation) — only proxies that fail real Chromium browser validation are deleted. `reportProxyFailure()` in automation.js still deletes on real runtime failures (chrome-error, hung, etc.). | AI |
+| 2026-07-19 | **Proxy setup CLI + installer fixes**: Added proxy-specific CLI: `vplink3.0 proxy --setup` (question-based wizard: enable/disable → Supabase URL → Key → Secret → tier → credential validation → pool health check → save) and `vplink3.0 proxy --status` (shows config + TCP health check of 5 random proxies). Fixed config overwrite bug in install.sh — now merges with existing config via `config.js save()` or jq/node fallback instead of overwriting entire JSON (was resetting user's views, mobile_profile settings). Added env-var override support: `SUPABASE_URL`, `SUPABASE_KEY`, `SUPABASE_SECRET` env vars skip interactive prompts in installer (for Docker/CI). Wired `vplink3.0 proxy` subcommand into CLI launcher. Updated installer summary box and --help with new commands. | AI |
 
 ## Overview
 Automated vplink.in URL funnel: navigate auto-redirects, handle article pages (any domain), click "Get Link" on vplink.in, and capture the final destination URL.
@@ -165,7 +166,16 @@ vplink.in/{KEY}
 ## CLI Usage
 ```bash
 vplink3.0                          # Interactive
+vplink3.0 proxy --setup            # Proxy setup wizard
+vplink3.0 proxy --status           # Proxy pool health check
+vplink3.0 config --setup           # Credential setup
+vplink3.0 update                   # Self-update from GitHub
+vplink3.0 uninstall                # Remove installation
 node automation.js <KEY>           # Direct
+node proxy-rotator.js --setup      # Proxy wizard (direct)
+node proxy-rotator.js --status     # Proxy status (direct)
+node proxy-rotator.js <tier>       # Get proxy for tier
+node proxy-rotator.js --test ip:port  # Test specific proxy
 node flow-recorder.js [KEY]        # Record flow for analysis
 ```
 

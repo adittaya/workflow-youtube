@@ -595,6 +595,64 @@ create_global_command() {
 #  CREDENTIAL SETUP (first-time only, permanently saved)
 # ═══════════════════════════════════════════════════════════════
 
+# Merge new fields into existing config.json (preserves views, mobile_profile, etc.)
+_write_merged_config() {
+  local proxy_enabled="${1:-false}"
+  local tmp="${CREDENTIAL_FILE}.tmp.$$"
+  if [ -f "$CREDENTIAL_FILE" ] && has_cmd jq; then
+    jq --arg url "$SB_URL" --arg key "$SB_KEY" --arg secret "$SB_SECRET" \
+       --argjson proxy "$proxy_enabled" \
+       '. + {supabase_url: $url, supabase_key: $key, supabase_secret: $secret, proxy_enabled: $proxy}' \
+       "$CREDENTIAL_FILE" > "$tmp" 2>/dev/null && mv "$tmp" "$CREDENTIAL_FILE"
+  elif [ -f "$CREDENTIAL_FILE" ]; then
+    # No jq — use node to merge if available
+    "$NODE_BIN" -e "
+      const fs = require('fs');
+      const p = '$CREDENTIAL_FILE';
+      let cfg = {};
+      try { cfg = JSON.parse(fs.readFileSync(p, 'utf8')); } catch {}
+      cfg.supabase_url = '$SB_URL';
+      cfg.supabase_key = '$SB_KEY';
+      cfg.supabase_secret = '$SB_SECRET';
+      cfg.proxy_enabled = $proxy_enabled;
+      fs.writeFileSync(p, JSON.stringify(cfg, null, 2), 'utf8');
+    " 2>/dev/null || {
+      # Last resort: write fresh config
+      cat > "$CREDENTIAL_FILE" <<EOCFG
+{
+  "supabase_url": "${SB_URL}",
+  "supabase_key": "${SB_KEY}",
+  "supabase_secret": "${SB_SECRET}",
+  "proxy_enabled": ${proxy_enabled},
+  "proxy_tier": "premium",
+  "youtube_traffic": false,
+  "mobile_profile": false,
+  "random_urls": [],
+  "vnc_port": 5900,
+  "views": 1
+}
+EOCFG
+    }
+  else
+    # No existing config — write fresh
+    cat > "$CREDENTIAL_FILE" <<EOCFG
+{
+  "supabase_url": "${SB_URL}",
+  "supabase_key": "${SB_KEY}",
+  "supabase_secret": "${SB_SECRET}",
+  "proxy_enabled": ${proxy_enabled},
+  "proxy_tier": "premium",
+  "youtube_traffic": false,
+  "mobile_profile": false,
+  "random_urls": [],
+  "vnc_port": 5900,
+  "views": 1
+}
+EOCFG
+  fi
+  rm -f "${CREDENTIAL_FILE}.tmp.$$"
+}
+
 setup_credentials() {
   # Already done from install state: offer to reconfigure
   if [ "$STATE_CREDENTIALS" = "done" ] || [ "$STATE_CREDENTIALS" = "skipped" ]; then
@@ -618,14 +676,38 @@ setup_credentials() {
 
   # Non-interactive mode: skip with warning
   if [ -n "${VPLINK_NONINTERACTIVE:-}" ] || [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
-    warn "Non-interactive mode — skipping credential setup. Configure later: vplink3.0 config"
+    # But check for env-var credentials first
+    if [ -n "${SUPABASE_KEY:-}" ] && [ -n "${SUPABASE_SECRET:-}" ]; then
+      SB_URL="${SUPABASE_URL:-https://bytemjjijgwwcrxlgutf.supabase.co}"
+      SB_KEY="$SUPABASE_KEY"
+      SB_SECRET="$SUPABASE_SECRET"
+      mkdir -p "$CONFIG_DIR"
+      _write_merged_config "true"
+      chmod 600 "$CREDENTIAL_FILE"
+      STATE_CREDENTIALS="done"
+      log "Credentials loaded from environment variables"
+      return 0
+    fi
+    warn "Non-interactive mode — skipping credential setup. Configure later: vplink3.0 proxy --setup"
     STATE_CREDENTIALS="skipped"
     return 0
   fi
 
   # Check if stdin is a terminal (interactive)
   if [ ! -t 0 ]; then
-    warn "No interactive terminal — skipping credential setup. Configure later: vplink3.0 config"
+    # But check for env-var credentials first
+    if [ -n "${SUPABASE_KEY:-}" ] && [ -n "${SUPABASE_SECRET:-}" ]; then
+      SB_URL="${SUPABASE_URL:-https://bytemjjijgwwcrxlgutf.supabase.co}"
+      SB_KEY="$SUPABASE_KEY"
+      SB_SECRET="$SUPABASE_SECRET"
+      mkdir -p "$CONFIG_DIR"
+      _write_merged_config "true"
+      chmod 600 "$CREDENTIAL_FILE"
+      STATE_CREDENTIALS="done"
+      log "Credentials loaded from environment variables"
+      return 0
+    fi
+    warn "No interactive terminal — skipping credential setup. Configure later: vplink3.0 proxy --setup"
     STATE_CREDENTIALS="skipped"
     return 0
   fi
@@ -649,42 +731,32 @@ setup_credentials() {
   read -r -s -p "  Supabase Secret/Service Key (hidden): " SB_SECRET
   echo ""
 
-  # Save credentials
+  # Save credentials (merge with existing config — don't overwrite user settings)
   mkdir -p "$CONFIG_DIR"
   if [ -n "$SB_KEY" ]; then
-    cat > "$CREDENTIAL_FILE" <<EOF
-{
-  "supabase_url": "${SB_URL}",
-  "supabase_key": "${SB_KEY}",
-  "supabase_secret": "${SB_SECRET}",
-  "proxy_enabled": true,
-  "proxy_tier": "premium",
-  "youtube_traffic": false,
-  "mobile_profile": false,
-  "random_urls": [],
-  "vnc_port": 5900,
-  "views": 1
-}
-EOF
+    # Use config.js save() which merges with existing config
+    if [ -f "$INSTALL_DIR/config.js" ]; then
+      "$NODE_BIN" -e "
+        const c = require('$INSTALL_DIR/config.js');
+        c.save({
+          supabase_url: '$(echo "$SB_URL" | sed "s/'/\\\\'/g")',
+          supabase_key: '$(echo "$SB_KEY" | sed "s/'/\\\\'/g")',
+          supabase_secret: '$(echo "$SB_SECRET" | sed "s/'/\\\\'/g")',
+          proxy_enabled: true,
+          proxy_tier: 'premium',
+        });
+      " 2>/dev/null || {
+        # Fallback: write JSON directly but preserve existing fields
+        _write_merged_config "true"
+      }
+    else
+      _write_merged_config "true"
+    fi
     chmod 600 "$CREDENTIAL_FILE"
     STATE_CREDENTIALS="done"
     log "Credentials saved to $CREDENTIAL_FILE"
   else
-    # Save default (disabled proxy)
-    cat > "$CREDENTIAL_FILE" <<EOF
-{
-  "supabase_url": "${SB_URL}",
-  "supabase_key": "",
-  "supabase_secret": "",
-  "proxy_enabled": false,
-  "proxy_tier": "premium",
-  "youtube_traffic": false,
-  "mobile_profile": false,
-  "random_urls": [],
-  "vnc_port": 5900,
-  "views": 1
-}
-EOF
+    _write_merged_config "false"
     chmod 600 "$CREDENTIAL_FILE"
     STATE_CREDENTIALS="skipped"
     warn "Proxy credentials not provided — proxy feature disabled"
@@ -1061,6 +1133,8 @@ main_install() {
     echo "║                                              ║"
     echo "║  Commands:                                   ║"
     echo "║    vplink3.0              — Run automation   ║"
+    echo "║    vplink3.0 proxy --setup— Proxy setup      ║"
+    echo "║    vplink3.0 proxy --status— Proxy health    ║"
     echo "║    vplink3.0 config       — Setup credentials║"
     echo "║    vplink3.0 update       — Update project   ║"
     echo "║    vplink3.0 uninstall    — Remove project   ║"
@@ -1108,6 +1182,9 @@ case "${1:-install}" in
     echo "  VPLINK_DIR=path        Custom install directory"
     echo "  VPLINK_NONINTERACTIVE=1 Skip prompts"
     echo "  VPLINK_DEBUG=1         Verbose debug output"
+    echo "  SUPABASE_URL=url       Supabase URL (skip credential prompt)"
+    echo "  SUPABASE_KEY=key       Supabase anon key (skip credential prompt)"
+    echo "  SUPABASE_SECRET=secret Supabase secret key (skip credential prompt)"
     ;;
   *)
     echo "Usage: bash install.sh {install|uninstall|update|--help}"

@@ -1485,9 +1485,35 @@ process.on('SIGINT', async () => {
       log('intermediate redirect page, waiting for auto-redirect...');
       const intermediateBase = urlBase(url);
       let redirected = false;
-      const intermediateWait = PROXY ? 30 : 15;
+      const intermediateWait = PROXY ? 20 : 15;
+
+      // Capture navigation events to catch redirects that happen between poll intervals
+      let capturedNavUrl = null;
+      const navListener = (frame) => {
+        if (frame === page.mainFrame()) {
+          const navUrl = frame.url();
+          if (navUrl && !navUrl.includes('studiiessuniversitiess') && !navUrl.includes('universitesstudiiess')
+              && !navUrl.includes('studiessuniversitiess') && !navUrl.includes('studieseducates')
+              && !navUrl.includes('learn_more.php') && !navUrl.includes('vplink.in')
+              && !navUrl.startsWith('about:') && !navUrl.startsWith('chrome-')) {
+            capturedNavUrl = navUrl;
+          }
+        }
+      };
+      page.on('framenavigated', navListener);
+
       for (let w = 0; w < intermediateWait; w++) {
         await ms(1000);
+
+        // Check captured navigation first
+        if (capturedNavUrl) {
+          log(`captured nav redirect: ${capturedNavUrl.substring(0, 100)}`);
+          await page.goto(capturedNavUrl, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch(() => {});
+          await humanDelay(500, 1500);
+          redirected = true;
+          break;
+        }
+
         const cur = safeURL();
         const curBase = urlBase(cur);
         if (curBase !== intermediateBase && !cur.includes('learn_more.php') && !cur.includes('studieseducates')
@@ -1498,56 +1524,80 @@ process.on('SIGINT', async () => {
           redirected = true;
           break;
         }
-        // After 10s, try to extract redirect URL from page JS/DOM
-        if (w === 10 && !redirected) {
+
+        // After 8s, try to extract redirect URL from page source
+        if (w === 8 && !redirected) {
           const extractedUrl = await safeEval(() => {
-            // Check meta refresh
+            const html = document.documentElement.outerHTML || '';
+            // Pattern 1: window.location.href = '/path'
+            let m = html.match(/window\.location(?:\.href)?\s*=\s*['"](\/[^'"]+)['"]/);
+            if (m && !m[1].includes('studiiessuniversitiess') && !m[1].includes('learn_more')) return m[1];
+            // Pattern 2: window.location.replace('/path')
+            m = html.match(/window\.location\.replace\s*\(\s*['"](\/[^'"]+)['"]\s*\)/);
+            if (m && !m[1].includes('studiiessuniversitiess') && !m[1].includes('learn_more')) return m[1];
+            // Pattern 3: meta refresh
             const meta = document.querySelector('meta[http-equiv="refresh"]');
             if (meta) {
-              const m = meta.content.match(/url=(.+)/i);
-              if (m) return m[1].trim();
+              const urlMatch = meta.content.match(/url=(.+)/i);
+              if (urlMatch) return urlMatch[1].trim();
             }
-            // Check for window.location in inline scripts
-            const scripts = document.querySelectorAll('script:not([src])');
-            for (const s of scripts) {
-              const t = s.textContent || '';
-              const locMatch = t.match(/window\.location(?:\.href)?\s*=\s*['"]([^'"]+)['"]/);
-              if (locMatch) return locMatch[1];
-              const replaceMatch = t.match(/window\.location\.replace\s*\(\s*['"]([^'"]+)['"]\s*\)/);
-              if (replaceMatch) return replaceMatch[1];
-            }
-            // Check for hidden links with redirect URLs
+            // Pattern 4: any non-study article link
             const links = document.querySelectorAll('a[href]');
             for (const a of links) {
-              if (a.href && !a.href.includes('javascript:') && a.href !== window.location.href) {
-                return a.href;
+              const href = a.href;
+              if (href && !href.includes('javascript:') && !href.includes('studiiessuniversitiess')
+                  && !href.includes('universitesstudiiess') && !href.includes('learn_more')
+                  && !href.includes('vplink.in') && !href.includes(window.location.host + '/studyscholorships/studiiessuniversitiess')
+                  && !href.includes(window.location.host + '/universitiesstudy/universitesstudiiess')
+                  && href.startsWith('http')) {
+                return href;
               }
             }
             return null;
           });
-          if (extractedUrl && extractedUrl !== url && !extractedUrl.includes('studiiessuniversitiess')) {
+          if (extractedUrl) {
             log(`extracted redirect URL: ${extractedUrl.substring(0, 100)}`);
-            await page.goto(extractedUrl, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch(() => {});
+            const fullUrl = extractedUrl.startsWith('http') ? extractedUrl : `https://${new URL(url).hostname}${extractedUrl}`;
+            await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch(() => {});
             await humanDelay(1000, 2000);
             redirected = true;
             break;
           }
         }
-        if (w === 15 && PROXY) {
-          log('intermediate still stuck after 15s, reloading...');
-          await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+
+        // After 12s, try to evaluate pending location changes
+        if (w === 12 && !redirected) {
+          const forcedUrl = await safeEval(() => {
+            // Check if there's a pending setTimeout for redirect
+            const scripts = document.querySelectorAll('script:not([src])');
+            for (const s of scripts) {
+              const t = s.textContent || '';
+              const timerMatch = t.match(/setTimeout\s*\(\s*(?:function\s*\(\)\s*\{?\s*)?window\.location(?:\.href)?\s*=\s*['"]([^'"]+)['"]/);
+              if (timerMatch && !timerMatch[1].includes('studiiessuniversitiess')) return timerMatch[1];
+            }
+            return null;
+          });
+          if (forcedUrl) {
+            log(`forced redirect URL: ${forcedUrl.substring(0, 100)}`);
+            const fullUrl = forcedUrl.startsWith('http') ? forcedUrl : `https://${new URL(url).hostname}${forcedUrl}`;
+            await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch(() => {});
+            await humanDelay(1000, 2000);
+            redirected = true;
+            break;
+          }
         }
       }
+      page.removeListener('framenavigated', navListener);
+
       if (!redirected) {
         intermediateStuckCount++;
         log(`intermediate page not redirecting (stuck #${intermediateStuckCount})`);
-        if (intermediateStuckCount >= 3) {
-          log('intermediate stuck 3x — forcing');
-          if (PROXY) await reportProxyFailure('intermediate-stuck');
-          proxyBlocked = true;
+        if (intermediateStuckCount >= 2) {
+          log('intermediate stuck 2x — force-navigating to vplink.in');
           intermediateStuckCount = 0;
           lastBase = '';
-          break;
+          await page.goto(`https://${BASE_DOMAIN}/${KEY}`, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch(() => {});
+          await humanDelay(2000, 4000);
         }
       } else {
         intermediateStuckCount = 0;

@@ -149,19 +149,38 @@ async function testProxyPlaywright(proxy, timeoutMs = 30000) {
     const page = await ctx.newPage();
 
     let finalUrl = '';
+    let passedVplink = false;
+    let passedIntermediate = false;
     try {
       await page.goto(TEST_URL, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
-      // Wait for redirect chain: vplink.in → intermediate → article
-      for (let i = 0; i < 20; i++) {
+
+      for (let i = 0; i < 25; i++) {
         await page.waitForTimeout(1000);
         finalUrl = page.url();
-        if (!finalUrl.includes('vplink.in') && !finalUrl.includes('chrome-error')) break;
+
+        if (finalUrl.includes('chrome-error') || finalUrl.includes('about:blank')) break;
+
+        if (!passedVplink && !finalUrl.includes('vplink.in')) {
+          passedVplink = true;
+        }
+
+        if (passedVplink && !finalUrl.includes('vplink.in')
+            && !finalUrl.includes('learn_more.php')
+            && !finalUrl.includes('studiiessuniversitiess')
+            && !finalUrl.includes('universitesstudiiess')
+            && !finalUrl.includes('studiessuniversitiess')
+            && !finalUrl.includes('studieseducates')
+            && finalUrl.includes('/')) {
+          passedIntermediate = true;
+          break;
+        }
       }
     } catch {
       finalUrl = 'chrome-error';
     }
 
-    const isGood = finalUrl && !finalUrl.includes('chrome-error') && !finalUrl.includes('about:blank');
+    const isGood = finalUrl && !finalUrl.includes('chrome-error') && !finalUrl.includes('about:blank')
+      && passedVplink && passedIntermediate;
     const totalMs = Date.now() - start;
 
     await browser.close().catch(() => {});

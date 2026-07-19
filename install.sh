@@ -215,6 +215,7 @@ is_termux() {
 }
 
 has_cmd() { command -v "$1" &>/dev/null; }
+NODE_BIN=$(command -v node 2>/dev/null || echo "")
 
 # Global variables (initialized)
 # shellcheck disable=SC2034
@@ -375,6 +376,7 @@ install_node() {
 
   if has_cmd node; then
     log "Node.js $(node -v) installed"
+    NODE_BIN=$(command -v node)
     STATE_NODE="done"
   else
     fail "Node.js installation failed"
@@ -448,10 +450,10 @@ install_npm_deps() {
 
   cd "$INSTALL_DIR" 2>/dev/null || { warn "Project directory missing, skipping npm install"; return 0; }
   info "Installing npm dependencies..."
-  npm install --no-audit --no-fund --timeout=60000 2>&1 | tail -3 >> "$LOG_FILE" || {
+  npm install --no-audit --no-fund 2>&1 | tail -3 >> "$LOG_FILE" || {
     warn "npm install failed, retrying with cache clean..."
     npm cache clean --force 2>/dev/null || true
-    npm install --no-audit --no-fund --timeout=120000 >> "$LOG_FILE" 2>&1 || {
+    npm install --no-audit --no-fund >> "$LOG_FILE" 2>&1 || {
       warn "npm install failed twice — will try at runtime"
       return 0
     }
@@ -483,7 +485,7 @@ install_playwright() {
 
   # Verify chromium was actually downloaded
   local pw_chromium
-  pw_chromium=$(ls "$HOME"/.cache/ms-playwright/chromium-*/chrome-linux/chrome 2>/dev/null | head -1 || true)
+  pw_chromium=$(ls "$HOME"/.cache/ms-playwright/chromium-*/chrome-linux*/chrome 2>/dev/null | head -1 || true)
   if [ -n "$pw_chromium" ]; then
     STATE_PLAYWRIGHT="done"
     log "Playwright Chromium ready: $pw_chromium"
@@ -835,7 +837,7 @@ verify_installation() {
     chromium_bin=$(command -v chromium-browser 2>/dev/null || command -v chromium 2>/dev/null || echo "")
   else
     # Check Playwright bundled first, then system browsers
-    chromium_bin=$(ls "$HOME"/.cache/ms-playwright/chromium-*/chrome-linux/chrome 2>/dev/null | head -1 || true)
+    chromium_bin=$(ls "$HOME"/.cache/ms-playwright/chromium-*/chrome-linux*/chrome 2>/dev/null | head -1 || true)
     if [ -z "$chromium_bin" ]; then
       chromium_bin=$(command -v chromium-browser 2>/dev/null || command -v chromium 2>/dev/null || command -v google-chrome 2>/dev/null || echo "")
     fi
@@ -1110,8 +1112,8 @@ main_install() {
   echo "║           Installation Summary               ║"
   echo "╚══════════════════════════════════════════════╝"
   echo ""
-  verify_installation
-  local verify_errors=$?
+  local verify_errors=0
+  verify_installation || verify_errors=$?
   echo ""
 
   # Success

@@ -379,6 +379,114 @@ async function testProxyBrowser(proxy, timeoutMs = 12000) {
 }
 
 // ══════════════════════════════════════════════════════════════════
+//  Proxy IP Verification — confirm browser traffic routes through proxy
+// ══════════════════════════════════════════════════════════════════
+
+async function getPublicIP(timeoutMs = 10000) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    const res = await fetch('https://api.ipify.org?format=json', { signal: ac.signal });
+    const data = await res.json();
+    return data.ip;
+  } catch {
+    try {
+      const res = await fetch('https://ifconfig.me/ip', { signal: ac.signal });
+      return (await res.text()).trim();
+    } catch {
+      return null;
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function verifyProxyIP(proxy) {
+  const { chromium } = require('playwright');
+  const proxyUrl = `http://${proxy.ip}:${proxy.port}`;
+  const BOLD = '\x1b[1m', GREEN = '\x1b[32m', YELLOW = '\x1b[33m',
+        CYAN = '\x1b[36m', RED = '\x1b[31m', DIM = '\x1b[2m', NC = '\x1b[0m';
+  const check = '\u2713', cross = '\u2717', warn = '\u26a0';
+
+  console.log('');
+  console.log(`${BOLD}  Proxy IP Verification${NC}`);
+  console.log(`  ${DIM}──────────────────────${NC}`);
+
+  // Step 1: Get real (direct) IP
+  console.log(`  ${CYAN}Fetching direct IP (no proxy)...${NC}`);
+  const realIP = await getPublicIP();
+  if (realIP) {
+    console.log(`  ${GREEN}${check}${NC} Direct IP: ${BOLD}${realIP}${NC}`);
+  } else {
+    console.log(`  ${YELLOW}${warn}${NC} Could not determine direct IP`);
+  }
+
+  // Step 2: Launch browser with proxy
+  console.log(`  ${CYAN}Launching browser via proxy ${proxy.ip}:${proxy.port}...${NC}`);
+  let browser = null;
+  try {
+    browser = await chromium.launch({
+      headless: true,
+      args: [
+        `--proxy-server=${proxyUrl}`,
+        '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage',
+        '--disable-blink-features=AutomationControlled', '--use-gl=swiftshader',
+      ],
+    });
+    const ctx = await browser.newContext({
+      viewport: { width: 1280, height: 720 },
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
+    });
+    const page = await ctx.newPage();
+
+    // Navigate to IP checker
+    console.log(`  ${CYAN}Checking browser IP via api.ipify.org...${NC}`);
+    let proxyIP = null;
+    try {
+      await page.goto('https://api.ipify.org?format=json', { waitUntil: 'domcontentloaded', timeout: 15000 });
+      const body = await page.textContent('body');
+      const data = JSON.parse(body);
+      proxyIP = data.ip;
+    } catch {
+      // Try fallback
+      try {
+        await page.goto('https://ifconfig.me/ip', { waitUntil: 'domcontentloaded', timeout: 10000 });
+        proxyIP = (await page.textContent('body')).trim();
+      } catch {}
+    }
+
+    await browser.close();
+    browser = null;
+
+    if (!proxyIP) {
+      console.log(`  ${RED}${cross}${NC} Could not determine browser IP — proxy may be blocking`);
+      return false;
+    }
+
+    console.log(`  ${GREEN}${check}${NC} Browser IP: ${BOLD}${proxyIP}${NC}`);
+    console.log('');
+
+    // Step 3: Compare
+    if (realIP && proxyIP === realIP) {
+      console.log(`  ${RED}${cross}${NC} IP match! Proxy ${RED}NOT working${NC} — traffic bypassing proxy`);
+      console.log(`  ${DIM}  Browser IP (${proxyIP}) == Direct IP (${realIP})${NC}`);
+      return false;
+    } else if (realIP && proxyIP !== realIP) {
+      console.log(`  ${GREEN}${check}${NC} IP differs! Proxy ${GREEN}WORKING${NC} — traffic routing through proxy`);
+      console.log(`  ${DIM}  Direct: ${realIP} → Proxy: ${proxyIP}${NC}`);
+      return true;
+    } else {
+      console.log(`  ${YELLOW}${warn}${NC} Proxy responding but direct IP unknown — cannot verify`);
+      return true;
+    }
+  } catch (e) {
+    if (browser) await browser.close().catch(() => {});
+    console.log(`  ${RED}${cross}${NC} Browser launch failed: ${e.message}`);
+    return false;
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════
 //  Proxy Setup Wizard — question-based CLI for proxy configuration
 // ══════════════════════════════════════════════════════════════════
 
@@ -566,7 +674,7 @@ async function proxyStatus() {
   console.log('');
 }
 
-// CLI: node proxy-rotator.js <tier> [--quick|--test <ip:port>|--setup|--status]
+// CLI: node proxy-rotator.js <tier> [--quick|--test <ip:port>|--setup|--status|--verify-ip|--verify <ip:port>]
 if (require.main === module) {
   (async () => {
     if (process.argv.includes('--setup')) {
@@ -576,6 +684,33 @@ if (require.main === module) {
     if (process.argv.includes('--status')) {
       await proxyStatus();
       process.exit(0);
+    }
+    if (process.argv.includes('--verify-ip')) {
+      // Get a proxy from pool and verify its IP
+      const cfg = config.load();
+      if (!cfg.proxy_enabled || !cfg.supabase_key || !cfg.supabase_secret) {
+        console.error('  Proxy not configured. Run: vplink3.0 proxy --setup');
+        process.exit(1);
+      }
+      console.error('  [Proxy] Getting proxy from pool...');
+      const proxy = await getProxy(cfg.proxy_tier || 'premium');
+      if (!proxy) { console.error('  [Proxy] No proxy available'); process.exit(1); }
+      console.error(`  [Proxy] Got: ${proxy.ip}:${proxy.port}`);
+      const ok = await verifyProxyIP(proxy);
+      process.exit(ok ? 0 : 1);
+    }
+    const verifyIdx = process.argv.indexOf('--verify');
+    if (verifyIdx >= 0) {
+      const verifyTarget = process.argv[verifyIdx + 1];
+      if (verifyTarget) {
+        const [ip, port] = verifyTarget.split(':');
+        if (!ip || !port) { console.error('Usage: --verify ip:port'); process.exit(1); }
+        const ok = await verifyProxyIP({ ip, port: parseInt(port) });
+        process.exit(ok ? 0 : 1);
+      } else {
+        console.error('Usage: --verify ip:port');
+        process.exit(1);
+      }
     }
 
     const tier = process.argv[2] || 'premium';
@@ -610,4 +745,4 @@ if (require.main === module) {
   })();
 }
 
-module.exports = { getProxy, getProxyQuick, fetchProxies, testProxyQuick, testProxyBrowser, testProxyPlaywright, markDead, deleteProxy, batchDeleteDead, proxySetupWizard, proxyStatus };
+module.exports = { getProxy, getProxyQuick, fetchProxies, testProxyQuick, testProxyBrowser, testProxyPlaywright, markDead, deleteProxy, batchDeleteDead, proxySetupWizard, proxyStatus, verifyProxyIP, getPublicIP };

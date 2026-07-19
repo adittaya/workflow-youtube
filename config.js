@@ -72,9 +72,20 @@ function saveProxyHistory(history) {
 }
 
 function loadProxyBlacklist() {
+  const TWENTY_FOUR_H = 24 * 60 * 60 * 1000;
+  const now = Date.now();
   try {
     if (fs.existsSync(PROXY_BLACKLIST_PATH)) {
-      return JSON.parse(fs.readFileSync(PROXY_BLACKLIST_PATH, 'utf8'));
+      const list = JSON.parse(fs.readFileSync(PROXY_BLACKLIST_PATH, 'utf8'));
+      // Filter out entries older than 24h and return string keys
+      return list
+        .filter(e => {
+          if (typeof e === 'object') {
+            return (now - (e.ts || 0)) < TWENTY_FOUR_H;
+          }
+          return true; // Legacy string entries — keep them (will be replaced on next add)
+        })
+        .map(e => typeof e === 'object' ? e.key : e);
     }
   } catch {}
   return [];
@@ -87,10 +98,17 @@ function saveProxyBlacklist(list) {
 function addProxyBlacklist(ip, port) {
   const list = loadProxyBlacklist();
   const key = `${ip}:${port}`;
-  if (!list.includes(key)) {
-    list.push(key);
-    saveProxyBlacklist(list);
-  }
+  const now = Date.now();
+  const TWENTY_FOUR_H = 24 * 60 * 60 * 1000;
+  // Remove existing entry for this key (may have old timestamp)
+  const filtered = list.filter(e => (typeof e === 'object' ? e.key : e) !== key);
+  filtered.push({ key, ts: now });
+  // Prune entries older than 24h
+  const pruned = filtered.filter(e => {
+    const ts = typeof e === 'object' ? e.ts : 0;
+    return ts === 0 || (now - ts) < TWENTY_FOUR_H;
+  });
+  saveProxyBlacklist(pruned);
 }
 
 function clearProxyBlacklist() {

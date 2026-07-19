@@ -1,8 +1,12 @@
 const config = require('./config');
 const http = require('http');
 const https = require('https');
+const { chromium } = require('playwright');
+const path = require('path');
 
 const SUPABASE_REST = '/rest/v1';
+const TEST_KEY = 'gbd1b';
+const TEST_URL = `https://vplink.in/${TEST_KEY}`;
 
 function supabaseFetch(endpoint, options = {}) {
   const cfg = config.load();
@@ -38,77 +42,16 @@ async function markDead(ip, port) {
   return ok;
 }
 
-async function testProxyQuick(proxy, timeoutMs = 5000) {
-  const start = Date.now();
-  const r = await tryConnectQuick(proxy, 'vplink.in', '/gbd1b', timeoutMs);
-  if (r) return { ok: true, latency_ms: Date.now() - start };
-  const h = await tryHttpQuick(proxy, 'vplink.in', '/gbd1b', timeoutMs);
-  if (h) return { ok: true, latency_ms: Date.now() - start };
-  return { ok: false, latency_ms: Date.now() - start };
+async function batchDeleteDead(dead) {
+  if (dead.length === 0) return 0;
+  const outcomes = await Promise.allSettled(dead.map(p => deleteProxy(p.ip, p.port)));
+  const deleted = outcomes.filter(o => o.status === 'fulfilled' && o.value).length;
+  return deleted;
 }
 
-async function testProxyBrowser(proxy, timeoutMs = 12000) {
-  const start = Date.now();
-  const httpsOk = await tryBrowserConnect(proxy, 'vplink.in', '/gbd1b', timeoutMs);
-  if (httpsOk) return { ok: true, latency_ms: Date.now() - start, protocol: 'https' };
-  const httpOk = await tryBrowserPage(proxy, 'http', 'vplink.in', '/gbd1b', timeoutMs);
-  if (httpOk) return { ok: true, latency_ms: Date.now() - start, protocol: 'http' };
-  return { ok: false, latency_ms: Date.now() - start };
-}
-
-function tryBrowserPage(proxy, scheme, host, path, timeoutMs) {
-  return new Promise((resolve) => {
-    const url = scheme + '://' + host + path;
-    let resolved = false;
-    const timer = setTimeout(() => { if (!resolved) { resolved = true; req.destroy(); resolve(false); } }, timeoutMs);
-    const req = http.request({
-      hostname: proxy.ip, port: parseInt(proxy.port),
-      path: url, method: 'GET',
-      headers: { 'Host': host, 'User-Agent': 'Mozilla/5.0 (Linux; Android 15; Pixel 9 Pro) AppleWebKit/537.36 Chrome/127.0 Mobile Safari/537.36', 'Accept': 'text/html' },
-      timeout: timeoutMs,
-    }, (res) => {
-      let data = '';
-      res.on('data', (chunk) => { data += chunk; if (data.length > 500 && !resolved) { resolved = true; clearTimeout(timer); res.destroy(); resolve(true); } });
-      res.on('end', () => { if (!resolved) { resolved = true; clearTimeout(timer); resolve(data.length > 100); } });
-    });
-    req.on('error', () => { if (!resolved) { resolved = true; clearTimeout(timer); resolve(false); } });
-    req.on('timeout', () => { if (!resolved) { resolved = true; clearTimeout(timer); req.destroy(); resolve(false); } });
-    req.end();
-  });
-}
-
-function tryBrowserConnect(proxy, host, path, timeoutMs) {
-  return new Promise((resolve) => {
-    let resolved = false;
-    const fail = () => { if (!resolved) { resolved = true; clearTimeout(timer); resolve(false); } };
-    const timer = setTimeout(fail, timeoutMs);
-    const connReq = http.request({
-      hostname: proxy.ip, port: parseInt(proxy.port),
-      method: 'CONNECT', path: host + ':443', timeout: timeoutMs,
-    });
-    connReq.on('connect', (res, socket) => {
-      if (resolved) { socket.destroy(); return; }
-      socket.setTimeout(timeoutMs);
-      socket.on('error', () => fail());
-      socket.on('timeout', () => { socket.destroy(); fail(); });
-      const tlsReq = https.request({
-        socket, hostname: host, path, method: 'GET',
-        headers: { 'Host': host }, timeout: timeoutMs, rejectUnauthorized: false,
-      }, (tlsRes) => {
-        let data = '';
-        tlsRes.on('data', (chunk) => { data += chunk; });
-        tlsRes.on('end', () => { if (!resolved) { resolved = true; clearTimeout(timer); socket.destroy(); resolve(data.length > 50); } });
-      });
-      tlsReq.on('error', () => fail());
-      tlsReq.on('timeout', () => { tlsReq.destroy(); fail(); });
-      tlsReq.end();
-    });
-    connReq.on('error', () => fail());
-    connReq.on('timeout', () => { connReq.destroy(); fail(); });
-    connReq.on('response', (res) => { res.on('data', () => {}); res.on('end', () => fail()); });
-    connReq.end();
-  });
-}
+// ══════════════════════════════════════════════════════════════════
+//  TCP-level tests (fast, parallel, used in Engine 1)
+// ══════════════════════════════════════════════════════════════════
 
 function tryConnectQuick(proxy, host, path, timeoutMs) {
   return new Promise((resolve) => {
@@ -159,6 +102,101 @@ function tryHttpQuick(proxy, host, path, timeoutMs) {
   });
 }
 
+async function testProxyQuick(proxy, timeoutMs = 3000) {
+  const start = Date.now();
+  const r = await tryConnectQuick(proxy, 'vplink.in', '/gbd1b', timeoutMs);
+  if (r) return { ok: true, latency_ms: Date.now() - start };
+  const h = await tryHttpQuick(proxy, 'vplink.in', '/gbd1b', timeoutMs);
+  if (h) return { ok: true, latency_ms: Date.now() - start };
+  return { ok: false, latency_ms: Date.now() - start };
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  Engine 2: Playwright browser validation
+//  Tests proxy with REAL Chromium — catches what Node.js CONNECT can't.
+// ══════════════════════════════════════════════════════════════════
+
+let _browserPath = null;
+function getBrowserPath() {
+  if (_browserPath) return _browserPath;
+  try {
+    const execPath = chromium.executablePath();
+    _browserPath = execPath;
+    return execPath;
+  } catch {
+    return null;
+  }
+}
+
+async function testProxyPlaywright(proxy, timeoutMs = 30000) {
+  const proxyUrl = `http://${proxy.ip}:${proxy.port}`;
+  const start = Date.now();
+  let browser = null;
+  try {
+    browser = await chromium.launch({
+      headless: true,
+      args: [
+        `--proxy-server=${proxyUrl}`,
+        '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage',
+        '--disable-blink-features=AutomationControlled',
+        '--use-gl=swiftshader',
+      ],
+    });
+    const ctx = await browser.newContext({
+      viewport: { width: 1280, height: 720 },
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
+    });
+    const page = await ctx.newPage();
+
+    let finalUrl = '';
+    try {
+      await page.goto(TEST_URL, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
+      // Wait for redirect chain: vplink.in → intermediate → article
+      for (let i = 0; i < 20; i++) {
+        await page.waitForTimeout(1000);
+        finalUrl = page.url();
+        if (!finalUrl.includes('vplink.in') && !finalUrl.includes('chrome-error')) break;
+      }
+    } catch {
+      finalUrl = 'chrome-error';
+    }
+
+    const isGood = finalUrl && !finalUrl.includes('chrome-error') && !finalUrl.includes('about:blank');
+    const totalMs = Date.now() - start;
+
+    await browser.close().catch(() => {});
+    browser = null;
+
+    return { ok: isGood, latency_ms: totalMs, finalUrl };
+  } catch (e) {
+    if (browser) await browser.close().catch(() => {});
+    return { ok: false, latency_ms: Date.now() - start, error: e.message };
+  }
+}
+
+async function testProxyBatchPlaywright(proxies, timeoutMs = 30000, concurrency = 5) {
+  const results = [];
+  for (let i = 0; i < proxies.length; i += concurrency) {
+    const chunk = proxies.slice(i, i + concurrency);
+    const outcomes = await Promise.allSettled(chunk.map(p => testProxyPlaywright(p, timeoutMs)));
+    for (let j = 0; j < outcomes.length; j++) {
+      const o = outcomes[j];
+      if (o.status === 'fulfilled') {
+        results.push({ ...chunk[j], ...o.value });
+      } else {
+        results.push({ ...chunk[j], ok: false, latency_ms: 99999 });
+      }
+    }
+    process.stderr.write(`  [Engine 2] Playwright: ${Math.min(i + concurrency, proxies.length)}/${proxies.length} tested\r`);
+  }
+  process.stderr.write('\n');
+  return results;
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  Main getProxy: Engine 1 (TCP alive) → Engine 2 (Playwright validate)
+// ══════════════════════════════════════════════════════════════════
+
 function getRotationIndex(proxies, history) {
   const now = Date.now();
   const cutoff = now - 24 * 60 * 60 * 1000;
@@ -174,46 +212,41 @@ function getRotationIndex(proxies, history) {
   return picked;
 }
 
-// ══════════════════════════════════════════════════════════════════
-// Engine 1 (Clean): Quick alive test batch-by-batch, delete dead from DB
-// Engine 2 (Speed): Browser test + speed test alive, pick fastest
-// Returns FIRST working proxy found — does not test all 500.
-// ══════════════════════════════════════════════════════════════════
 async function getProxy(tier = 'premium') {
   const CONCURRENCY = 50;
-  const BATCH_SIZE = 100;
+  const BATCH_SIZE = 200;
+  const ENGINE2_MAX = 30;
 
   console.error('  [Engine 1] Fetching proxies from Supabase...');
   const allProxies = await fetchProxies(tier);
   console.error(`  [Engine 1] Found ${allProxies.length} ${tier} proxies in DB`);
   if (allProxies.length === 0) return null;
 
-  // Filter out blacklisted (previously failed) proxies
   const blacklist = config.loadProxyBlacklist();
   const proxies = blacklist.length > 0
     ? allProxies.filter(p => !blacklist.includes(`${p.ip}:${p.port}`))
     : allProxies;
-  if (blacklist.length > 0) console.error(`  [Engine 1] Blacklist: ${blacklist.length} proxies excluded, ${proxies.length} remaining`);
+  if (blacklist.length > 0) console.error(`  [Engine 1] Blacklist: ${blacklist.length} excluded, ${proxies.length} remaining`);
   if (proxies.length === 0) return null;
 
   const history = config.loadProxyHistory();
   const shuffled = proxies.sort(() => Math.random() - 0.5);
 
-  // Process in batches of 100 — stop as soon as we find a working proxy
+  let allAlive = [];
+
   for (let bStart = 0; bStart < shuffled.length; bStart += BATCH_SIZE) {
     const batch = shuffled.slice(bStart, bStart + BATCH_SIZE);
     const batchNum = Math.floor(bStart / BATCH_SIZE) + 1;
     const totalBatches = Math.ceil(shuffled.length / BATCH_SIZE);
 
-    // ── Engine 1: Quick alive test this batch ──
-    console.error(`  [Engine 1] Batch ${batchNum}/${totalBatches}: alive test (${batch.length} proxies)...`);
+    console.error(`  [Engine 1] Batch ${batchNum}/${totalBatches}: TCP alive test (${batch.length} proxies, 3s timeout)...`);
     const alive = [];
     const dead = [];
     let completed = 0;
     for (let i = 0; i < batch.length; i += CONCURRENCY) {
       const chunk = batch.slice(i, i + CONCURRENCY);
       const outcomes = await Promise.allSettled(chunk.map(async (p) => {
-        const q = await testProxyQuick(p, 5000);
+        const q = await testProxyQuick(p, 3000);
         return q.ok ? { ...p, latency_ms: q.latency_ms } : null;
       }));
       for (let j = 0; j < outcomes.length; j++) {
@@ -226,105 +259,104 @@ async function getProxy(tier = 'premium') {
     }
     process.stderr.write('\n');
 
-    // Skip dead proxies (don't delete from DB — pool is small, they may recover)
-    if (alive.length === 0) {
-      console.error(`  [Engine 1] Batch ${batchNum}: no alive proxies, trying next...`);
-      continue;
+    if (dead.length > 0) {
+      const deleted = await batchDeleteDead(dead);
+      console.error(`  [Engine 1] Batch ${batchNum}: deleted ${deleted}/${dead.length} dead from DB`);
     }
 
-    // ── Engine 2: Browser test + speed test alive proxies ──
-    console.error(`  [Engine 1] Batch ${batchNum}: ${alive.length} alive → browser test...`);
-    const browserAlive = [];
-    const browserDead = [];
-    completed = 0;
-    for (let i = 0; i < alive.length; i += CONCURRENCY) {
-      const chunk = alive.slice(i, i + CONCURRENCY);
-      const outcomes = await Promise.allSettled(chunk.map(async (p) => {
-        const b = await testProxyBrowser(p, 12000);
-        return b.ok ? { ...p, latency_ms: b.latency_ms, protocol: b.protocol } : null;
-      }));
-      for (let j = 0; j < outcomes.length; j++) {
-        const o = outcomes[j];
-        if (o.status === 'fulfilled' && o.value) browserAlive.push(o.value);
-        else browserDead.push(batch[j]);
-      }
-      completed += chunk.length;
-      process.stderr.write(`  [Engine 1] Browser: ${completed}/${alive.length} (${browserAlive.length} ok)\r`);
-    }
-    process.stderr.write('\n');
+    allAlive.push(...alive);
 
-    if (browserAlive.length === 0) {
-      console.error(`  [Engine 1] Batch ${batchNum}: all alive failed browser test, trying next...`);
-      continue;
+    if (allAlive.length >= ENGINE2_MAX) {
+      console.error(`  [Engine 1] ${allAlive.length} alive proxies found (cap ${ENGINE2_MAX}), moving to Engine 2...`);
+      break;
     }
 
-    // ── Engine 2: Speed test ──
-    console.error(`  [Engine 2] Speed testing ${browserAlive.length} proxies...`);
-    const speedResults = [];
-    completed = 0;
-    for (let i = 0; i < browserAlive.length; i += CONCURRENCY) {
-      const chunk = browserAlive.slice(i, i + CONCURRENCY);
-      const outcomes = await Promise.allSettled(chunk.map(async (p) => {
-        const start = Date.now();
-        let speed_kbps = 0;
-        try {
-          const total = await new Promise((resolve) => {
-            const req = http.request({
-              hostname: p.ip, port: parseInt(p.port),
-              path: 'http://speedtest.tele2.net/100KB.zip', method: 'GET',
-              headers: { 'Host': 'speedtest.tele2.net' }, timeout: 8000,
-            }, (res) => {
-              let t = 0;
-              res.on('data', (chunk) => t += chunk.length);
-              res.on('end', () => resolve(t));
-              res.on('error', () => resolve(0));
-            });
-            req.on('error', () => resolve(0));
-            req.on('timeout', () => { req.destroy(); resolve(0); });
-            req.end();
-          });
-          const elapsed = (Date.now() - start) / 1000;
-          speed_kbps = elapsed > 0 ? Math.round(total / elapsed / 1024) : 0;
-        } catch {}
-        return { ...p, speed_kbps };
-      }));
-      for (const o of outcomes) {
-        if (o.status === 'fulfilled') speedResults.push(o.value);
-      }
-      completed += chunk.length;
-      process.stderr.write(`  [Engine 2] Speed: ${completed}/${browserAlive.length}\r`);
+    if (alive.length >= 10) {
+      console.error(`  [Engine 1] Batch ${batchNum}: ${alive.length} alive, enough for Engine 2...`);
+      break;
     }
-    process.stderr.write('\n');
-
-    speedResults.sort((a, b) => (b.speed_kbps || 0) - (a.speed_kbps || 0) || (a.latency_ms || 9999) - (b.latency_ms || 9999));
-
-    const fast = speedResults.filter(p => p.speed_kbps >= 100).length;
-    const medium = speedResults.filter(p => p.speed_kbps >= 50 && p.speed_kbps < 100).length;
-    console.error(`  [Engine 2] ${fast} fast, ${medium} medium`);
-
-    // Pick from top 30% with rotation
-    const topN = Math.max(1, Math.ceil(speedResults.length * 0.3));
-    const shortlist = speedResults.slice(0, topN);
-    const picked = getRotationIndex(shortlist, history);
-    if (!picked) {
-      const fallback = shortlist[0];
-      console.error(`  [Engine 2] Selected: ${fallback.ip}:${fallback.port} (${fallback.speed_kbps}KB/s)`);
-      return fallback;
-    }
-    console.error(`  [Engine 2] Selected: ${picked.ip}:${picked.port} (${picked.speed_kbps}KB/s)`);
-    return picked;
   }
 
-  console.error('  [Engine] Exhausted all batches — no working proxy');
-  return null;
+  if (allAlive.length === 0) {
+    console.error('  [Engine 1] No alive proxies found in any batch');
+    return null;
+  }
+
+  allAlive.sort((a, b) => (a.latency_ms || 9999) - (b.latency_ms || 9999));
+  const candidates = allAlive.slice(0, ENGINE2_MAX);
+
+  console.error(`  [Engine 2] Playwright validation: testing ${candidates.length} proxies with real Chromium browser...`);
+  const pwResults = await testProxyBatchPlaywright(candidates, 30000, 5);
+
+  const good = pwResults.filter(p => p.ok);
+  if (good.length === 0) {
+    console.error('  [Engine 2] All proxies failed Playwright validation');
+    return null;
+  }
+
+  good.sort((a, b) => (a.latency_ms || 9999) - (b.latency_ms || 9999));
+
+  const fast = good.filter(p => p.latency_ms < 15000).length;
+  const medium = good.filter(p => p.latency_ms >= 15000 && p.latency_ms < 25000).length;
+  console.error(`  [Engine 2] ${good.length} passed (${fast} fast, ${medium} medium)`);
+
+  const topN = Math.max(1, Math.ceil(good.length * 0.3));
+  const shortlist = good.slice(0, topN);
+  const picked = getRotationIndex(shortlist, history);
+  if (picked) {
+    console.error(`  [Engine 2] Selected: ${picked.ip}:${picked.port} (${picked.latency_ms}ms via Playwright)`);
+    return picked;
+  }
+  const fallback = shortlist[0];
+  console.error(`  [Engine 2] Selected (fallback): ${fallback.ip}:${fallback.port} (${fallback.latency_ms}ms via Playwright)`);
+  return fallback;
 }
+
+// ══════════════════════════════════════════════════════════════════
+//  getProxyQuick: lightweight — still tests alive, but skips Playwright
+// ══════════════════════════════════════════════════════════════════
 
 async function getProxyQuick(tier = 'premium') {
   const proxies = await fetchProxies(tier);
   if (proxies.length === 0) return null;
+
+  const blacklist = config.loadProxyBlacklist();
+  const filtered = blacklist.length > 0
+    ? proxies.filter(p => !blacklist.includes(`${p.ip}:${p.port}`))
+    : proxies;
+  if (filtered.length === 0) return null;
+
+  const shuffled = filtered.sort(() => Math.random() - 0.5);
+  const candidates = shuffled.slice(0, 50);
+
+  const alive = [];
+  for (let i = 0; i < candidates.length; i += 25) {
+    const chunk = candidates.slice(i, i + 25);
+    const outcomes = await Promise.allSettled(chunk.map(async (p) => {
+      const q = await testProxyQuick(p, 3000);
+      return q.ok ? { ...p, latency_ms: q.latency_ms } : null;
+    }));
+    for (const o of outcomes) {
+      if (o.status === 'fulfilled' && o.value) alive.push(o.value);
+    }
+    if (alive.length >= 5) break;
+  }
+
+  if (alive.length === 0) return null;
+  alive.sort((a, b) => (a.latency_ms || 9999) - (b.latency_ms || 9999));
+
   const history = config.loadProxyHistory();
-  const picked = getRotationIndex(proxies, history);
-  return picked || proxies[Math.floor(Math.random() * proxies.length)];
+  const picked = getRotationIndex(alive.slice(0, 10), history);
+  return picked || alive[0];
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  Legacy exports (kept for backward compatibility)
+// ══════════════════════════════════════════════════════════════════
+
+async function testProxyBrowser(proxy, timeoutMs = 12000) {
+  const result = await testProxyPlaywright(proxy, timeoutMs);
+  return { ok: result.ok, latency_ms: result.latency_ms, protocol: 'playwright' };
 }
 
 // CLI: node proxy-rotator.js <tier> [--quick|--test <ip:port>]
@@ -340,12 +372,16 @@ if (require.main === module) {
       if (!ip || !port) { console.error('Usage: --test ip:port'); process.exit(1); }
       const proxy = { ip, port: parseInt(port), proto: 'https' };
       console.error(`  [Proxy] Testing ${ip}:${port}...`);
-      const qr = await testProxyQuick(proxy, 5000);
-      console.error(`  [Proxy] Quick: ${qr.ok} (${qr.latency_ms}ms)`);
+
+      console.error('  [Proxy] TCP alive test...');
+      const qr = await testProxyQuick(proxy, 3000);
+      console.error(`  [Proxy] TCP: ${qr.ok ? 'PASS' : 'FAIL'} (${qr.latency_ms}ms)`);
+
       if (qr.ok) {
-        const br = await testProxyBrowser(proxy, 12000);
-        console.error(`  [Proxy] Browser: ${br.ok} (${br.latency_ms}ms)`);
-        if (br.ok) { console.log(`${ip}:${port}`); process.exit(0); }
+        console.error('  [Proxy] Playwright browser test...');
+        const pr = await testProxyPlaywright(proxy, 30000);
+        console.error(`  [Proxy] Playwright: ${pr.ok ? 'PASS' : 'FAIL'} (${pr.latency_ms}ms)`);
+        if (pr.ok) { console.log(`${ip}:${port}`); process.exit(0); }
       }
       process.exit(1);
     } else {
@@ -358,4 +394,4 @@ if (require.main === module) {
   })();
 }
 
-module.exports = { getProxy, getProxyQuick, fetchProxies, testProxyQuick, testProxyBrowser, markDead, deleteProxy };
+module.exports = { getProxy, getProxyQuick, fetchProxies, testProxyQuick, testProxyBrowser, testProxyPlaywright, markDead, deleteProxy, batchDeleteDead };

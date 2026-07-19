@@ -6,6 +6,7 @@ const path = require('path');
 let markDead, addProxyBlacklist;
 try { ({ markDead } = require('./proxy-rotator')); } catch { markDead = async () => false; }
 try { ({ addProxyBlacklist } = require('./config')); } catch { addProxyBlacklist = () => {}; }
+const { generateProfile } = require('./profile-generator');
 
 let BASE_DOMAIN = 'vplink.in';
 let KEY = process.argv[2] || process.env.VPLINK_KEY;
@@ -61,9 +62,14 @@ const reportProxyFailure = async (reason) => {
 });
 
 (async () => {
+  // ── Generate human profile (UA, viewport, locale, fingerprints) ──
+  const profile = generateProfile(false, true);
+  log(`profile: ${profile.viewport.width}x${profile.viewport.height} ${profile.locale} ${profile.timezone} hw=${profile.hardwareConcurrency} mem=${profile.deviceMemory}`);
+
   const stealthArgs = ['--no-sandbox', '--disable-gpu', '--disable-blink-features=AutomationControlled',
     '--disable-dev-shm-usage', '--disable-accelerated-2d-canvas', '--disable-setuid-sandbox',
-    '--disable-automation', '--use-gl=swiftshader'];
+    '--disable-automation', '--use-gl=swiftshader',
+    '--disable-features=IsolateOrigins,site-per-process'];
   const launchOpts = {};
   const isTermux = process.env.VPLINK_TERMUX === '1';
   const headless = isTermux || process.env.VPLINK_HEADLESS === '1';
@@ -78,17 +84,40 @@ const reportProxyFailure = async (reason) => {
   if (process.env.VPLINK_EXTRA_ARGS) launchOpts.args.push(...process.env.VPLINK_EXTRA_ARGS.split(' '));
 
   browser = await chromium.launch(launchOpts);
-  const ctxOpts = { viewport: { width: 1280, height: 720 }, locale: 'en-US' };
-  if (process.env.VPLINK_USER_AGENT) ctxOpts.userAgent = process.env.VPLINK_USER_AGENT;
-  if (process.env.VPLINK_VIEWPORT_WIDTH || process.env.VPLINK_VIEWPORT_HEIGHT) {
-    ctxOpts.viewport = {
-      width: parseInt(process.env.VPLINK_VIEWPORT_WIDTH) || 1280,
-      height: parseInt(process.env.VPLINK_VIEWPORT_HEIGHT) || 720,
-    };
+
+  // ── Persistent context for cookie/localStorage retention between views ──
+  const storageDir = path.join(process.env.HOME || '/tmp', '.vplink3.0', 'storage');
+  const storageFile = path.join(storageDir, 'state.json');
+  if (!fs.existsSync(storageDir)) fs.mkdirSync(storageDir, { recursive: true });
+
+  const ctxOpts = {
+    viewport: process.env.VPLINK_VIEWPORT_WIDTH ? {
+      width: parseInt(process.env.VPLINK_VIEWPORT_WIDTH) || profile.viewport.width,
+      height: parseInt(process.env.VPLINK_VIEWPORT_HEIGHT) || profile.viewport.height,
+    } : profile.viewport,
+    locale: profile.locale,
+    timezoneId: profile.timezone,
+    userAgent: process.env.VPLINK_USER_AGENT || profile.userAgent,
+    extraHTTPHeaders: { 'Accept-Language': profile.languages.join(',') + ';q=0.9' },
+  };
+
+  // Load saved storage state (cookies, localStorage) if available
+  if (fs.existsSync(storageFile)) {
+    try { ctxOpts.storageState = JSON.parse(fs.readFileSync(storageFile, 'utf8')); } catch {}
   }
+
   context = await browser.newContext(ctxOpts);
   page = await context.newPage();
   page.setDefaultNavigationTimeout(90000);
+
+  // Save storage state periodically (every 30s) for cookie persistence
+  const saveStorage = async () => {
+    try {
+      const state = await context.storageState();
+      fs.writeFileSync(storageFile, JSON.stringify(state), 'utf8');
+    } catch {}
+  };
+  setInterval(saveStorage, 30000);
 
   let debugPage = page;
   const debugShot = async (label) => {
@@ -98,21 +127,159 @@ const reportProxyFailure = async (reason) => {
     try { await debugPage.screenshot({ path: path.join(dir, `${label}.png`), fullPage: false }); } catch {}
   };
 
-  await page.addInitScript(() => {
+  // ── Tier 1: Enhanced Stealth Fingerprint Patching ──
+  const p = profile;
+  await page.addInitScript((p) => {
+    // 1. webdriver
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-    window.chrome = { runtime: {} };
-    const orig = window.navigator.permissions.query;
-    window.navigator.permissions.query = p => p.name === 'notifications' ? Promise.resolve({ state: 'denied' }) : orig(p);
-  });
+
+    // 2. plugins (match UA platform)
+    Object.defineProperty(navigator, 'plugins', {
+      get: () => {
+        const plugins = [
+          { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+          { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+          { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
+        ];
+        plugins.length = 3;
+        plugins.refresh = () => {};
+        return plugins;
+      }
+    });
+
+    // 3. languages (from profile)
+    Object.defineProperty(navigator, 'languages', { get: () => p.languages });
+
+    // 4. hardwareConcurrency
+    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => p.hardwareConcurrency });
+
+    // 5. deviceMemory
+    Object.defineProperty(navigator, 'deviceMemory', { get: () => p.deviceMemory });
+
+    // 6. platform
+    Object.defineProperty(navigator, 'platform', { get: () => p.platform });
+
+    // 7. chrome runtime
+    window.chrome = { runtime: {}, loadTimes: () => {}, csi: () => {} };
+
+    // 8. permissions query
+    const origPermQuery = window.navigator.permissions.query;
+    window.navigator.permissions.query = (p) => p.name === 'notifications'
+      ? Promise.resolve({ state: 'denied' })
+      : origPermQuery(p);
+
+    // 9. WebGL fingerprint spoofing
+    const getParameterOrig = WebGLRenderingContext.prototype.getParameter;
+    WebGLRenderingContext.prototype.getParameter = function(param) {
+      // UNMASKED_VENDOR_WEBGL
+      if (param === 37445) return p.webgl.vendor;
+      // UNMASKED_RENDERER_WEBGL
+      if (param === 37446) return p.webgl.renderer;
+      return getParameterOrig.call(this, param);
+    };
+    if (typeof WebGL2RenderingContext !== 'undefined') {
+      const getParameter2Orig = WebGL2RenderingContext.prototype.getParameter;
+      WebGL2RenderingContext.prototype.getParameter = function(param) {
+        if (param === 37445) return p.webgl.vendor;
+        if (param === 37446) return p.webgl.renderer;
+        return getParameter2Orig.call(this, param);
+      };
+    }
+
+    // 10. Canvas fingerprint noise
+    const toDataURL = HTMLCanvasElement.prototype.toDataURL;
+    HTMLCanvasElement.prototype.toDataURL = function(type) {
+      const ctx = this.getContext('2d');
+      if (ctx) {
+        const imageData = ctx.getImageData(0, 0, Math.min(this.width, 16), Math.min(this.height, 16));
+        for (let i = 0; i < imageData.data.length; i += 4) {
+          imageData.data[i] = Math.max(0, Math.min(255, imageData.data[i] + Math.round(p.canvasNoiseSeed * 100)));
+        }
+        ctx.putImageData(imageData, 0, 0);
+      }
+      return toDataURL.apply(this, arguments);
+    };
+    const getImageData = CanvasRenderingContext2D.prototype.getImageData;
+    CanvasRenderingContext2D.prototype.getImageData = function() {
+      const imageData = getImageData.apply(this, arguments);
+      for (let i = 0; i < imageData.data.length; i += 4) {
+        imageData.data[i] = Math.max(0, Math.min(255, imageData.data[i] + Math.round(p.canvasNoiseSeed * 50)));
+      }
+      return imageData;
+    };
+
+    // 11. AudioContext fingerprint noise
+    const origGetFloat = AnalyserNode.prototype.getFloatFrequencyData;
+    AnalyserNode.prototype.getFloatFrequencyData = function(arr) {
+      origGetFloat.call(this, arr);
+      for (let i = 0; i < arr.length; i++) arr[i] += p.audioOffset;
+    };
+    const origGetByte = AnalyserNode.prototype.getByteFrequencyData;
+    AnalyserNode.prototype.getByteFrequencyData = function(arr) {
+      origGetByte.call(this, arr);
+      for (let i = 0; i < arr.length; i++) arr[i] = Math.max(0, Math.min(255, arr[i] + Math.round(p.audioOffset * 1000)));
+    };
+
+    // 12. Screen properties (match viewport + realistic offsets)
+    Object.defineProperty(screen, 'width', { get: () => p.screen.width });
+    Object.defineProperty(screen, 'height', { get: () => p.screen.height });
+    Object.defineProperty(screen, 'availWidth', { get: () => p.screen.availWidth });
+    Object.defineProperty(screen, 'availHeight', { get: () => p.screen.availHeight });
+    Object.defineProperty(screen, 'colorDepth', { get: () => p.screen.colorDepth });
+    Object.defineProperty(screen, 'pixelDepth', { get: () => p.screen.colorDepth });
+
+    // 13. Outer dimensions (browser chrome)
+    if (window.outerWidth === 0) {
+      Object.defineProperty(window, 'outerWidth', { get: () => p.screen.availWidth });
+      Object.defineProperty(window, 'outerHeight', { get: () => p.screen.availHeight });
+    }
+
+    // 14. Connection API
+    if (navigator.connection) {
+      Object.defineProperty(navigator.connection, 'rtt', { get: () => Math.round(50 + Math.random() * 100) });
+    }
+
+    // 15. Touch support detection
+    Object.defineProperty(navigator, 'maxTouchPoints', {
+      get: () => p.platform.includes('Mac') ? 0 : Math.round(Math.random())
+    });
+
+    // 16. Notification permission (already handled above)
+
+    // 17. Battery API (return fake)
+    if (navigator.getBattery) {
+      navigator.getBattery = () => Promise.resolve({
+        charging: true, chargingTime: 0, dischargingTime: Infinity,
+        level: 0.5 + Math.random() * 0.5,
+        addEventListener: () => {}, removeEventListener: () => {},
+      });
+    }
+  }, p);
 
   page.on('framenavigated', frame => {
     if (frame === page.mainFrame()) log(`nav: ${frame.url().substring(0, 120)}`);
   });
 
-  // ── Human-like helpers ──
+  // ── Tier 1+3: Enhanced Human-Like Behavior ──
   const humanDelay = (min, max) => ms(rand(min, max));
+
+  // Bezier curve mouse movement (realistic arc, not linear)
+  const bezierMove = async (fromX, fromY, toX, toY) => {
+    const steps = rand(15, 35);
+    const cp1x = fromX + (toX - fromX) * 0.3 + (Math.random() - 0.5) * 80;
+    const cp1y = fromY + (toY - fromY) * 0.3 + (Math.random() - 0.5) * 80;
+    const cp2x = fromX + (toX - fromX) * 0.7 + (Math.random() - 0.5) * 60;
+    const cp2y = fromY + (toY - fromY) * 0.7 + (Math.random() - 0.5) * 60;
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const t2 = t * t, t3 = t2 * t;
+      const mt = 1 - t, mt2 = mt * mt, mt3 = mt2 * mt;
+      const x = mt3 * fromX + 3 * mt2 * t * cp1x + 3 * mt * t2 * cp2x + t3 * toX;
+      const y = mt3 * fromY + 3 * mt2 * t * cp1y + 3 * mt * t2 * cp2y + t3 * toY;
+      await page.mouse.move(x, y);
+      await ms(rand(5, 20));
+    }
+  };
 
   const humanScroll = async () => {
     const scrolls = rand(1, 3);
@@ -122,13 +289,76 @@ const reportProxyFailure = async (reason) => {
     }
   };
 
+  // ── Deep reading simulation: scroll + mouse wander for 10-15s ──
+  // Uses Playwright direct API (page.mouse.wheel) instead of safeEval for speed.
+  // Skips expensive DOM queries (querySelectorAll hover) — proxy makes each safeEval 2-3s.
+  const humanRead = async (durationSec) => {
+    const dur = Math.min(durationSec || 12, 18);
+    const startTime = Date.now();
+    const startUrl = safeURL();
+    let maxScroll = 0;
+    try {
+      maxScroll = await page.evaluate(() => document.documentElement.scrollHeight - window.innerHeight).catch(() => 0);
+    } catch {}
+    let currentY = 0;
+    log(`human read: ${dur}s, page height=${maxScroll}px`);
+
+    try {
+      // 5-8 scroll iterations (each ~1.5-2.5s including pause)
+      const iterations = rand(5, 8);
+      for (let i = 0; i < iterations; i++) {
+        if (Date.now() - startTime >= dur * 1000) break;
+        if (safeURL() !== startUrl) { log('human read: page navigated, stopping'); break; }
+
+        // Scroll via Playwright direct API (no safeEval overhead)
+        const scrollAmt = Math.random() < 0.2 ? -rand(50, 200) : rand(200, 600);
+        currentY = Math.max(0, Math.min(maxScroll || 5000, currentY + scrollAmt));
+        try { await page.mouse.wheel(0, scrollAmt); } catch { break; }
+
+        // Mouse wander (direct API, no safeEval)
+        const vpW = p.viewport.width, vpH = p.viewport.height;
+        const mx = rand(100, vpW - 100), my = rand(100, vpH - 100);
+        try { await page.mouse.move(mx, my, { steps: rand(5, 15) }); } catch { break; }
+
+        // Mouseover events via quick evaluate (batch, no DOM query)
+        if (Math.random() < 0.2) {
+          try {
+            await page.evaluate(() => {
+              const el = document.elementFromPoint(
+                Math.random() * window.innerWidth,
+                Math.random() * window.innerHeight
+              );
+              if (el) el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+            });
+          } catch {}
+        }
+
+        // Reading pause (shorter through proxy to save time)
+        const pause = rand(800, 2000);
+        await ms(pause);
+
+        // Occasional scroll-back (10%)
+        if (Math.random() < 0.1) {
+          try { await page.mouse.wheel(0, -rand(100, 300)); } catch {}
+          await ms(rand(500, 1200));
+        }
+      }
+    } catch (e) {
+      log(`human read error: ${e.message?.substring(0, 60)}`);
+    }
+    log(`human read done (${Math.round((Date.now() - startTime) / 1000)}s)`);
+  };
+
   const humanMouseMove = async (sel) => {
     try {
       const box = await page.locator(sel).first().boundingBox();
       if (box) {
         const x = box.x + box.width * (0.3 + Math.random() * 0.4);
         const y = box.y + box.height * (0.3 + Math.random() * 0.4);
-        await page.mouse.move(x, y, { steps: rand(5, 15) });
+        // Bezier curve instead of linear steps
+        const fromX = rand(100, p.viewport.width - 100);
+        const fromY = rand(100, p.viewport.height - 100);
+        await bezierMove(fromX, fromY, x, y);
         await humanDelay(100, 300);
       }
     } catch {}
@@ -434,11 +664,11 @@ const reportProxyFailure = async (reason) => {
       if (remaining === -1 && template === 'link1s' && i > 4) return 'done';
       if (remaining === -1 && i > 4) return 'done'; // Timer element gone after initial load = done
 
-      // Stuck timer detection: if countdown stays same value for 5s (10 polls), timer JS is broken
+      // Stuck timer detection: if countdown stays same value for 2.5s (5 polls at 500ms), timer JS is broken
       if (remaining > 0 && remaining === lastVal) {
         stuckCount++;
-        if (stuckCount >= 10) {
-          log(`countdown stuck at ${remaining}s for 5s — timer JS broken, forcing`);
+        if (stuckCount >= 5) {
+          log(`countdown stuck at ${remaining}s for 2.5s — timer JS broken, forcing`);
           return 'stuck';
         }
       } else {
@@ -1015,12 +1245,13 @@ const reportProxyFailure = async (reason) => {
     await debugShot('article-start');
     const startUrl = safeURL();
 
-    // Initial settle
+    // Initial settle — wait for page to fully load before reading
     await humanDelay(2000, 4000);
+    try { await page.waitForLoadState('domcontentloaded', { timeout: 10000 }); } catch {}
     await humanScroll();
     await closeAdOverlay();
 
-    // Detect template by DOM structure (NOT by domain)
+    // Detect template FIRST — if timer is already at 1/-1, skip reading and go straight to button
     let template = await detectTemplate();
     log(`detected template: ${template}`);
 
@@ -1039,6 +1270,17 @@ const reportProxyFailure = async (reason) => {
 
     if (template === 'unknown') {
       await dumpDOM(`unknown-${Date.now()}`);
+    }
+
+    // If timer is already at 1 or -1 (finished during page load), skip reading
+    const countdown = await getCountdown();
+    const timerDone = countdown <= 1 && countdown !== -2;
+    if (timerDone) {
+      log(`timer already at ${countdown} (finished), skipping read`);
+    } else {
+      // Read while timer counts down — generates viewability signals
+      const readSecs = countdown > 0 ? Math.min(countdown - 3, 15) : rand(10, 15);
+      await humanRead(Math.max(readSecs, 5));
     }
 
     let navigated = false;
@@ -1577,6 +1819,7 @@ const reportProxyFailure = async (reason) => {
       const intermediateBase = urlBase(url);
       let redirected = false;
       const intermediateWait = PROXY ? 20 : 15;
+      let sameUrlReloads = 0; // detect self-reload loops
 
       // Capture navigation events to catch redirects that happen between poll intervals
       let capturedNavUrl = null;
@@ -1614,6 +1857,16 @@ const reportProxyFailure = async (reason) => {
           await humanDelay(500, 1500);
           redirected = true;
           break;
+        }
+
+        // Detect self-reload: page reloads to same intermediate URL every ~5s
+        // If still on same URL after 5s intervals, count as reload
+        if (w > 0 && w % 5 === 0) {
+          sameUrlReloads++;
+          if (sameUrlReloads >= 2) {
+            log(`intermediate self-reload detected (${sameUrlReloads}x), proxy can't execute JS redirect`);
+            break;
+          }
         }
 
         // After 8s, try to extract redirect URL from page source
@@ -1684,11 +1937,10 @@ const reportProxyFailure = async (reason) => {
         intermediateStuckCount++;
         log(`intermediate page not redirecting (stuck #${intermediateStuckCount})`);
         if (intermediateStuckCount >= 2) {
-          log('intermediate stuck 2x — force-navigating to vplink.in');
-          intermediateStuckCount = 0;
-          lastBase = '';
-          await page.goto(`https://${BASE_DOMAIN}/${KEY}`, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch(() => {});
-          await humanDelay(2000, 4000);
+          log('intermediate stuck 2x — proxy cannot execute JS redirect, blacklisting');
+          if (PROXY) await reportProxyFailure('intermediate-stuck');
+          proxyBlocked = true;
+          break;
         }
       } else {
         intermediateStuckCount = 0;

@@ -55,8 +55,56 @@ const YOUTUBE_REFERRERS = [
   'https://www.youtube.com/results?search_query=video',
 ];
 
+// ── Locale profiles matching proxy GEO regions ──
+const LOCALE_PROFILES = [
+  { lang: 'en-US', timezone: 'America/New_York', geo: 'US' },
+  { lang: 'en-US', timezone: 'America/Chicago', geo: 'US' },
+  { lang: 'en-US', timezone: 'America/Los_Angeles', geo: 'US' },
+  { lang: 'en-GB', timezone: 'Europe/London', geo: 'GB' },
+  { lang: 'de-DE', timezone: 'Europe/Berlin', geo: 'DE' },
+  { lang: 'fr-FR', timezone: 'Europe/Paris', geo: 'FR' },
+  { lang: 'es-ES', timezone: 'Europe/Madrid', geo: 'ES' },
+  { lang: 'pt-BR', timezone: 'America/Sao_Paulo', geo: 'BR' },
+  { lang: 'hi-IN', timezone: 'Asia/Kolkata', geo: 'IN' },
+  { lang: 'ja-JP', timezone: 'Asia/Tokyo', geo: 'JP' },
+  { lang: 'ko-KR', timezone: 'Asia/Seoul', geo: 'KR' },
+  { lang: 'zh-CN', timezone: 'Asia/Shanghai', geo: 'CN' },
+  { lang: 'ru-RU', timezone: 'Europe/Moscow', geo: 'RU' },
+  { lang: 'ar-SA', timezone: 'Asia/Riyadh', geo: 'SA' },
+  { lang: 'nl-NL', timezone: 'Europe/Amsterdam', geo: 'NL' },
+  { lang: 'it-IT', timezone: 'Europe/Rome', geo: 'IT' },
+  { lang: 'pl-PL', timezone: 'Europe/Warsaw', geo: 'PL' },
+  { lang: 'tr-TR', timezone: 'Europe/Istanbul', geo: 'TR' },
+  { lang: 'id-ID', timezone: 'Asia/Jakarta', geo: 'ID' },
+  { lang: 'th-TH', timezone: 'Asia/Bangkok', geo: 'TH' },
+];
+
+// WebGL fingerprint profiles (vendor, renderer pairs)
+const WEBGL_PROFILES = [
+  { vendor: 'Google Inc. (NVIDIA)', renderer: 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1060 6GB Direct3D11 vs_5_0 ps_5_0, D3D11)' },
+  { vendor: 'Google Inc. (NVIDIA)', renderer: 'ANGLE (NVIDIA, NVIDIA GeForce RTX 2060 Direct3D11 vs_5_0 ps_5_0, D3D11)' },
+  { vendor: 'Google Inc. (NVIDIA)', renderer: 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)' },
+  { vendor: 'Google Inc. (NVIDIA)', renderer: 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1650 Direct3D11 vs_5_0 ps_5_0, D3D11)' },
+  { vendor: 'Google Inc. (AMD)', renderer: 'ANGLE (AMD, AMD Radeon RX 580 Direct3D11 vs_5_0 ps_5_0, D3D11)' },
+  { vendor: 'Google Inc. (AMD)', renderer: 'ANGLE (AMD, AMD Radeon RX 6600 Direct3D11 vs_5_0 ps_5_0, D3D11)' },
+  { vendor: 'Google Inc. (Intel)', renderer: 'ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)' },
+  { vendor: 'Google Inc. (Intel)', renderer: 'ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)' },
+  { vendor: 'Google Inc. (Apple)', renderer: 'Apple GPU' },
+  { vendor: 'Google Inc. (Intel)', renderer: 'ANGLE (Intel, Mesa Intel(R) UHD Graphics 630, OpenGL 4.6)' },
+];
+
+// Canvas fingerprint seeds (for adding noise)
+const CANVAS_NOISE_SEEDS = [0.02, -0.03, 0.01, -0.02, 0.04, -0.01, 0.03, -0.04, 0.015, -0.025];
+
+// Audio context fingerprint offsets
+const AUDIO_OFFSETS = [0.0001, -0.0002, 0.0003, -0.0001, 0.0002, -0.0003, 0.00015, -0.00025];
+
 function pick(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function rand(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
 function generateProfile(mobile = false, youtube = false) {
@@ -70,7 +118,32 @@ function generateProfile(mobile = false, youtube = false) {
     viewport = pick(DESKTOP_VIEWPORTS);
   }
 
-  const profile = { userAgent: ua, viewport };
+  const locale = pick(LOCALE_PROFILES);
+  const webgl = pick(WEBGL_PROFILES);
+  const hwConcurrency = pick([2, 4, 6, 8, 12, 16]);
+  const deviceMemory = pick([2, 4, 8, 16]);
+
+  const profile = {
+    userAgent: ua,
+    viewport,
+    locale: locale.lang,
+    timezone: locale.timezone,
+    geo: locale.geo,
+    languages: [locale.lang.split('-')[0], 'en'],
+    webgl,
+    hardwareConcurrency: hwConcurrency,
+    deviceMemory,
+    canvasNoiseSeed: pick(CANVAS_NOISE_SEEDS),
+    audioOffset: pick(AUDIO_OFFSETS),
+    screen: {
+      width: viewport.width + rand(0, 360),
+      height: viewport.height + rand(200, 500),
+      availWidth: viewport.width,
+      availHeight: viewport.height - rand(40, 80),
+      colorDepth: pick([24, 30, 32]),
+    },
+    platform: ua.includes('Mac') ? 'MacIntel' : ua.includes('Linux') ? 'Linux x86_64' : 'Win32',
+  };
 
   if (youtube) {
     profile.youtubeReferer = pick(YOUTUBE_REFERRERS);
@@ -88,15 +161,12 @@ function generateUserAgent(mobile = false) {
 }
 
 // CLI: node profile-generator.js [mobile=true] [youtube=true]
-// Outputs: USER_AGENT|WIDTHxHEIGHT|REFERER
+// Outputs JSON profile
 if (require.main === module) {
   const mobile = process.argv.includes('mobile=true') || process.argv.includes('mobile=1');
   const youtube = process.argv.includes('youtube=true') || process.argv.includes('youtube=1');
   const profile = generateProfile(mobile, youtube);
-  const ua = profile.userAgent;
-  const vp = profile.viewport;
-  const ref = profile.youtubeReferer || '';
-  process.stdout.write(`${ua}\n${vp.width}x${vp.height}\n${ref}`);
+  process.stdout.write(JSON.stringify(profile));
 }
 
 module.exports = { generateProfile, generateViewport, generateUserAgent, pick };

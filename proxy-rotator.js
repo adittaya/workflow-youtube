@@ -278,11 +278,6 @@ async function getProxy(tier = 'premium') {
     }
     process.stderr.write('\n');
 
-    if (dead.length > 0) {
-      const deleted = await batchDeleteDead(dead);
-      console.error(`  [Engine 1] Batch ${batchNum}: deleted ${deleted}/${dead.length} dead from DB`);
-    }
-
     allAlive.push(...alive);
 
     if (allAlive.length >= ENGINE2_MAX) {
@@ -308,6 +303,11 @@ async function getProxy(tier = 'premium') {
   const pwResults = await testProxyBatchPlaywright(candidates, 30000, 5);
 
   const good = pwResults.filter(p => p.ok);
+  const bad = pwResults.filter(p => !p.ok);
+  if (bad.length > 0) {
+    console.error(`  [Engine 2] Deleting ${bad.length} proxies that failed Playwright validation from DB...`);
+    await batchDeleteDead(bad);
+  }
   if (good.length === 0) {
     console.error('  [Engine 2] All proxies failed Playwright validation');
     return null;

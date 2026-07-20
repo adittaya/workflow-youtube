@@ -1,4 +1,5 @@
 from typing import Optional
+import os
 from installer.packages.definitions import PackageDef, PACKAGES
 from installer.platforms import get_platform, PlatformInfo
 from installer.logging.logger import get_logger
@@ -59,6 +60,56 @@ class PackageManager:
                 log.info(f"{pkg.name} downloaded successfully")
                 return True
 
+        return False
+
+    def install_chromium_with_fallback(self, use_sudo=True) -> bool:
+        """Install Chromium browser; fall back to Google Chrome if apt gives a snap wrapper."""
+        from installer.packages.definitions import get_package
+        from installer.platforms.linux import LinuxPlatform
+
+        def _is_native(path: str) -> bool:
+            try:
+                with open(path, "rb") as f:
+                    return f.read(4) == b"\x7fELF"
+            except OSError:
+                return False
+
+        # Try normal chromium-browser installation
+        chrom_pkg = get_package("chromium-browser")
+        if chrom_pkg and not self.is_installed(chrom_pkg):
+            pm_name = self.get_pm_name(chrom_pkg)
+            if pm_name:
+                status(f"Installing {chrom_pkg.display_name}")
+                get_platform().install_package(pm_name, use_sudo)
+
+        # Check if binary is a native ELF (not snap wrapper)
+        native = _is_native("/usr/bin/chromium-browser") or _is_native("/usr/bin/chromium")
+        if native:
+            log.info("Chromium is a native binary")
+            return True
+
+        # Snap wrapper detected — install Google Chrome instead
+        status("chromium-browser is a snap wrapper (incompatible with Cloud Shell/Docker)", "warn")
+        status("Installing Google Chrome as fallback...")
+        plat_cls = get_platform()
+        if isinstance(plat_cls, LinuxPlatform):
+            ok = plat_cls.install_google_chrome(use_sudo)
+            if ok:
+                status("Installing ChromeDriver for Google Chrome...")
+                chromedriver_pkg = get_package("chromedriver")
+                if chromedriver_pkg:
+                    # chromedriver may also be snap-wrapped; remove it and let webdriver-manager handle it
+                    if use_sudo:
+                        os.system("sudo apt remove -y chromium-chromedriver 2>/dev/null")
+                    else:
+                        os.system("apt remove -y chromium-chromedriver 2>/dev/null")
+                    os.system("pip3 install --quiet webdriver-manager 2>/dev/null")
+                log.info("Google Chrome installed successfully")
+                return True
+            status("Google Chrome installation failed", "error")
+            return False
+
+        log.warning("Not on Linux — cannot install Google Chrome fallback")
         return False
 
     def is_installed(self, pkg: PackageDef) -> bool:

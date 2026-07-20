@@ -134,8 +134,16 @@ def cmd_install():
     pm = PackageManager()
 
     system_results = pm.install_many([
-        pkg for pkg in PACKAGES if pkg.category in ("system", "tool", "runtime", "browser")
+        pkg for pkg in PACKAGES if pkg.category in ("system", "tool", "runtime")
     ])
+
+    # Browser packages — use fallback for chromium-browser snap issue
+    browser_pkgs = [pkg for pkg in PACKAGES if pkg.category == "browser"]
+    for pkg in browser_pkgs:
+        if pkg.name == "chromium-browser":
+            pm.install_chromium_with_fallback(use_sudo)
+        else:
+            pm.install(pkg, use_sudo)
 
     ok_count = sum(1 for v in system_results.values() if v)
     fail_count = sum(1 for v in system_results.values() if not v)

@@ -199,6 +199,39 @@ class LinuxPlatform(BasePlatform):
         return result.success
 
     @staticmethod
+    def install_google_chrome(sudo: bool = True) -> bool:
+        """Install Google Chrome on Debian/Ubuntu when apt chromium-browser is a snap wrapper."""
+        import tempfile
+        arch = platform.machine().lower()
+        if "aarch64" in arch or "arm64" in arch:
+            return False  # no official arm64 .deb
+        deb_url = "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
+        tmp = tempfile.mktemp(suffix=".deb")
+        try:
+            status("Downloading Google Chrome...")
+            result = run_command(f"wget -q -O {tmp} {deb_url}", timeout=120)
+            if not result.success:
+                result = run_command(f"curl -fsSL -o {tmp} {deb_url}", timeout=120)
+            if not result.success:
+                return False
+            status("Installing Google Chrome...")
+            cmd = f"dpkg -i {tmp}"
+            if sudo:
+                cmd = f"sudo {cmd}"
+            result = run_command(cmd, timeout=120)
+            if not result.success:
+                fix_cmd = "apt-get install -f -y"
+                if sudo:
+                    fix_cmd = f"sudo {fix_cmd}"
+                run_command(fix_cmd, timeout=120)
+            return os.path.exists("/usr/bin/google-chrome") or os.path.exists("/usr/bin/google-chrome-stable")
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+    @staticmethod
     def update_package_index(sudo: bool = True) -> bool:
         pm = LinuxPlatform.detect().package_manager
         templ = LinuxPlatform.PM_COMMANDS.get(pm, {}).get("update")

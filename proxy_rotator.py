@@ -13,6 +13,35 @@ import requests as req_lib
 
 import config
 
+
+def _check_native_binary(path: str) -> bool:
+    """Check if path is a real ELF binary (not a snap wrapper shell script)."""
+    try:
+        with open(path, "rb") as f:
+            return f.read(4) == b"\x7fELF"
+    except OSError:
+        return False
+
+
+def _detect_chrome_binary() -> str:
+    """Find the first working Chrome/Chromium native binary."""
+    candidates = [
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/chromium",
+    ]
+    path = os.environ.get("CHROMIUM_PATH", "")
+    if path and os.path.exists(path):
+        return path
+    path = next((p for p in candidates if _check_native_binary(p)), None)
+    if path:
+        return path
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    return "/usr/bin/chromium-browser"
+
 SUPABASE_REST = "/rest/v1"
 TEST_KEY = "gbd1b"
 TEST_URL = f"https://vplink.in/{TEST_KEY}"
@@ -135,7 +164,7 @@ def test_proxy_selenium(proxy, timeout_s=60):
         options.add_argument(
             "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
         )
-        options.binary_location = "/usr/bin/chromium-browser"
+        options.binary_location = _detect_chrome_binary()
         try:
             driver = webdriver.Chrome(options=options)
         except Exception:
@@ -417,7 +446,7 @@ def verify_proxy_ip(proxy):
         options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_argument("--use-gl=swiftshader")
         options.add_argument("--window-size=1280,720")
-        options.binary_location = "/usr/bin/chromium-browser"
+        options.binary_location = _detect_chrome_binary()
 
         try:
             driver = webdriver.Chrome(options=options)

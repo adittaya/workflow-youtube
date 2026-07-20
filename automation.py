@@ -28,6 +28,15 @@ except ImportError:
 
 from profile_generator import generate_profile
 
+
+def _check_native_binary(path: str) -> bool:
+    """Check if path is a real ELF binary (not a snap wrapper shell script)."""
+    try:
+        with open(path, "rb") as f:
+            return f.read(4) == b"\x7fELF"
+    except OSError:
+        return False
+
 # ── Globals ──
 BASE_DOMAIN = "vplink.in"
 KEY = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("VPLINK_KEY", "")
@@ -1437,10 +1446,18 @@ def main():
     elif os.environ.get("CHROMIUM_PATH"):
         options.binary_location = os.environ["CHROMIUM_PATH"]
     else:
-        for p in ["/usr/bin/chromium-browser", "/usr/bin/chromium", "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable"]:
-            if os.path.exists(p):
-                options.binary_location = p
-                break
+        candidates = [
+            "/usr/bin/google-chrome-stable",
+            "/usr/bin/google-chrome",
+            "/usr/bin/chromium-browser",
+            "/usr/bin/chromium",
+        ]
+        options.binary_location = next((p for p in candidates if _check_native_binary(p)), None)
+        if not options.binary_location:
+            for p in candidates:
+                if os.path.exists(p):
+                    options.binary_location = p
+                    break
 
     if PROXY:
         options.add_argument(f"--proxy-server={PROXY}")

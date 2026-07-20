@@ -77,6 +77,11 @@ def first_run_wizard(config: InstallerConfig, platform):
 
 
 def cmd_install():
+    # Clear stale bytecode before importing submodules
+    import shutil
+    for pyc_dir in Path(__file__).resolve().parent.rglob("__pycache__"):
+        shutil.rmtree(pyc_dir, ignore_errors=True)
+
     heading(f"VPLink {__version__} Installer")
 
     log = get_logger("install")

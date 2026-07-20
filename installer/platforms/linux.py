@@ -8,6 +8,7 @@ from typing import Optional
 
 from installer.core.executor import check_command, get_command_path, run_command
 from installer.platforms.base import BasePlatform, PlatformInfo
+from installer.interactive.ui import status
 
 
 class LinuxPlatform(BasePlatform):

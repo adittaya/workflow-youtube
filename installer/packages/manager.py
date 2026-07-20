@@ -91,25 +91,19 @@ class PackageManager:
         # Snap wrapper detected — install Google Chrome instead
         status("chromium-browser is a snap wrapper (incompatible with Cloud Shell/Docker)", "warn")
         status("Installing Google Chrome as fallback...")
-        plat_cls = get_platform()
-        if isinstance(plat_cls, LinuxPlatform):
-            ok = plat_cls.install_google_chrome(use_sudo)
-            if ok:
-                status("Installing ChromeDriver for Google Chrome...")
-                chromedriver_pkg = get_package("chromedriver")
-                if chromedriver_pkg:
-                    # chromedriver may also be snap-wrapped; remove it and let webdriver-manager handle it
-                    if use_sudo:
-                        os.system("sudo apt remove -y chromium-chromedriver 2>/dev/null")
-                    else:
-                        os.system("apt remove -y chromium-chromedriver 2>/dev/null")
-                    os.system("pip3 install --quiet webdriver-manager 2>/dev/null")
-                log.info("Google Chrome installed successfully")
-                return True
-            status("Google Chrome installation failed", "error")
-            return False
-
-        log.warning("Not on Linux — cannot install Google Chrome fallback")
+        ok = LinuxPlatform.install_google_chrome(use_sudo)
+        if ok:
+            status("Installing ChromeDriver for Google Chrome...")
+            chromedriver_pkg = get_package("chromedriver")
+            if chromedriver_pkg:
+                if use_sudo:
+                    os.system("sudo apt remove -y chromium-chromedriver 2>/dev/null")
+                else:
+                    os.system("apt remove -y chromium-chromedriver 2>/dev/null")
+                os.system("pip3 install --quiet webdriver-manager 2>/dev/null")
+            log.info("Google Chrome installed successfully")
+            return True
+        status("Google Chrome installation failed", "error")
         return False
 
     def is_installed(self, pkg: PackageDef) -> bool:

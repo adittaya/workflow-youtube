@@ -146,12 +146,14 @@ def cmd_install():
     ])
 
     # Browser packages — use fallback for chromium-browser snap issue
+    browser_results: dict[str, bool] = {}
     browser_pkgs = [pkg for pkg in PACKAGES if pkg.category == "browser"]
     for pkg in browser_pkgs:
         if pkg.name == "chromium-browser":
-            pm.install_chromium_with_fallback(use_sudo)
+            browser_results[pkg.name] = pm.install_chromium_with_fallback(use_sudo)
         else:
-            pm.install(pkg, use_sudo)
+            browser_results[pkg.name] = pm.install(pkg, use_sudo)
+    system_results.update(browser_results)
 
     ok_count = sum(1 for v in system_results.values() if v)
     fail_count = sum(1 for v in system_results.values() if not v)

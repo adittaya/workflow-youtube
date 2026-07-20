@@ -324,6 +324,16 @@ RESULTS_DIR="$SCRIPT_DIR/results/$RUN_ID"
 mkdir -p "$RESULTS_DIR"
 deep_cleanup
 
+# ════════════════════════════════════════════════════════
+#  SESSION-BASED PROXY ROTATION
+#  One proxy per session (2-4 views), not per view.
+#  CPM platforms reward stable IPs and punish rapid IP hopping.
+# ════════════════════════════════════════════════════════
+SESSION_SIZE=3           # views per proxy session
+SESSION_BREAK_MIN=8     # minutes between sessions
+VIEW_IN_SESSION=0
+CURRENT_PROXY=""
+
 for (( i=1; i<=VIEWS; i++ )); do
   echo -e "${BOLD}══════════════════════════════════════════════${NC}"
   echo -e "${BOLD}  View $i of $VIEWS${NC}"
@@ -353,16 +363,31 @@ for (( i=1; i<=VIEWS; i++ )); do
     fi
   fi
 
-  # ── Proxy ─────────────────────────────────────────────
+  # ── Proxy (session-based: reuse same proxy for SESSION_SIZE views) ──
   unset VPLINK_PROXY
   if [ "$PROXY_ENABLED" = "true" ]; then
-    info "Testing all proxies (clean + speed)..."
-    PROXY_RESULT=$(run_with_timeout 120 "$NODE_BIN" "$PROXY_ROTATOR" "$PROXY_TIER" | tail -1) || true
-    if [ -n "$PROXY_RESULT" ]; then
-      export VPLINK_PROXY="http://${PROXY_RESULT}"
-      ok "Proxy: $VPLINK_PROXY"
+    # Only get a new proxy at start of session (every SESSION_SIZE views)
+    if [ -z "$CURRENT_PROXY" ] || [ "$VIEW_IN_SESSION" -ge "$SESSION_SIZE" ]; then
+      if [ -n "$CURRENT_PROXY" ]; then
+        info "Session ended ($SESSION_SIZE views). Waiting ${SESSION_BREAK_MIN}min break..."
+        SESSION_BREAK=$(( SESSION_BREAK_MIN * 60 + RANDOM % 300 ))
+        sleep "$SESSION_BREAK"
+      fi
+      VIEW_IN_SESSION=0
+      info "Testing all proxies (clean + speed)..."
+      PROXY_RESULT=$(run_with_timeout 120 "$NODE_BIN" "$PROXY_ROTATOR" "$PROXY_TIER" | tail -1) || true
+      if [ -n "$PROXY_RESULT" ]; then
+        CURRENT_PROXY="$PROXY_RESULT"
+        ok "Session proxy: http://${CURRENT_PROXY}"
+      else
+        warn "No proxy available, running without proxy"
+        CURRENT_PROXY=""
+      fi
     else
-      warn "No proxy available, running without proxy"
+      info "Reusing session proxy (view $((VIEW_IN_SESSION+1))/$SESSION_SIZE): http://${CURRENT_PROXY}"
+    fi
+    if [ -n "$CURRENT_PROXY" ]; then
+      export VPLINK_PROXY="http://${CURRENT_PROXY}"
     fi
   fi
 
@@ -428,6 +453,7 @@ for (( i=1; i<=VIEWS; i++ )); do
     fi
   fi
   echo ""
+  VIEW_IN_SESSION=$((VIEW_IN_SESSION + 1))
 done
 
 # ════════════════════════════════════════════════════════

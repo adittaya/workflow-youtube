@@ -289,11 +289,11 @@ const reportProxyFailure = async (reason) => {
     }
   };
 
-  // ── Deep reading simulation: scroll + mouse wander for 10-15s ──
+  // ── Deep reading simulation: scroll + mouse wander for 35-65s ──
+  // CPM sites require 35s+ viewability for a view to count.
   // Uses Playwright direct API (page.mouse.wheel) instead of safeEval for speed.
-  // Skips expensive DOM queries (querySelectorAll hover) — proxy makes each safeEval 2-3s.
   const humanRead = async (durationSec) => {
-    const dur = Math.min(durationSec || 12, 18);
+    const dur = Math.min(durationSec || 45, 70);
     const startTime = Date.now();
     const startUrl = safeURL();
     let maxScroll = 0;
@@ -304,8 +304,8 @@ const reportProxyFailure = async (reason) => {
     log(`human read: ${dur}s, page height=${maxScroll}px`);
 
     try {
-      // 5-8 scroll iterations (each ~1.5-2.5s including pause)
-      const iterations = rand(5, 8);
+      // 12-20 scroll iterations (each ~2-3.5s including pause)
+      const iterations = rand(12, 20);
       for (let i = 0; i < iterations; i++) {
         if (Date.now() - startTime >= dur * 1000) break;
         if (safeURL() !== startUrl) { log('human read: page navigated, stopping'); break; }
@@ -333,14 +333,20 @@ const reportProxyFailure = async (reason) => {
           } catch {}
         }
 
-        // Reading pause (shorter through proxy to save time)
-        const pause = rand(800, 2000);
+        // Reading pause (3-7s simulating real reading)
+        const pause = rand(3000, 7000);
         await ms(pause);
 
-        // Occasional scroll-back (10%)
-        if (Math.random() < 0.1) {
+        // Occasional scroll-back (15%)
+        if (Math.random() < 0.15) {
           try { await page.mouse.wheel(0, -rand(100, 300)); } catch {}
-          await ms(rand(500, 1200));
+          await ms(rand(1000, 2500));
+        }
+
+        // Occasional mouse jitter (idle behavior)
+        if (Math.random() < 0.15) {
+          try { await page.mouse.move(mx + rand(-30, 30), my + rand(-20, 20), { steps: rand(3, 8) }); } catch {}
+          await ms(rand(200, 600));
         }
       }
     } catch (e) {
@@ -1236,6 +1242,23 @@ const reportProxyFailure = async (reason) => {
       }
     }
 
+    // Fallback: try clicking any learn_more.php link on the page
+    const learnMore = await safeEval(() => {
+      const links = document.querySelectorAll('a[href*="learn_more.php"]');
+      for (const a of links) {
+        if (a.offsetParent !== null) {
+          window.location.href = a.href;
+          return a.href;
+        }
+      }
+      return null;
+    });
+    if (learnMore) {
+      log(`clicked learn_more.php link: ${learnMore.substring(0, 80)}`);
+      await humanDelay(1000, 2000);
+      return true;
+    }
+
     return false;
   };
 
@@ -1244,6 +1267,13 @@ const reportProxyFailure = async (reason) => {
     log('article page');
     await debugShot('article-start');
     const startUrl = safeURL();
+
+    // Detect homepage (no article slug) — funnel chain exhausted, go back to vplink.in
+    const urlPath = new URL(startUrl).pathname;
+    if (urlPath === '/' || urlPath === '') {
+      log('landed on homepage (no article slug) — funnel exhausted, navigating to vplink.in');
+      return false;
+    }
 
     // Initial settle — wait for page to fully load before reading
     await humanDelay(2000, 4000);
@@ -1278,9 +1308,9 @@ const reportProxyFailure = async (reason) => {
     if (timerDone) {
       log(`timer already at ${countdown} (finished), skipping read`);
     } else {
-      // Read while timer counts down — generates viewability signals
-      const readSecs = countdown > 0 ? Math.min(countdown - 3, 15) : rand(10, 15);
-      await humanRead(Math.max(readSecs, 5));
+      // Read while timer counts down — 35-65s for real viewability signals
+      const readSecs = countdown > 0 ? Math.max(countdown + 5, 35) : rand(35, 55);
+      await humanRead(Math.min(readSecs, 65));
     }
 
     let navigated = false;
@@ -1951,15 +1981,21 @@ const reportProxyFailure = async (reason) => {
 
     // ── Article / unknown page ──
     const navigated = await handleArticle();
-    if (!navigated) {
-      log('exhausted, force-navigating to vplink.in');
-      lastBase = '';
-      await page.goto(`https://${BASE_DOMAIN}/${KEY}`, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch(() => {});
-      await humanDelay(2000, 4000);
-      for (let i = 0; i < 15; i++) {
-        await ms(1000);
-        if (!safeURL().includes('vplink.in')) break;
-      }
+    if (navigated) {
+      // Inter-article delay: CPM platforms reward natural browsing gaps (8-22s)
+      const interDelay = rand(8000, 22000);
+      log(`inter-article delay: ${Math.round(interDelay / 1000)}s`);
+      await ms(interDelay);
+      continue;
+    }
+    // handleArticle returned false — page exhausted or homepage
+    log('exhausted, force-navigating to vplink.in');
+    lastBase = '';
+    await page.goto(`https://${BASE_DOMAIN}/${KEY}`, { waitUntil: 'domcontentloaded', timeout: navTimeout }).catch(() => {});
+    await humanDelay(2000, 4000);
+    for (let i = 0; i < 15; i++) {
+      await ms(1000);
+      if (!safeURL().includes('vplink.in')) break;
     }
   }
 

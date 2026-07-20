@@ -75,8 +75,20 @@ ensure_project() {
     if [ -d "$INSTALL_DIR" ]; then
         if [ -d "$INSTALL_DIR/installer" ]; then
             info "Updating VPLink..."
-            git -C "$INSTALL_DIR" pull --ff-only 2>/dev/null || true
-            # rm __pycache__ entirely — stale .pyc can persist after commit switches
+            git -C "$INSTALL_DIR" pull --ff-only 2>/dev/null || {
+                warn "git pull failed — stale bytecode detected, resetting..."
+                git -C "$INSTALL_DIR" clean -fd 2>/dev/null || true
+                git -C "$INSTALL_DIR" reset --hard HEAD 2>/dev/null || true
+                git -C "$INSTALL_DIR" pull --ff-only 2>/dev/null || {
+                    warn "Still failing — re-cloning..."
+                    rm -rf "$INSTALL_DIR"
+                    git clone --depth=1 "$REPO" "$INSTALL_DIR" || {
+                        error "Clone failed — check network"
+                        exit 1
+                    }
+                }
+            }
+            # Purge all bytecode caches
             find "$INSTALL_DIR" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
             find "$INSTALL_DIR" -name '*.pyc' -delete 2>/dev/null || true
             find "$INSTALL_DIR" -name '*.pyo' -delete 2>/dev/null || true

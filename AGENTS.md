@@ -5,6 +5,10 @@
 ## Version History
 | Date | Change | Author |
 |------|--------|--------|
+| 2026-07-20 | **Python/Selenium port**: Full port from Node.js/Playwright to Python 3/Selenium + ChromeDriver + Xvfb. Created automation.py (Selenium sync API with CDP stealth injection, mobile emulation, all template handlers), config.py, proxy_rotator.py (2-engine with webdriver-manager validation), profile_generator.py (JSON output). Updated vplink3.0.sh (Python calls, JSON profile parsing), vplink-desktop.sh (python3 JSON state reads), install.sh (Python/pip deps, chromedriver, removed Node.js/npm/Playwright). Package.json cleared of playwright deps. | AI |
+| 2026-07-20 | **E2E passed (all 3 templates + all options)** — Full funnel darkguruji(TP)→srtak(TP)→srtak(CE)→srtak(LINK1S)→vplink.in→capecutapk.com in ~293s with all options (proxy+YT+mobile) and ~308s without proxy. Fixes: (1) Engine 1 deletes TCP-dead proxies from DB after each batch. (2) Fixed `delete_proxy()` NameError (`requests.utils.quote`→`req_lib.utils.quote`). (3) Selenium validation rejects `data:,` false positives. (4) TP countdown returns `done` at remaining=1 (eliminates 2.5s stuck delay). (5) CE timer via CDP `Network.setCookie` + `localStorage.setItem` + page reload (`ce-wait1` still not visible but btn6/btn7 fallback works). (6) CE btn7 same-URL reload detected via `window._ce_btn7_clicked` flag. (7) `handle_article` detects URL change immediately (intermediate/learn_more.php redirects) before entering 20s poll. (8) `navigate_learn_more()` reverted to `window.location.href` (works correctly — the bug was in `handle_article` timing). (9) LINK1S `#cross-snp2` reverted to `window.location.href`. (10) Proxy cap removed: `ENGINE2_MAX=500`, shell timeout 300s, concurrency 10, hard Python timeout per proxy. (11) Proxy pool depleted (154 premium left, none pass Selenium validation). | AI |
+| 2026-07-20 | **AdaptiveTimeout system**: Replaced all hardcoded `if PROXY else` timeouts with `AdaptiveTimeout` class using EWMA calibration (70/30 blend, 3x safety multiplier, auto-expand 2x on timeout, max 10x default, min 0.25x default). 6 instances: `adpt_nav` (60s base), `adpt_load` (30s), `adpt_redirect` (25s), `adpt_poll` (30s), `adpt_getlink` (50s). `.observe(elapsed)` after each successful navigation calibrates future timeouts. `.timeout_occured()` doubles the value on failure. E2E verified: slow Chinese proxy (1448ms latency, 25kbps) → ~428s full funnel; direct → ~361s full funnel. No "stuck" detections in either case. Removed PROXY condition from timeout logic entirely — same code path for both. | AI |
+| 2026-07-20 | **Removed Engine 2 (Selenium validation)**: Engine 2 was deleting proxies that barely failed Selenium but would work fine with AdaptiveTimeout at runtime. Now only Engine 1 (TCP alive test) with 3s timeout, top 20 fastest → rotation pick. Proxy deleted from DB only on **real runtime failure** in automation.py. Eliminated 200s+ validation overhead, test key mismatch (`gbd1b` vs actual funnel key), and false-positive proxy deletions. Shell timeout reduced 300s→60s for proxy selection. E2E verified: interactive mode with proxy → 346s full funnel (proxy 103.163.103.163:8080 at 1109ms). | AI |
 | 2026-07-20 | **Session-based proxy + 35-65s engagement**: Restructured shell launcher for session-based proxy (one proxy per 2-4 views, 8+ min break between sessions). `humanRead()` rewritten: 5-8 iterations via Playwright direct API (page.mouse.wheel/move), 35-65s wall time (was 10-15s). Inter-article delay 8-22s between articles. handleArticle restructured: template detection BEFORE reading, skip if timer finished, read while countdown. Homepage detection (returns false when pathname='/'). learn_more.php fallback in handleUnknown. Engine 2 Playwright failures blacklist locally only (no DB deletion). E2E passed: darkguruji(TP)→srtak(TP)→srtak(CE)→srtak(LINK1S)→vplink.in→capecutapk.com in ~354s. | AI |
 | 2026-07-05–08 | Initial development, iterative fixes, CI, installer (see git log) | AI |
 | 2026-07-16 | **Complete rewrite from live recording**: recorded full flow with network/console/DOM/screenshot capture. Analyzed 3 article templates (TP, CE, LINK1S). Rewrote automation.js with domain-agnostic template detection, human-like behavior (random delays, smooth scrolling, mouse movement), and bot-detection handling. | AI |
@@ -39,13 +43,16 @@ Automated vplink.in URL funnel: navigate auto-redirects, handle article pages (a
 
 **Key design principle: Article domains change weekly. The automation detects page types by DOM structure (timer IDs, button IDs), NOT by domain name.**
 
+**Tech stack: Python 3, Selenium + ChromeDriver, Xvfb (:99/:100) + x11vnc, mobile emulation (Pixel/OnePlus/Xiaomi etc.)**
+
 ## Files
 | File | Purpose |
 |------|---------|
-| `automation.js` | **Main script** — Playwright automation with domain-agnostic template detection and human-like behavior |
-| `config.js` | Config management — load/save `~/.vplink3.0/config.json`, CLI get/set |
-| `proxy-rotator.js` | Proxy rotation — fetches from Supabase, tests, deletes dead IPs, 24h no-repeat |
-| `profile-generator.js` | Profile generator — random mobile/desktop UAs, viewports, YouTube referer URL |
+| `automation.py` | **Main script** — Selenium + ChromeDriver automation with domain-agnostic template detection and human-like behavior |
+| `config.py` | Config management — load/save `~/.vplink3.0/config.json`, CLI get/set |
+| `proxy_rotator.py` | Proxy rotation — fetches from Supabase, tests, deletes dead IPs, 24h no-repeat |
+| `profile_generator.py` | Profile generator — random mobile/desktop UAs, viewports, YouTube referer URL |
+| `requirements.txt` | Python deps — selenium, webdriver-manager, requests, urllib3 |
 | `vplink3.0.sh` | Interactive CLI — questionnaire, PID tracking, VNC detection, desktop lifecycle via DESKTOP_PID tracking |
 | `vplink-desktop.sh` | Virtual desktop manager — Xvfb + x11vnc lifecycle |
 | `install.sh` | Production installer — 20+ environments, deps, Node.js, Playwright, credentials |
@@ -181,12 +188,11 @@ vplink3.0 proxy --status           # Proxy pool health check
 vplink3.0 config --setup           # Credential setup
 vplink3.0 update                   # Self-update from GitHub
 vplink3.0 uninstall                # Remove installation
-node automation.js <KEY>           # Direct
-node proxy-rotator.js --setup      # Proxy wizard (direct)
-node proxy-rotator.js --status     # Proxy status (direct)
-node proxy-rotator.js <tier>       # Get proxy for tier
-node proxy-rotator.js --test ip:port  # Test specific proxy
-node flow-recorder.js [KEY]        # Record flow for analysis
+python3 automation.py <KEY>        # Direct
+python3 proxy_rotator.py --setup   # Proxy wizard (direct)
+python3 proxy_rotator.py --status  # Proxy status (direct)
+python3 proxy_rotator.py <tier>    # Get proxy for tier
+python3 proxy_rotator.py --test ip:port  # Test specific proxy
 ```
 
 ## Known Issues

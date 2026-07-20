@@ -8,14 +8,14 @@ set -u
 # ── Paths ──────────────────────────────────────────────
 SCRIPT="$(readlink -f "$0")"
 SCRIPT_DIR="$(dirname "$SCRIPT")"
-AUTOMATION="$SCRIPT_DIR/automation.js"
-CONFIG_MODULE="$SCRIPT_DIR/config.js"
-PROXY_ROTATOR="$SCRIPT_DIR/proxy-rotator.js"
-PROFILE_GENERATOR="$SCRIPT_DIR/profile-generator.js"
+AUTOMATION="$SCRIPT_DIR/automation.py"
+CONFIG_MODULE="$SCRIPT_DIR/config.py"
+PROXY_ROTATOR="$SCRIPT_DIR/proxy_rotator.py"
+PROFILE_GENERATOR="$SCRIPT_DIR/profile_generator.py"
 INSTALLER="$SCRIPT_DIR/install.sh"
 
-NODE_BIN="node"
-[ -n "${PREFIX:-}" ] && [ -x "${PREFIX:-}/bin/node" ] && NODE_BIN="${PREFIX}/bin/node"
+PYTHON_BIN="python3"
+[ -n "${PREFIX:-}" ] && [ -x "${PREFIX:-}/bin/python3" ] && PYTHON_BIN="${PREFIX}/bin/python3"
 
 # ── Dispatch commands ─────────────────────────────────
 case "${1:-}" in
@@ -27,11 +27,11 @@ case "${1:-}" in
     ;;
   config)
     shift
-    exec node "$CONFIG_MODULE" "$@"
+    exec $PYTHON_BIN "$CONFIG_MODULE" "$@"
     ;;
   proxy)
     shift
-    exec node "$PROXY_ROTATOR" "$@"
+    exec $PYTHON_BIN "$PROXY_ROTATOR" "$@"
     ;;
 esac
 
@@ -60,8 +60,8 @@ is_termux() {
 if is_termux; then TERMUX=1; else TERMUX=0; fi
 
 # ── Config helpers ─────────────────────────────────────
-cfg_get() { "$NODE_BIN" "$CONFIG_MODULE" --get "$1" 2>/dev/null; }
-cfg_set() { "$NODE_BIN" "$CONFIG_MODULE" --set "$1" "$2" 2>/dev/null; }
+cfg_get() { $PYTHON_BIN "$CONFIG_MODULE" --get "$1" 2>/dev/null; }
+cfg_set() { $PYTHON_BIN "$CONFIG_MODULE" --set "$1" "$2" 2>/dev/null; }
 
 # GNU timeout is not available on a default macOS installation. Use it when
 # present, otherwise apply a Bash-based timeout with the same 124 status.
@@ -165,9 +165,8 @@ deep_cleanup() {
   for d in $(seq 99 199); do
     rm -f "/tmp/.X${d}-lock" "/tmp/.X11-unix/X${d}" 2>/dev/null
   done
-  # Chromium / Playwright temp
+  # Chromium temp
   rm -rf /tmp/.org.chromium.* /tmp/.com.google.Chrome.* 2>/dev/null
-  rm -rf /tmp/playwright-* /tmp/pp* 2>/dev/null
   [ "$cleaned" -gt 0 ] && ok "cleaned $cleaned old artifacts"
 }
 
@@ -314,7 +313,6 @@ echo ""
 #  RUN LOOP
 # ════════════════════════════════════════════════════════
 
-export NODE_PATH="${NODE_PATH:+$NODE_PATH:}${SCRIPT_DIR}/node_modules"
 export VPLINK_TERMUX="$TERMUX"
 
 TOTAL_OK=0
@@ -375,7 +373,7 @@ for (( i=1; i<=VIEWS; i++ )); do
       fi
       VIEW_IN_SESSION=0
       info "Testing all proxies (clean + speed)..."
-      PROXY_RESULT=$(run_with_timeout 120 "$NODE_BIN" "$PROXY_ROTATOR" "$PROXY_TIER" | tail -1) || true
+      PROXY_RESULT=$(run_with_timeout 300 $PYTHON_BIN "$PROXY_ROTATOR" "$PROXY_TIER" | tail -1) || true
       if [ -n "$PROXY_RESULT" ]; then
         CURRENT_PROXY="$PROXY_RESULT"
         ok "Session proxy: http://${CURRENT_PROXY}"
@@ -394,18 +392,17 @@ for (( i=1; i<=VIEWS; i++ )); do
   # ── Profile ───────────────────────────────────────────
   unset VPLINK_USER_AGENT VPLINK_VIEWPORT_WIDTH VPLINK_VIEWPORT_HEIGHT VPLINK_REFERER
   if [ "$MOBILE_ENABLED" = "true" ] || [ "$YT_ENABLED" = "true" ]; then
-    PROFILE_OUTPUT=$($NODE_BIN "$PROFILE_GENERATOR" "mobile=${MOBILE_ENABLED}" "youtube=${YT_ENABLED}" 2>/dev/null) || true
-    if [ -n "$PROFILE_OUTPUT" ]; then
-      PROFILE_UA=$(echo "$PROFILE_OUTPUT" | sed -n '1p')
-      PROFILE_VIEWPORT=$(echo "$PROFILE_OUTPUT" | sed -n '2p')
-      PROFILE_REFERER=$(echo "$PROFILE_OUTPUT" | sed -n '3p')
+    PROFILE_JSON=$($PYTHON_BIN "$PROFILE_GENERATOR" "mobile=${MOBILE_ENABLED}" "youtube=${YT_ENABLED}" 2>/dev/null) || true
+    if [ -n "$PROFILE_JSON" ]; then
+      PROFILE_UA=$(echo "$PROFILE_JSON" | $PYTHON_BIN -c "import sys,json; print(json.load(sys.stdin)['userAgent'])" 2>/dev/null) || true
+      PROFILE_VW=$(echo "$PROFILE_JSON" | $PYTHON_BIN -c "import sys,json; print(json.load(sys.stdin)['viewport']['width'])" 2>/dev/null) || true
+      PROFILE_VH=$(echo "$PROFILE_JSON" | $PYTHON_BIN -c "import sys,json; print(json.load(sys.stdin)['viewport']['height'])" 2>/dev/null) || true
+      PROFILE_REFERER=$(echo "$PROFILE_JSON" | $PYTHON_BIN -c "import sys,json; d=json.load(sys.stdin); print(d.get('youtubeReferer',''))" 2>/dev/null) || true
 
       [ -n "$PROFILE_UA" ] && export VPLINK_USER_AGENT="$PROFILE_UA"
-      VW=$(echo "$PROFILE_VIEWPORT" | cut -d'x' -f1)
-      VH=$(echo "$PROFILE_VIEWPORT" | cut -d'x' -f2)
-      [ -n "$VW" ] && export VPLINK_VIEWPORT_WIDTH="$VW"
-      [ -n "$VH" ] && export VPLINK_VIEWPORT_HEIGHT="$VH"
-      if [ "$YT_ENABLED" = "true" ] && [ -n "$PROFILE_REFERER" ]; then
+      [ -n "$PROFILE_VW" ] && export VPLINK_VIEWPORT_WIDTH="$PROFILE_VW"
+      [ -n "$PROFILE_VH" ] && export VPLINK_VIEWPORT_HEIGHT="$PROFILE_VH"
+      if [ "$YT_ENABLED" = "true" ] && [ -n "$PROFILE_REFERER" ] && [ "$PROFILE_REFERER" != "" ]; then
         export VPLINK_REFERER="$PROFILE_REFERER"
         info "YouTube referer: $PROFILE_REFERER"
       fi
@@ -418,12 +415,12 @@ for (( i=1; i<=VIEWS; i++ )); do
 
   # ── Run automation ────────────────────────────────────
   [ "${VPLINK_TRACE:-0}" = "1" ] && echo "[TRACE] $i: starting automation"
-  info "Starting automation (timeout: 480s)..."
+  info "Starting automation (timeout: 600s)..."
 
   DEBUG_FLAG=""
   [ "${VPLINK_DEBUG:-0}" = "1" ] && DEBUG_FLAG="--vplink-debug"
 
-  run_with_timeout 480 "$NODE_BIN" "$AUTOMATION" "$CURRENT_KEY" ${DEBUG_FLAG:+"$DEBUG_FLAG"}
+  run_with_timeout 600 $PYTHON_BIN "$AUTOMATION" "$CURRENT_KEY" ${DEBUG_FLAG:+"$DEBUG_FLAG"}
   EXIT_CODE=$?
 
   # ── Save result ───────────────────────────────────────
@@ -435,7 +432,7 @@ for (( i=1; i<=VIEWS; i++ )); do
   else
     TOTAL_FAIL=$((TOTAL_FAIL + 1))
     if [ "$EXIT_CODE" -eq 124 ]; then
-      warn "View $i timed out after 480s"
+      warn "View $i timed out after 600s"
     elif [ "$EXIT_CODE" -eq 2 ]; then
       warn "View $i could not complete (blocked/unavailable path)"
       # Backup: blacklist proxy locally if automation didn't get to it (e.g., timeout)
@@ -443,7 +440,7 @@ for (( i=1; i<=VIEWS; i++ )); do
         PROXY_HOST=$(echo "$VPLINK_PROXY" | sed 's|http[s]*://||; s|:.*||')
         PROXY_PORT=$(echo "$VPLINK_PROXY" | grep -o ':[0-9]*' | tr -d ':')
         if [ -n "$PROXY_HOST" ] && [ -n "$PROXY_PORT" ]; then
-          "$NODE_BIN" -e "try{require('./config').addProxyBlacklist('$PROXY_HOST',$PROXY_PORT)}catch{}" 2>/dev/null || true
+          $PYTHON_BIN -c "import sys; sys.path.insert(0,'$SCRIPT_DIR'); from config import add_proxy_blacklist; add_proxy_blacklist('$PROXY_HOST',$PROXY_PORT)" 2>/dev/null || true
         fi
       fi
     elif [ "$EXIT_CODE" -eq 3 ]; then

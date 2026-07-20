@@ -10,7 +10,8 @@ set -euo pipefail
 REPO="https://github.com/adittaya/VPLINK-3.0"
 RAW_BASE="https://raw.githubusercontent.com/adittaya/VPLINK-3.0/main"
 INSTALL_VERSION="3.0.0"
-MIN_NODE_MAJOR=18
+MIN_PYTHON_MAJOR=3
+MIN_PYTHON_MINOR=8
 SCRIPT_NAME="vplink3.0"
 
 # Paths
@@ -215,7 +216,6 @@ is_termux() {
 }
 
 has_cmd() { command -v "$1" &>/dev/null; }
-NODE_BIN=$(command -v node 2>/dev/null || echo "")
 
 # Global variables (initialized)
 # shellcheck disable=SC2034
@@ -231,9 +231,9 @@ fi
 # ═══════════════════════════════════════════════════════════════
 
 STATE_SYS_DEPS=""
-STATE_NODE=""
-STATE_NPM_DEPS=""
-STATE_PLAYWRIGHT=""
+STATE_PYTHON=""
+STATE_PIP_DEPS=""
+STATE_CHROMEDRIVER=""
 STATE_CMD=""
 STATE_CREDENTIALS=""
 
@@ -243,9 +243,9 @@ load_state() {
   s=$(cat "$STATE_FILE")
   # Portable extraction — no grep -oP (not available on macOS)
   STATE_SYS_DEPS=$(echo "$s" | sed -n 's/.*"sys_deps"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || true)
-  STATE_NODE=$(echo "$s" | sed -n 's/.*"node"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || true)
-  STATE_NPM_DEPS=$(echo "$s" | sed -n 's/.*"npm_deps"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || true)
-  STATE_PLAYWRIGHT=$(echo "$s" | sed -n 's/.*"playwright"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || true)
+  STATE_PYTHON=$(echo "$s" | sed -n 's/.*"python"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || true)
+  STATE_PIP_DEPS=$(echo "$s" | sed -n 's/.*"pip_deps"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || true)
+  STATE_CHROMEDRIVER=$(echo "$s" | sed -n 's/.*"chromedriver"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || true)
   STATE_CMD=$(echo "$s" | sed -n 's/.*"command"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || true)
   STATE_CREDENTIALS=$(echo "$s" | sed -n 's/.*"credentials"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || true)
 }
@@ -255,9 +255,9 @@ save_state() {
   cat > "$STATE_FILE" <<EOF
 {
   "sys_deps": "${STATE_SYS_DEPS:-done}",
-  "node": "${STATE_NODE:-done}",
-  "npm_deps": "${STATE_NPM_DEPS:-done}",
-  "playwright": "${STATE_PLAYWRIGHT:-done}",
+  "python": "${STATE_PYTHON:-done}",
+  "pip_deps": "${STATE_PIP_DEPS:-done}",
+  "chromedriver": "${STATE_CHROMEDRIVER:-done}",
   "command": "${STATE_CMD:-done}",
   "credentials": "${STATE_CREDENTIALS:-pending}",
   "version": "$INSTALL_VERSION",
@@ -280,7 +280,7 @@ install_system_deps() {
 
   if [ "$DISTRO_FAMILY" = "termux" ]; then
     pkg update -y
-    pkg install -y curl git nodejs-lts chromium x11-repo || true
+    pkg install -y curl git python chromium x11-repo || true
   elif [ "$DISTRO_FAMILY" = "debian" ]; then
     $SUDO apt-get update -qq 2>/dev/null || warn "apt-get update failed — using cache"
     $SUDO apt-get install -y -qq curl git xvfb x11vnc jq chromium-browser \
@@ -339,165 +339,88 @@ install_system_deps() {
 }
 
 # ═══════════════════════════════════════════════════════════════
-#  NODE.JS MANAGEMENT
+#  PYTHON MANAGEMENT
 # ═══════════════════════════════════════════════════════════════
 
-install_node() {
-  [ "$STATE_NODE" = "done" ] && { log "Node.js already installed"; return 0; }
+install_python() {
+  [ "$STATE_PYTHON" = "done" ] && { log "Python already installed"; return 0; }
 
-  if has_cmd node; then
-    local node_ver
-    node_ver=$(node -v 2>/dev/null | sed 's/v//' | cut -d. -f1)
-    if [ "$node_ver" -ge "$MIN_NODE_MAJOR" ] 2>/dev/null; then
-      log "Node.js $(node -v) meets requirement (>= $MIN_NODE_MAJOR)"
-      STATE_NODE="done"
+  if has_cmd python3; then
+    local py_ver
+    py_ver=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null)
+    local py_major py_minor
+    py_major=$(echo "$py_ver" | cut -d. -f1)
+    py_minor=$(echo "$py_ver" | cut -d. -f2)
+    if [ "$py_major" -ge "$MIN_PYTHON_MAJOR" ] 2>/dev/null && [ "$py_minor" -ge "$MIN_PYTHON_MINOR" ] 2>/dev/null; then
+      log "Python $py_ver meets requirement (>= $MIN_PYTHON_MAJOR.$MIN_PYTHON_MINOR)"
+      STATE_PYTHON="done"
       return 0
     else
-      warn "Node.js $(node -v) is too old (need >= $MIN_NODE_MAJOR), upgrading..."
+      warn "Python $py_ver is too old (need >= $MIN_PYTHON_MAJOR.$MIN_PYTHON_MINOR)"
     fi
   fi
 
   if is_termux; then
-    pkg install -y nodejs-lts
+    pkg install -y python
   elif is_root; then
-    # Root: use package manager or direct download
-    install_node_pkg
-  elif [ -d "$HOME/.nvm" ]; then
-    # nvm available
-    [ -s "$HOME/.nvm/nvm.sh" ] && . "$HOME/.nvm/nvm.sh"
-    nvm install "$MIN_NODE_MAJOR" 2>/dev/null || nvm install node
-    nvm alias default "$MIN_NODE_MAJOR" 2>/dev/null || true
-  elif has_cmd npm && has_cmd n; then
-    n "$MIN_NODE_MAJOR"
+    install_python_pkg
   else
-    # Download binary directly
-    install_node_binary
+    install_python_pkg
   fi
 
-  if has_cmd node; then
-    log "Node.js $(node -v) installed"
-    NODE_BIN=$(command -v node)
-    STATE_NODE="done"
+  if has_cmd python3; then
+    log "Python $(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")') installed"
+    STATE_PYTHON="done"
   else
-    fail "Node.js installation failed"
+    fail "Python installation failed"
     return 1
   fi
 }
 
-install_node_pkg() {
+install_python_pkg() {
   case "$DISTRO_FAMILY" in
-    debian)
-      if ! has_cmd node || [ "$(node -v | sed 's/v//' | cut -d. -f1)" -lt "$MIN_NODE_MAJOR" ]; then
-        $SUDO apt-get install -y -qq nodejs 2>/dev/null || {
-          curl -fsSL https://deb.nodesource.com/setup_20.x | $SUDO bash -
-          $SUDO apt-get install -y -qq nodejs
-        }
-        # Debian may install /usr/bin/nodejs without /usr/bin/node
-        if ! has_cmd node && has_cmd nodejs; then
-          $SUDO ln -sf /usr/bin/nodejs /usr/local/bin/node
-        fi
-      fi
-      ;;
-    fedora) $SUDO dnf module install -y nodejs:20/common 2>/dev/null || install_node_binary ;;
-    arch) $SUDO pacman -S --noconfirm nodejs npm ;;
-    suse) $SUDO zypper install -y nodejs20 2>/dev/null || $SUDO zypper install -y nodejs ;;
-    alpine) $SUDO apk add nodejs npm ;;
-    *) install_node_binary ;;
+    debian) $SUDO apt-get install -y -qq python3 python3-pip python3-venv 2>/dev/null || warn "Some Python packages failed — proceeding" ;;
+    fedora) $SUDO dnf install -y python3 python3-pip 2>/dev/null || warn "Some Python packages failed — proceeding" ;;
+    arch) $SUDO pacman -S --noconfirm python python-pip 2>/dev/null || warn "Some Python packages failed — proceeding" ;;
+    suse) $SUDO zypper install -y python3 python3-pip 2>/dev/null || warn "Some Python packages failed — proceeding" ;;
+    alpine) $SUDO apk add python3 py3-pip 2>/dev/null || warn "Some Python packages failed — proceeding" ;;
+    *) warn "Unknown distro — attempting python3 install..." ; $SUDO apt-get install -y python3 python3-pip 2>/dev/null || true ;;
   esac
 }
 
-install_node_binary() {
-  local ver="20.19.1"
-  local arch="$ARCH"
-  case "$arch" in
-    x86_64) arch="x64" ;;
-    aarch64) arch="arm64" ;;
-    armv7l) arch="armv7l" ;;
-    *) arch="x64" ;;
-  esac
+install_pip_deps() {
+  [ "$STATE_PIP_DEPS" = "done" ] && { log "Python dependencies already installed"; return 0; }
 
-  local os="linux"
-  [ "$(uname -s)" = "Darwin" ] && os="darwin"
-  [ "$DISTRO_FAMILY" = "alpine" ] && os="linux" && ver="${ver}-musl"
-
-  local url="https://nodejs.org/dist/v${ver}/node-v${ver}-${os}-${arch}.tar.xz"
-  local tmp_dir="/tmp/node-install-$$"
-  mkdir -p "$tmp_dir"
-
-  info "Downloading Node.js v${ver} for ${os}-${arch}..."
-  if has_cmd curl; then
-    curl -fsSL "$url" -o "$tmp_dir/node.tar.xz" || { fail "Download failed: $url"; rm -rf "$tmp_dir"; return 1; }
-  else
-    wget -qO "$tmp_dir/node.tar.xz" "$url" || { fail "Download failed: $url"; rm -rf "$tmp_dir"; return 1; }
-  fi
-
-  # Verify download is not empty/corrupt
-  if [ ! -s "$tmp_dir/node.tar.xz" ]; then
-    fail "Downloaded file is empty"
-    rm -rf "$tmp_dir"
-    return 1
-  fi
-
-  tar -xf "$tmp_dir/node.tar.xz" -C "$tmp_dir" || { fail "Extraction failed — corrupt download?"; rm -rf "$tmp_dir"; return 1; }
-  $SUDO cp -r "$tmp_dir/node-v${ver}-${os}-${arch}/bin/"* /usr/local/bin/ || { fail "Failed to install Node.js binaries"; rm -rf "$tmp_dir"; return 1; }
-  $SUDO cp -r "$tmp_dir/node-v${ver}-${os}-${arch}/lib/"* /usr/local/lib/ 2>/dev/null || true
-  rm -rf "$tmp_dir"
-  log "Node.js v${ver} installed to /usr/local/bin"
-}
-
-install_npm_deps() {
-  [ "$STATE_NPM_DEPS" = "done" ] && [ -d "$INSTALL_DIR/node_modules" ] && { log "npm dependencies already installed"; return 0; }
-
-  cd "$INSTALL_DIR" 2>/dev/null || { warn "Project directory missing, skipping npm install"; return 0; }
-  info "Installing npm dependencies..."
-  npm install --no-audit --no-fund 2>&1 | tail -3 >> "$LOG_FILE" || {
-    warn "npm install failed, retrying with cache clean..."
-    npm cache clean --force 2>/dev/null || true
-    npm install --no-audit --no-fund >> "$LOG_FILE" 2>&1 || {
-      warn "npm install failed twice — will try at runtime"
+  cd "$INSTALL_DIR" 2>/dev/null || { warn "Project directory missing, skipping pip install"; return 0; }
+  info "Installing Python dependencies..."
+  python3 -m pip install --user -r requirements.txt 2>&1 | tail -3 >> "$LOG_FILE" || {
+    warn "pip install failed, retrying..."
+    python3 -m pip install --user -r requirements.txt >> "$LOG_FILE" 2>&1 || {
+      warn "pip install failed twice — will try at runtime"
       return 0
     }
   }
 
-  if [ -d "$INSTALL_DIR/node_modules" ]; then
-    STATE_NPM_DEPS="done"
-    log "npm dependencies installed"
-  else
-    warn "node_modules missing after install — will try at runtime"
-  fi
+  STATE_PIP_DEPS="done"
+  log "Python dependencies installed"
 }
 
-install_playwright() {
-  [ "$STATE_PLAYWRIGHT" = "done" ] && { log "Playwright browsers already installed"; return 0; }
+install_chromedriver() {
+  [ "$STATE_CHROMEDRIVER" = "done" ] && { log "Chromedriver already available"; return 0; }
 
-  cd "$INSTALL_DIR" 2>/dev/null || { warn "Project directory missing, skipping Playwright install"; return 0; }
   if is_termux; then
-    log "Termux: using system Chromium, skipping Playwright browser install"
-    STATE_PLAYWRIGHT="done"
+    log "Termux: using system Chromium, skipping chromedriver install"
+    STATE_CHROMEDRIVER="done"
     return 0
   fi
 
-  info "Installing Playwright Chromium browser..."
-  npx playwright install chromium 2>&1 | tail -5 >> "$LOG_FILE" || {
-    warn "Playwright install failed, retrying..."
-    npx playwright install chromium >> "$LOG_FILE" 2>&1 || true
-  }
-
-  # Verify chromium was actually downloaded
-  local pw_chromium
-  pw_chromium=$(ls "$HOME"/.cache/ms-playwright/chromium-*/chrome-linux*/chrome 2>/dev/null | head -1 || true)
-  if [ -n "$pw_chromium" ]; then
-    STATE_PLAYWRIGHT="done"
-    log "Playwright Chromium ready: $pw_chromium"
+  # Verify chromium-browser is available
+  if command -v chromium-browser &>/dev/null || command -v chromium &>/dev/null || command -v google-chrome &>/dev/null; then
+    STATE_CHROMEDRIVER="done"
+    log "Chromium browser available (webdriver-manager will handle chromedriver)"
   else
-    # Fallback: check system chromium
-    if command -v chromium-browser &>/dev/null || command -v chromium &>/dev/null || command -v google-chrome &>/dev/null; then
-      STATE_PLAYWRIGHT="done"
-      log "Playwright Chromium not found, but system browser available"
-    else
-      warn "Playwright Chromium NOT found — will retry on first run"
-      STATE_PLAYWRIGHT="pending"
-    fi
+    warn "Chromium not found — webdriver-manager will attempt to download on first run"
+    STATE_CHROMEDRIVER="pending"
   fi
 }
 
@@ -607,18 +530,23 @@ _write_merged_config() {
        '. + {supabase_url: $url, supabase_key: $key, supabase_secret: $secret, proxy_enabled: $proxy}' \
        "$CREDENTIAL_FILE" > "$tmp" 2>/dev/null && mv "$tmp" "$CREDENTIAL_FILE"
   elif [ -f "$CREDENTIAL_FILE" ]; then
-    # No jq — use node to merge if available
-    "$NODE_BIN" -e "
-      const fs = require('fs');
-      const p = '$CREDENTIAL_FILE';
-      let cfg = {};
-      try { cfg = JSON.parse(fs.readFileSync(p, 'utf8')); } catch {}
-      cfg.supabase_url = '$SB_URL';
-      cfg.supabase_key = '$SB_KEY';
-      cfg.supabase_secret = '$SB_SECRET';
-      cfg.proxy_enabled = $proxy_enabled;
-      fs.writeFileSync(p, JSON.stringify(cfg, null, 2), 'utf8');
-    " 2>/dev/null || {
+    # No jq — use python to merge if available
+    python3 -c "
+import json
+try:
+  p = '$CREDENTIAL_FILE'
+  cfg = {}
+  try:
+    with open(p) as f: cfg = json.load(f)
+  except: pass
+  cfg['supabase_url'] = '$SB_URL'
+  cfg['supabase_key'] = '$SB_KEY'
+  cfg['supabase_secret'] = '$SB_SECRET'
+  cfg['proxy_enabled'] = $proxy_enabled
+  with open(p, 'w') as f: json.dump(cfg, f, indent=2)
+except:
+  import sys; sys.exit(1)
+" 2>/dev/null || {
       # Last resort: write fresh config
       cat > "$CREDENTIAL_FILE" <<EOCFG
 {
@@ -736,18 +664,19 @@ setup_credentials() {
   # Save credentials (merge with existing config — don't overwrite user settings)
   mkdir -p "$CONFIG_DIR"
   if [ -n "$SB_KEY" ]; then
-    # Use config.js save() which merges with existing config
-    if [ -f "$INSTALL_DIR/config.js" ]; then
-      "$NODE_BIN" -e "
-        const c = require('$INSTALL_DIR/config.js');
-        c.save({
-          supabase_url: '$(echo "$SB_URL" | sed "s/'/\\\\'/g")',
-          supabase_key: '$(echo "$SB_KEY" | sed "s/'/\\\\'/g")',
-          supabase_secret: '$(echo "$SB_SECRET" | sed "s/'/\\\\'/g")',
-          proxy_enabled: true,
-          proxy_tier: 'premium',
-        });
-      " 2>/dev/null || {
+    # Use config.py save() which merges with existing config
+    if [ -f "$INSTALL_DIR/config.py" ]; then
+      python3 -c "
+import sys; sys.path.insert(0, '$INSTALL_DIR')
+from config import save
+save({
+  'supabase_url': '$(echo "$SB_URL" | sed "s/'/\\\\'/g")',
+  'supabase_key': '$(echo "$SB_KEY" | sed "s/'/\\\\'/g")',
+  'supabase_secret': '$(echo "$SB_SECRET" | sed "s/'/\\\\'/g")',
+  'proxy_enabled': True,
+  'proxy_tier': 'premium',
+})
+" 2>/dev/null || {
         # Fallback: write JSON directly but preserve existing fields
         _write_merged_config "true"
       }
@@ -787,30 +716,32 @@ verify_installation() {
     errors=$((errors + 1))
   fi
 
-  # 2. Node.js
-  if has_cmd node; then
-    local node_ver
-    node_ver=$(node -v 2>/dev/null | sed 's/v//' | cut -d. -f1)
-    if [ "$node_ver" -ge "$MIN_NODE_MAJOR" ] 2>/dev/null; then
-      log "Node.js $(node -v) meets requirement (>= $MIN_NODE_MAJOR)"
+  # 2. Python
+  if has_cmd python3; then
+    local py_ver py_major py_minor
+    py_ver=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null)
+    py_major=$(echo "$py_ver" | cut -d. -f1)
+    py_minor=$(echo "$py_ver" | cut -d. -f2)
+    if [ "$py_major" -ge "$MIN_PYTHON_MAJOR" ] 2>/dev/null && [ "$py_minor" -ge "$MIN_PYTHON_MINOR" ] 2>/dev/null; then
+      log "Python $py_ver meets requirement (>= $MIN_PYTHON_MAJOR.$MIN_PYTHON_MINOR)"
     else
-      warn "Node.js $(node -v) installed but too old (need >= $MIN_NODE_MAJOR)"
+      warn "Python $py_ver installed but too old (need >= $MIN_PYTHON_MAJOR.$MIN_PYTHON_MINOR)"
       errors=$((errors + 1))
     fi
   else
-    fail "Node.js not found"
+    fail "Python3 not found"
     errors=$((errors + 1))
   fi
 
   # 3. Project files
   local required_files=(
-    "$INSTALL_DIR/automation.js"
-    "$INSTALL_DIR/config.js"
-    "$INSTALL_DIR/proxy-rotator.js"
-    "$INSTALL_DIR/profile-generator.js"
+    "$INSTALL_DIR/automation.py"
+    "$INSTALL_DIR/config.py"
+    "$INSTALL_DIR/proxy_rotator.py"
+    "$INSTALL_DIR/profile_generator.py"
     "$INSTALL_DIR/vplink3.0.sh"
     "$INSTALL_DIR/vplink-desktop.sh"
-    "$INSTALL_DIR/package.json"
+    "$INSTALL_DIR/requirements.txt"
   )
   for f in "${required_files[@]}"; do
     if [ -f "$f" ]; then
@@ -821,13 +752,13 @@ verify_installation() {
     fi
   done
 
-  # 4. node_modules
-  if [ -d "$INSTALL_DIR/node_modules" ]; then
-    local pkg_count
-    pkg_count=$(ls -1 "$INSTALL_DIR/node_modules" 2>/dev/null | wc -l)
-    log "npm dependencies installed ($pkg_count packages)"
+  # 4. Python packages (selenium, webdriver-manager)
+  if python3 -c "import selenium" 2>/dev/null; then
+    local selenium_ver
+    selenium_ver=$(python3 -c "import selenium; print(selenium.__version__)" 2>/dev/null)
+    log "selenium $selenium_ver installed"
   else
-    warn "node_modules missing — run: cd $INSTALL_DIR && npm install"
+    warn "selenium not installed — run: pip3 install -r requirements.txt"
     errors=$((errors + 1))
   fi
 
@@ -836,16 +767,12 @@ verify_installation() {
   if is_termux; then
     chromium_bin=$(command -v chromium-browser 2>/dev/null || command -v chromium 2>/dev/null || echo "")
   else
-    # Check Playwright bundled first, then system browsers
-    chromium_bin=$(ls "$HOME"/.cache/ms-playwright/chromium-*/chrome-linux*/chrome 2>/dev/null | head -1 || true)
-    if [ -z "$chromium_bin" ]; then
-      chromium_bin=$(command -v chromium-browser 2>/dev/null || command -v chromium 2>/dev/null || command -v google-chrome 2>/dev/null || echo "")
-    fi
+    chromium_bin=$(command -v chromium-browser 2>/dev/null || command -v chromium 2>/dev/null || command -v google-chrome 2>/dev/null || echo "")
   fi
   if [ -n "$chromium_bin" ]; then
     log "Chromium found: $chromium_bin"
   else
-    warn "Chromium not found — Playwright will attempt to download on first run"
+    warn "Chromium not found — will attempt to install on first run"
   fi
 
   # 6. Credentials
@@ -880,7 +807,7 @@ uninstall() {
 
   # Check for running VPLink processes first
   local running_pids
-  running_pids=$(pgrep -f "node.*automation.js\|vplink3.0" 2>/dev/null | grep -v "^$$\$" || true)
+  running_pids=$(pgrep -f "python3.*automation.py\|vplink3.0" 2>/dev/null | grep -v "^$$\$" || true)
   if [ -n "$running_pids" ]; then
     warn "VPLink processes are running (PIDs: $running_pids)"
     if [ -t 0 ]; then
@@ -889,7 +816,7 @@ uninstall() {
         echo "$running_pids" | xargs -r kill 2>/dev/null || true
         sleep 1
         # Force kill if still alive
-        running_pids=$(pgrep -f "node.*automation.js\|vplink3.0" 2>/dev/null | grep -v "^$$\$" || true)
+        running_pids=$(pgrep -f "python3.*automation.py\|vplink3.0" 2>/dev/null | grep -v "^$$\$" || true)
         if [ -n "$running_pids" ]; then
           echo "$running_pids" | xargs -r kill -9 2>/dev/null || true
         fi
@@ -1009,18 +936,18 @@ self_update() {
     }
   }
 
-  # Reinstall npm deps if package.json changed
-  if ! git diff --quiet "$old_hash" HEAD -- package.json 2>/dev/null; then
-    info "package.json changed — reinstalling npm dependencies..."
-    npm install --no-audit --no-fund >> "$LOG_FILE" 2>&1 || {
-      warn "npm install failed after update — run: cd $INSTALL_DIR && npm install"
+  # Reinstall pip deps if requirements.txt changed
+  if ! git diff --quiet "$old_hash" HEAD -- requirements.txt 2>/dev/null; then
+    info "requirements.txt changed — reinstalling Python dependencies..."
+    python3 -m pip install --user -r requirements.txt >> "$LOG_FILE" 2>&1 || {
+      warn "pip install failed after update — run: pip3 install -r requirements.txt"
     }
   fi
 
-  # Reinstall Playwright if needed
+  # Verify chromedriver is available
   if ! is_termux; then
-    npx playwright install chromium 2>/dev/null || {
-      warn "Playwright update failed — will retry on first run"
+    python3 -c "from webdriver_manager.chrome import ChromeDriverManager; ChromeDriverManager().install()" 2>/dev/null || {
+      warn "Chromedriver check failed — will retry on first run"
     }
   fi
 
@@ -1062,11 +989,11 @@ main_install() {
   is_ci && mode_info="$mode_info / CI"
   echo "  $mode_info"
 
-  # Disk space check (need ~500MB for Playwright + deps)
+  # Disk space check (need ~300MB for Chromium + deps)
   local avail_kb
   avail_kb=$(df -k "$HOME" 2>/dev/null | awk 'NR==2{print $4}' || echo 0)
-  if [ "$avail_kb" -lt 512000 ] 2>/dev/null; then
-    warn "Low disk space: $((avail_kb / 1024))MB available (recommend 500MB+)"
+  if [ "$avail_kb" -lt 307200 ] 2>/dev/null; then
+    warn "Low disk space: $((avail_kb / 1024))MB available (recommend 300MB+)"
   else
     log "Disk space: $((avail_kb / 1024))MB available"
   fi
@@ -1079,21 +1006,21 @@ main_install() {
   step 2 "Installing system dependencies"
   install_system_deps
 
-  # Step 3: Node.js
-  step 3 "Setting up Node.js (>= $MIN_NODE_MAJOR)"
-  install_node
+  # Step 3: Python
+  step 3 "Setting up Python (>= $MIN_PYTHON_MAJOR.$MIN_PYTHON_MINOR)"
+  install_python
 
   # Step 4: Project setup
   step 4 "Setting up project"
   setup_project
 
-  # Step 5: npm dependencies
-  step 5 "Installing npm packages"
-  install_npm_deps
+  # Step 5: Python dependencies
+  step 5 "Installing Python packages"
+  install_pip_deps
 
-  # Step 6: Playwright browser
-  step 6 "Installing Playwright Chromium"
-  install_playwright
+  # Step 6: Chromium/Chromedriver
+  step 6 "Setting up Chromium/Chromedriver"
+  install_chromedriver
 
   # Step 7: Global command
   step 7 "Creating global command"

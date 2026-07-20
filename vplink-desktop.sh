@@ -82,12 +82,13 @@ find_display() {
 cfg_get() {
   local key="$1"
   if [ -f "$CONFIG_FILE" ]; then
-    node -e "
-      try {
-        const c = JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf8'));
-        console.log(c['$key'] !== undefined ? c['$key'] : '');
-      } catch(e) { console.log(''); }
-    " 2>/dev/null
+    python3 -c "
+import json,sys
+try:
+  c=json.load(open('$CONFIG_FILE'))
+  print(c.get('$key',''))
+except: print('')
+" 2>/dev/null
   fi
 }
 
@@ -138,10 +139,10 @@ EOF
 load_state() {
   local state_file="$CONFIG_DIR/desktop_state.json"
   if [ -f "$state_file" ]; then
-    DISPLAY=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$state_file','utf8')).display||'')}catch(e){}" 2>/dev/null)
-    XVFB_PID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$state_file','utf8')).xvfb_pid||0)}catch(e){}" 2>/dev/null)
-    VNC_PID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$state_file','utf8')).vnc_pid||0)}catch(e){}" 2>/dev/null)
-    VNC_PORT=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$state_file','utf8')).vnc_port||5900)}catch(e){}" 2>/dev/null)
+    DISPLAY=$(python3 -c "import json; print(json.load(open('$state_file')).get('display',''))" 2>/dev/null)
+    XVFB_PID=$(python3 -c "import json; print(json.load(open('$state_file')).get('xvfb_pid',0))" 2>/dev/null)
+    VNC_PID=$(python3 -c "import json; print(json.load(open('$state_file')).get('vnc_pid',0))" 2>/dev/null)
+    VNC_PORT=$(python3 -c "import json; print(json.load(open('$state_file')).get('vnc_port',5900))" 2>/dev/null)
     return 0
   fi
   return 1
@@ -290,7 +291,7 @@ do_stop() {
 
     # If this was the saved display, clear state
     local saved_disp
-    saved_disp=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$CONFIG_DIR/desktop_state.json','utf8')).display||'')}catch(e){}" 2>/dev/null)
+    saved_disp=$(python3 -c "import json; print(json.load(open('$CONFIG_DIR/desktop_state.json')).get('display',''))" 2>/dev/null)
     if [ "$req_display" = "$saved_disp" ]; then
       rm -f "$CONFIG_DIR/desktop_state.json" 2>/dev/null
     fi

@@ -1,8 +1,6 @@
 {
   "name": "vplink3.0",
   "private": true,
-  "dependencies": {
-    "playwright": "^1.61.1",
-    "playwright-core": "^1.61.1"
-  }
+  "description": "Automated vplink.in URL funnel (Python/Selenium)",
+  "python": ">=3.8"
 }

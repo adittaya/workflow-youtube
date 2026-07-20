@@ -1,3 +1,4 @@
+import sys
 from dataclasses import dataclass, field
 from typing import Optional
 from installer.core.executor import check_command, run_command, get_command_path
@@ -41,6 +42,21 @@ class Verifier:
                     if result.success:
                         version = result.stdout.strip().split("\n")[0]
                     break
+
+        # Fallback: ChromeDriver managed by webdriver-manager (pip) instead of system package
+        if not installed and pkg.name == "chromedriver":
+            probe = run_command(
+                [sys.executable, "-c",
+                 "from webdriver_manager.chrome import ChromeDriverManager; "
+                 "print(ChromeDriverManager().install())"],
+                capture=True, timeout=30,
+            )
+            if probe.success and probe.stdout.strip():
+                path = probe.stdout.strip().split("\n")[0]
+                installed = True
+                ver = run_command([path, "--version"], capture=True, timeout=10)
+                if ver.success:
+                    version = ver.stdout.strip().split("\n")[0]
 
         return CheckResult(
             package=pkg.name,

@@ -76,8 +76,10 @@ ensure_project() {
         if [ -d "$INSTALL_DIR/installer" ]; then
             info "Updating VPLink..."
             git -C "$INSTALL_DIR" pull --ff-only 2>/dev/null || true
-            # Purge all bytecode — stale .pyc can persist across commit switches
-            git -C "$INSTALL_DIR" clean -fdX 2>/dev/null || true
+            # rm __pycache__ entirely — stale .pyc can persist after commit switches
+            find "$INSTALL_DIR" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+            find "$INSTALL_DIR" -name '*.pyc' -delete 2>/dev/null || true
+            find "$INSTALL_DIR" -name '*.pyo' -delete 2>/dev/null || true
             PROJECT_DIR="$INSTALL_DIR"
             cd "$PROJECT_DIR"
             return 0

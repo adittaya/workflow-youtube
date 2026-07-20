@@ -201,59 +201,54 @@ class LinuxPlatform(BasePlatform):
 
     @staticmethod
     def install_google_chrome(sudo: bool = True) -> bool:
-        """Install Google Chrome on Debian/Ubuntu via official repo (handles deps)."""
+        """Install Google Chrome on Debian/Ubuntu via direct .deb + apt (no snap)."""
         arch = platform.machine().lower()
         if "aarch64" in arch or "arm64" in arch:
             status("No official Google Chrome for arm64 — skipping", "warn")
             return False
 
+        import tempfile
         prefix = "sudo" if sudo else ""
+        deb_url = "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
+        tmp = tempfile.mktemp(suffix=".deb")
 
-        status("Adding Google Chrome repository...")
-        keyring = "/usr/share/keyrings/google-chrome.gpg"
-        # Download signing key
-        r1 = run_command(
-            f"wget -q -O /tmp/google-chrome-key.asc https://dl.google.com/linux/linux_signing_key.pub",
-            timeout=30,
-        )
-        if not r1.success:
-            r1 = run_command(
-                f"curl -fsSL -o /tmp/google-chrome-key.asc https://dl.google.com/linux/linux_signing_key.pub",
-                timeout=30,
+        try:
+            status("Downloading Google Chrome...")
+            r = run_command(f"wget -q -O {tmp} {deb_url}", timeout=120)
+            if not r.success:
+                r = run_command(f"curl -fsSL -o {tmp} {deb_url}", timeout=120)
+            if not r.success:
+                status("Failed to download Google Chrome — check network", "error")
+                return False
+
+            status("Installing Google Chrome...")
+            r = run_command(
+                f"{prefix} apt install -y {tmp}",
+                timeout=180,
+                env={"DEBIAN_FRONTEND": "noninteractive"},
             )
-        if r1.success:
-            run_command(f"{prefix} gpg --dearmor -o {keyring} < /tmp/google-chrome-key.asc 2>/dev/null", timeout=15)
-            run_command(
-                f'{prefix} sh -c \'echo "deb [arch=amd64 signed-by={keyring}] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list\'',
-                timeout=10,
-            )
-            run_command(f"{prefix} apt update", timeout=120)
-        else:
-            # Fallback: direct .deb download
-            import tempfile
-            deb_url = "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
-            tmp = tempfile.mktemp(suffix=".deb")
+            if not r.success:
+                status("Google Chrome install failed — trying dep fix", "warn")
+                run_command(f"{prefix} apt --fix-broken install -y", timeout=120)
+                r = run_command(
+                    f"{prefix} apt install -y {tmp}",
+                    timeout=180,
+                    env={"DEBIAN_FRONTEND": "noninteractive"},
+                )
+
+            result = run_command("google-chrome --version", timeout=10)
+            installed = result.success
+            if installed:
+                status("Google Chrome installed", "ok")
+            else:
+                status("Google Chrome binary not found after install", "error")
+            return installed
+
+        finally:
             try:
-                status("Downloading Google Chrome .deb...")
-                r = run_command(f"wget -q -O {tmp} {deb_url}", timeout=120)
-                if not r.success:
-                    r = run_command(f"curl -fsSL -o {tmp} {deb_url}", timeout=120)
-                if r.success:
-                    run_command(f"{prefix} dpkg -i {tmp} 2>/dev/null; {prefix} apt-get install -f -y -q", timeout=120)
-            finally:
-                try:
-                    os.unlink(tmp)
-                except OSError:
-                    pass
-
-        # Attempt the actual install
-        status("Installing google-chrome-stable...")
-        run_command(f"{prefix} DEBIAN_FRONTEND=noninteractive apt install -y google-chrome-stable", timeout=180)
-
-        installed = os.path.exists("/usr/bin/google-chrome") or os.path.exists("/usr/bin/google-chrome-stable")
-        if installed:
-            status("Google Chrome installed", "ok")
-        return installed
+                os.unlink(tmp)
+            except OSError:
+                pass
 
     @staticmethod
     def update_package_index(sudo: bool = True) -> bool:

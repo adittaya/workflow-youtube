@@ -150,7 +150,7 @@ def cmd_install():
     browser_results: dict[str, bool] = {}
     if platform.package_manager == "apt" and platform.name == "linux":
         # Remove snap chromium stubs if present (they don't work in Cloud Shell/Docker/etc.)
-        run_command(f"{'sudo ' if use_sudo else ''}apt remove -y chromium-browser chromium-chromedriver 2>/dev/null", timeout=30)
+        run_command(f"{'sudo ' if use_sudo else ''}apt remove -y chromium-browser chromium-chromedriver", timeout=30)
         # Install Google Chrome (real binary, includes ChromeDriver compatibility)
         from installer.platforms.linux import LinuxPlatform
         ok = LinuxPlatform.install_google_chrome(use_sudo)

@@ -284,11 +284,13 @@ install_system_deps() {
   elif [ "$DISTRO_FAMILY" = "debian" ]; then
     $SUDO apt-get update -qq 2>/dev/null || warn "apt-get update failed — using cache"
     $SUDO apt-get install -y -qq curl git xvfb x11vnc jq chromium-browser \
+      chromium-chromedriver \
       libnss3 libnspr4 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 \
       libdrm2 libdbus-1-3 libxkbcommon0 libxcomposite1 libxdamage1 \
       libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 libcairo2 \
       libasound2t64 libxshmfence1 ca-certificates || \
     $SUDO apt-get install -y -qq curl git xvfb x11vnc jq chromium-browser \
+      chromium-chromedriver \
       libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
       libdrm2 libdbus-1-3 libxkbcommon0 libxcomposite1 libxdamage1 \
       libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 libcairo2 \
@@ -466,12 +468,25 @@ install_chromedriver() {
     return 0
   fi
 
-  # Verify chromium-browser is available
-  if command -v chromium-browser &>/dev/null || command -v chromium &>/dev/null || command -v google-chrome &>/dev/null; then
+  # Install chromedriver package if available
+  if [ "$DISTRO_FAMILY" = "debian" ] && command -v apt-get &>/dev/null; then
+    info "Installing chromium-chromedriver..."
+    $SUDO apt-get install -y -qq chromium-chromedriver >> "$LOG_FILE" 2>&1 || true
+    # On newer Ubuntu, chromedriver may be at /snap/bin/chromium.chromedriver
+    if [ -x /snap/bin/chromium.chromedriver ] && [ ! -f /usr/bin/chromedriver ]; then
+      $SUDO ln -sf /snap/bin/chromium.chromedriver /usr/bin/chromedriver 2>/dev/null || true
+    fi
+  fi
+
+  # Verify chromedriver binary exists
+  if [ -x /usr/bin/chromedriver ] || [ -x /snap/bin/chromium.chromedriver ]; then
     STATE_CHROMEDRIVER="done"
-    log "Chromium browser available (webdriver-manager will handle chromedriver)"
+    log "Chromedriver installed"
+  elif command -v chromium-browser &>/dev/null || command -v chromium &>/dev/null || command -v google-chrome &>/dev/null; then
+    warn "Chromium found but chromedriver not installed — webdriver-manager will attempt to download on first run"
+    STATE_CHROMEDRIVER="pending"
   else
-    warn "Chromium not found — webdriver-manager will attempt to download on first run"
+    warn "Chromium not found and chromedriver not installed — webdriver-manager will attempt to download on first run"
     STATE_CHROMEDRIVER="pending"
   fi
 }

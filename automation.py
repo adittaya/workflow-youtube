@@ -1465,13 +1465,25 @@ def main():
     try:
         driver = webdriver.Chrome(options=options)
     except Exception:
-        chromedriver_path = "/usr/bin/chromedriver"
-        if os.path.exists(chromedriver_path):
-            service = Service(executable_path=chromedriver_path)
-            driver = webdriver.Chrome(service=service, options=options)
-        else:
+        chromedriver_paths = [
+            "/usr/bin/chromedriver",
+            "/snap/bin/chromium.chromedriver",
+            "/usr/lib/chromium-browser/chromedriver",
+            "/usr/lib/chromium/chromedriver",
+        ]
+        driver = None
+        for cpath in chromedriver_paths:
+            if os.path.exists(cpath):
+                try:
+                    service = Service(executable_path=cpath)
+                    driver = webdriver.Chrome(service=service, options=options)
+                    break
+                except Exception:
+                    continue
+        if driver is None:
             from webdriver_manager.chrome import ChromeDriverManager
-            service = Service(ChromeDriverManager().install())
+            cm_path = ChromeDriverManager().install()
+            service = Service(executable_path=cm_path)
             driver = webdriver.Chrome(service=service, options=options)
 
     driver.set_page_load_timeout(90)

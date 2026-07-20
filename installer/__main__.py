@@ -88,7 +88,7 @@ def cmd_install():
 
     # ── Step 2: Create config dirs ──
     config = InstallerConfig()
-    config_dir = Path(config.config_dir())
+    config_dir = Path(config.config_dir)
     config_dir.mkdir(parents=True, exist_ok=True)
     (config_dir / "logs").mkdir(parents=True, exist_ok=True)
     (config_dir / "rollback").mkdir(parents=True, exist_ok=True)

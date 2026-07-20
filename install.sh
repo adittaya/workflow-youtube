@@ -394,17 +394,18 @@ install_pip_deps() {
   cd "$INSTALL_DIR" 2>/dev/null || { warn "Project directory missing, skipping pip install"; return 0; }
   info "Installing Python dependencies..."
   if python3 -m pip install --user -r requirements.txt 2>/dev/null; then
+    STATE_PIP_DEPS="done"
     log "Python dependencies installed"
   elif python3 -m pip install --break-system-packages -r requirements.txt 2>/dev/null; then
+    STATE_PIP_DEPS="done"
     log "Python dependencies installed (--break-system-packages)"
   elif PIP_REQUIRE_VIRTUALENV=0 python3 -m pip install --user -r requirements.txt 2>/dev/null; then
+    STATE_PIP_DEPS="done"
     log "Python dependencies installed (PIP_REQUIRE_VIRTUALENV=0)"
   else
     warn "pip install failed — will retry at runtime"
+    STATE_PIP_DEPS="failed"
   fi
-
-  STATE_PIP_DEPS="done"
-  log "Python dependencies installed"
 }
 
 install_chromedriver() {
@@ -586,24 +587,28 @@ EOCFG
 }
 
 setup_credentials() {
-  # Already done from install state: offer to reconfigure
-  if [ "$STATE_CREDENTIALS" = "done" ] || [ "$STATE_CREDENTIALS" = "skipped" ]; then
-    # Non-interactive or piped: skip silently
-    if [ -n "${VPLINK_NONINTERACTIVE:-}" ] || [ -n "${CI:-}" ] || [ ! -t 0 ]; then
-      log "Credentials already configured"
-      return 0
-    fi
-    echo ""
-    read -r -p "  Credentials already configured. Reconfigure? [y/N] " RECONFIG
-    case "$RECONFIG" in
-      [yY]|[yY][eE][sS])
-        # Fall through to interactive setup
-        ;;
-      *)
-        log "Keeping existing credentials"
+  # Already done from install state: verify config actually exists with credentials
+  if [ "$STATE_CREDENTIALS" = "done" ]; then
+    if [ -f "$CREDENTIAL_FILE" ] && grep -q '"supabase_key"' "$CREDENTIAL_FILE" 2>/dev/null; then
+      # Non-interactive or piped: skip silently
+      if [ -n "${VPLINK_NONINTERACTIVE:-}" ] || [ -n "${CI:-}" ] || [ ! -t 0 ]; then
+        log "Credentials already configured"
         return 0
-        ;;
-    esac
+      fi
+      echo ""
+      read -r -p "  Credentials already configured. Reconfigure? [y/N] " RECONFIG
+      case "$RECONFIG" in
+        [yY]|[yY][eE][sS])
+          # Fall through to interactive setup
+          ;;
+        *)
+          log "Keeping existing credentials"
+          return 0
+          ;;
+      esac
+    else
+      warn "State says credentials configured but config file is missing/broken — re-running..."
+    fi
   fi
 
   # Non-interactive mode: skip with warning

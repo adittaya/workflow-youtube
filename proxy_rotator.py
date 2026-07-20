@@ -678,6 +678,20 @@ if __name__ == "__main__":
         ok = verify_proxy_ip(proxy)
         sys.exit(0 if ok else 1)
 
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print("VPLink 3.0 Proxy Rotator")
+        print()
+        print("Usage:")
+        print("  python3 proxy_rotator.py --setup         Interactive setup wizard")
+        print("  python3 proxy_rotator.py --status        Pool health & config status")
+        print("  python3 proxy_rotator.py --quick [tier]   Get one proxy (stdout)")
+        print("  python3 proxy_rotator.py [tier]          Get proxy (verbose)")
+        print("  python3 proxy_rotator.py --test ip:port  Test specific proxy")
+        print()
+        print("Tiers: premium (default), normal")
+        print("Config: ~/.vplink3.0/config.json")
+        sys.exit(0)
+
     if "--quick" in sys.argv:
         tier = "premium"
         for a in sys.argv[1:]:

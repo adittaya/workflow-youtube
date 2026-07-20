@@ -305,8 +305,14 @@ async function getProxy(tier = 'premium') {
   const good = pwResults.filter(p => p.ok);
   const bad = pwResults.filter(p => !p.ok);
   if (bad.length > 0) {
-    console.error(`  [Engine 2] Deleting ${bad.length} proxies that failed Playwright validation from DB...`);
-    await batchDeleteDead(bad);
+    console.error(`  [Engine 2] Blacklisting ${bad.length} proxies that failed Playwright validation (local only — not deleting from DB)`);
+    // Only blacklist locally — don't delete from DB. Playwright validation failure
+    // is not proof the proxy is dead (network conditions vary per run).
+    // DB deletion only happens via reportProxyFailure() for real runtime failures.
+    const config = require('./config');
+    for (const p of bad) {
+      if (p.ip && p.port) config.addProxyBlacklist(p.ip, p.port);
+    }
   }
   if (good.length === 0) {
     console.error('  [Engine 2] All proxies failed Playwright validation');

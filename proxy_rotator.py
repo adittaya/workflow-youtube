@@ -38,7 +38,7 @@ def fetch_proxies(tier="premium"):
     endpoint = f"/proxy_results?select=ip,port,proto,country,latency_ms&{field}=eq.true&order=latency_ms.asc&limit=500"
     resp = supabase_fetch(endpoint)
     if not resp.ok:
-        raise RuntimeError(f"Supabase failed: {resp.status}")
+        raise RuntimeError(f"Supabase failed: {resp.status_code}")
     return resp.json()
 
 
@@ -482,8 +482,107 @@ if __name__ == "__main__":
     import argparse
 
     if "--setup" in sys.argv:
-        print("  Use: python3 proxy_rotator.py --setup")
-        print("  Or:  vplink3.0 proxy --setup")
+        if not sys.stdin.isatty():
+            print("No interactive terminal. Set env vars:", file=sys.stderr)
+            print("  SUPABASE_URL=https://... SUPABASE_KEY=... SUPABASE_SECRET=...", file=sys.stderr)
+            sys.exit(1)
+
+        BOLD = "\033[1m"; GREEN = "\033[32m"; YELLOW = "\033[33m"
+        CYAN = "\033[36m"; RED = "\033[31m"; DIM = "\033[2m"; NC = "\033[0m"
+        check = "\u2713"; cross = "\u2717"; warn = "\u26a0"
+
+        cfg = config.load()
+
+        print(f"\n{BOLD}Proxy Setup Wizard{NC}")
+        print(f"{DIM}{'─' * 50}{NC}\n")
+
+        # 1. Enable/disable
+        current_enabled = cfg.get("proxy_enabled", False)
+        default = "y" if current_enabled else "n"
+        ans = input(f"Enable proxy rotation? (y/N) [{default}]: ").strip().lower()
+        ans = ans or default
+        if ans not in ("y", "yes"):
+            config.save({"proxy_enabled": False})
+            print(f"  {YELLOW}{warn}{NC} Proxy disabled. Re-run {BOLD}vplink3.0 proxy --setup{NC} to enable.\n")
+            sys.exit(0)
+
+        # 2. Supabase URL
+        default_url = "https://bytemjjijgwwcrxlgutf.supabase.co"
+        current_url = cfg.get("supabase_url") or default_url
+        ans = input(f"Supabase URL [{current_url}]: ").strip()
+        sb_url = ans or current_url
+
+        # 3. Supabase Anon Key
+        current_key = cfg.get("supabase_key", "")
+        key_hint = current_key[:12] + "..." if len(current_key) > 12 else "(not set)"
+        ans = input(f"Supabase Anon/Publishable Key [{key_hint}]: ").strip()
+        sb_key = ans or current_key
+
+        # 4. Supabase Secret
+        current_secret = cfg.get("supabase_secret", "")
+        sec_hint = current_secret[:12] + "..." if len(current_secret) > 12 else "(not set)"
+        ans = input(f"Supabase Secret/Service Key [{sec_hint}]: ").strip()
+        sb_secret = ans or current_secret
+
+        if not sb_key or not sb_secret:
+            print(f"  {YELLOW}{warn}{NC} Key or secret missing — saving with proxy disabled.")
+            config.save({"supabase_url": sb_url, "supabase_key": sb_key, "supabase_secret": sb_secret, "proxy_enabled": False})
+            sys.exit(1)
+
+        # 5. Proxy tier
+        current_tier = cfg.get("proxy_tier", "premium")
+        ans = input(f"Proxy tier? (normal/premium) [{current_tier}]: ").strip().lower()
+        tier = ans or current_tier
+        if tier not in ("normal", "premium"):
+            print(f"  Invalid tier '{tier}', using 'premium'")
+            tier = "premium"
+
+        # 6. Save credentials
+        config.save({
+            "supabase_url": sb_url,
+            "supabase_key": sb_key,
+            "supabase_secret": sb_secret,
+            "proxy_enabled": True,
+            "proxy_tier": tier,
+        })
+        print(f"  {GREEN}{check}{NC} Credentials saved to ~/.vplink3.0/config.json\n")
+
+        # 7. Validate
+        print(f"  Validating credentials...", end=" ", flush=True)
+        try:
+            proxies = fetch_proxies(tier)
+            print(f"{GREEN}{check}{NC}")
+            print(f"  {GREEN}{check}{NC} {len(proxies)} {tier} proxies in Supabase")
+        except Exception as e:
+            print(f"{RED}{cross}{NC}")
+            print(f"  {RED}{cross}{NC} Validation failed: {e}")
+            print(f"  {YELLOW}{warn}{NC} Credentials saved but may be invalid. Check and re-run: {BOLD}vplink3.0 proxy --setup{NC}")
+            sys.exit(1)
+
+        # 8. Pool health check
+        ans = input(f"\n  Run pool health check (test 5 random proxies)? (Y/n): ").strip().lower()
+        if ans not in ("n", "no"):
+            print(f"\n  Testing random proxies...")
+            sample = proxies[:]
+            random.shuffle(sample)
+            sample = sample[:5]
+            alive = 0
+            with ThreadPoolExecutor(max_workers=5) as pool:
+                futures = {pool.submit(test_proxy_quick, p, 3000): p for p in sample}
+                for f in as_completed(futures):
+                    p = futures[f]
+                    try:
+                        r = f.result()
+                        if r.get("ok"):
+                            alive += 1
+                            print(f"    {GREEN}{check}{NC} {p['ip']}:{p['port']} ({r.get('latency_ms', '?')}ms)")
+                        else:
+                            print(f"    {RED}{cross}{NC} {p['ip']}:{p['port']} (dead)")
+                    except Exception as e:
+                        print(f"    {RED}{cross}{NC} {p['ip']}:{p['port']} (error: {e})")
+            print(f"\n  {alive}/{len(sample)} proxies alive")
+
+        print(f"\n{GREEN}{BOLD}Setup complete.{NC} Run {BOLD}vplink3.0{NC} to start.\n")
         sys.exit(0)
 
     if "--status" in sys.argv:

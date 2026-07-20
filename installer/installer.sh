@@ -76,8 +76,8 @@ ensure_project() {
         if [ -d "$INSTALL_DIR/installer" ]; then
             info "Updating VPLink..."
             git -C "$INSTALL_DIR" pull --ff-only 2>/dev/null || true
-            # Clear stale bytecode — Python may prefer old .pyc when mtimes match
-            find "$INSTALL_DIR" -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
+            # Purge all bytecode — stale .pyc can persist across commit switches
+            git -C "$INSTALL_DIR" clean -fdX 2>/dev/null || true
             PROJECT_DIR="$INSTALL_DIR"
             cd "$PROJECT_DIR"
             return 0
@@ -146,7 +146,8 @@ main() {
     echo ""
 
     # Run the Python installer from the project directory
-    exec "$PYTHON" -m installer "$@"
+    # -B: don't write/read .pyc files (forces recompile from source)
+    exec env PYTHONDONTWRITEBYTECODE=1 "$PYTHON" -B -m installer "$@"
 }
 
 # ── Dispatch ──

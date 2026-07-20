@@ -1,9 +1,20 @@
 import sys
 import os
+import shutil
 import json
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# Purge stale bytecode before submodule imports
+_installer_root = Path(__file__).resolve().parent
+for _pyc_dir in _installer_root.rglob("__pycache__"):
+    shutil.rmtree(_pyc_dir, ignore_errors=True)
+for _pyc_file in _installer_root.rglob("*.pyc"):
+    _pyc_file.unlink(missing_ok=True)
+for _pyo_file in _installer_root.rglob("*.pyo"):
+    _pyo_file.unlink(missing_ok=True)
+del _installer_root, _pyc_dir, _pyc_file, _pyo_file
 
 from installer import __version__, __app_name__, __repo__
 from installer.core.executor import run_command, check_command
@@ -77,11 +88,6 @@ def first_run_wizard(config: InstallerConfig, platform):
 
 
 def cmd_install():
-    # Clear stale bytecode before importing submodules
-    import shutil
-    for pyc_dir in Path(__file__).resolve().parent.rglob("__pycache__"):
-        shutil.rmtree(pyc_dir, ignore_errors=True)
-
     heading(f"VPLink {__version__} Installer")
 
     log = get_logger("install")

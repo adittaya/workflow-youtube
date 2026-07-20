@@ -145,13 +145,25 @@ def cmd_install():
         pkg for pkg in PACKAGES if pkg.category in ("system", "tool", "runtime")
     ])
 
-    # Browser packages — use fallback for chromium-browser snap issue
-    browser_results: dict[str, bool] = {}
+    # Browser packages — use Google Chrome on apt (avoid snap chromium on Ubuntu 24.04+)
     browser_pkgs = [pkg for pkg in PACKAGES if pkg.category == "browser"]
-    for pkg in browser_pkgs:
-        if pkg.name == "chromium-browser":
-            browser_results[pkg.name] = pm.install_chromium_with_fallback(use_sudo)
-        else:
+    browser_results: dict[str, bool] = {}
+    if platform.package_manager == "apt" and platform.name == "linux":
+        # Remove snap chromium stubs if present (they don't work in Cloud Shell/Docker/etc.)
+        run_command(f"{'sudo ' if use_sudo else ''}apt remove -y chromium-browser chromium-chromedriver 2>/dev/null", timeout=30)
+        # Install Google Chrome (real binary, includes ChromeDriver compatibility)
+        from installer.platforms.linux import LinuxPlatform
+        ok = LinuxPlatform.install_google_chrome(use_sudo)
+        for pkg in browser_pkgs:
+            if pkg.name in ("chromium-browser", "chromedriver"):
+                browser_results[pkg.name] = ok
+            else:
+                browser_results[pkg.name] = pm.install(pkg, use_sudo)
+        if ok:
+            # Ensure webdriver-manager is available for ChromeDriver
+            run_command([sys.executable, "-m", "pip", "install", "--quiet", "webdriver-manager"], timeout=60)
+    else:
+        for pkg in browser_pkgs:
             browser_results[pkg.name] = pm.install(pkg, use_sudo)
     system_results.update(browser_results)
 

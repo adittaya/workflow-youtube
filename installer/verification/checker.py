@@ -30,6 +30,18 @@ class Verifier:
                     if result.success:
                         version = result.stdout.strip().split("\n")[0]
 
+        # Fallback: on apt systems, accept Google Chrome as equivalent to Chromium Browser
+        if not installed and pkg.name == "chromium-browser":
+            for alt in ("google-chrome-stable", "google-chrome", "google-chrome-beta"):
+                alt_path = get_command_path(alt)
+                if alt_path:
+                    path = alt_path
+                    installed = True
+                    result = run_command([alt, "--version"], capture=True, timeout=10)
+                    if result.success:
+                        version = result.stdout.strip().split("\n")[0]
+                    break
+
         return CheckResult(
             package=pkg.name,
             display_name=pkg.display_name,

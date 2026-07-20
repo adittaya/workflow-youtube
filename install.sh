@@ -393,13 +393,15 @@ install_pip_deps() {
 
   cd "$INSTALL_DIR" 2>/dev/null || { warn "Project directory missing, skipping pip install"; return 0; }
   info "Installing Python dependencies..."
-  python3 -m pip install --user -r requirements.txt 2>&1 | tail -3 >> "$LOG_FILE" || {
-    warn "pip install failed, retrying..."
-    python3 -m pip install --user -r requirements.txt >> "$LOG_FILE" 2>&1 || {
-      warn "pip install failed twice — will try at runtime"
-      return 0
-    }
-  }
+  if python3 -m pip install --user -r requirements.txt 2>/dev/null; then
+    log "Python dependencies installed"
+  elif python3 -m pip install --break-system-packages -r requirements.txt 2>/dev/null; then
+    log "Python dependencies installed (--break-system-packages)"
+  elif PIP_REQUIRE_VIRTUALENV=0 python3 -m pip install --user -r requirements.txt 2>/dev/null; then
+    log "Python dependencies installed (PIP_REQUIRE_VIRTUALENV=0)"
+  else
+    warn "pip install failed — will retry at runtime"
+  fi
 
   STATE_PIP_DEPS="done"
   log "Python dependencies installed"

@@ -379,12 +379,12 @@ install_python() {
 
 install_python_pkg() {
   case "$DISTRO_FAMILY" in
-    debian) $SUDO apt-get install -y -qq python3 python3-pip python3-venv 2>/dev/null || warn "Some Python packages failed — proceeding" ;;
-    fedora) $SUDO dnf install -y python3 python3-pip 2>/dev/null || warn "Some Python packages failed — proceeding" ;;
-    arch) $SUDO pacman -S --noconfirm python python-pip 2>/dev/null || warn "Some Python packages failed — proceeding" ;;
-    suse) $SUDO zypper install -y python3 python3-pip 2>/dev/null || warn "Some Python packages failed — proceeding" ;;
-    alpine) $SUDO apk add python3 py3-pip 2>/dev/null || warn "Some Python packages failed — proceeding" ;;
-    *) warn "Unknown distro — attempting python3 install..." ; $SUDO apt-get install -y python3 python3-pip 2>/dev/null || true ;;
+    debian) $SUDO apt-get install -y -qq python3 python3-pip python3-venv >> "$LOG_FILE" 2>&1 || warn "Some Python packages failed — see log" ;;
+    fedora) $SUDO dnf install -y python3 python3-pip >> "$LOG_FILE" 2>&1 || warn "Some Python packages failed — see log" ;;
+    arch) $SUDO pacman -S --noconfirm python python-pip >> "$LOG_FILE" 2>&1 || warn "Some Python packages failed — see log" ;;
+    suse) $SUDO zypper install -y python3 python3-pip >> "$LOG_FILE" 2>&1 || warn "Some Python packages failed — see log" ;;
+    alpine) $SUDO apk add python3 py3-pip >> "$LOG_FILE" 2>&1 || warn "Some Python packages failed — see log" ;;
+    *) warn "Unknown distro — attempting python3 install..." ; $SUDO apt-get install -y python3 python3-pip >> "$LOG_FILE" 2>&1 || true ;;
   esac
 }
 
@@ -393,21 +393,66 @@ install_pip_deps() {
 
   cd "$INSTALL_DIR" 2>/dev/null || { warn "Project directory missing, skipping pip install"; return 0; }
   info "Installing Python dependencies..."
-  local pip_ok=false
-  if python3 -m pip install --user -r requirements.txt >> "$LOG_FILE" 2>&1; then
-    pip_ok=true
-  elif python3 -m pip install --break-system-packages -r requirements.txt >> "$LOG_FILE" 2>&1; then
-    pip_ok=true
-  elif PIP_REQUIRE_VIRTUALENV=0 python3 -m pip install --user -r requirements.txt >> "$LOG_FILE" 2>&1; then
-    pip_ok=true
-  elif python3 -m pip install -r requirements.txt >> "$LOG_FILE" 2>&1; then
-    pip_ok=true
+
+  # ── 1. Ensure pip itself works ───────────────────────────
+  if ! python3 -m pip --version >> "$LOG_FILE" 2>&1; then
+    info "pip not found — installing..."
+    if command -v apt-get &>/dev/null; then
+      $SUDO apt-get install -y -qq python3-pip python3-venv >> "$LOG_FILE" 2>&1 || true
+    fi
+    if ! python3 -m pip --version >> "$LOG_FILE" 2>&1; then
+      python3 -m ensurepip --upgrade >> "$LOG_FILE" 2>&1 || true
+    fi
+    if ! python3 -m pip --version >> "$LOG_FILE" 2>&1; then
+      warn "pip not available — install manually: sudo apt-get install python3-pip"
+      STATE_PIP_DEPS="failed"
+      return 0
+    fi
   fi
+
+  # ── 2. Try apt-based packages first (more reliable) ──────
+  if [ "$DISTRO_FAMILY" = "debian" ] && command -v apt-get &>/dev/null; then
+    $SUDO apt-get install -y -qq python3-selenium python3-requests 2>/dev/null || true
+  fi
+
+  # ── 3. Upgrade pip (compatibility with new Python) ──────
+  python3 -m pip install --upgrade pip >> "$LOG_FILE" 2>&1 || true
+
+  # ── 4. Try pip install with multiple fallbacks ──────────
+  local pip_ok=false
+  for pip_cmd in \
+    "python3 -m pip install --user -r requirements.txt" \
+    "python3 -m pip install --break-system-packages -r requirements.txt" \
+    "PIP_REQUIRE_VIRTUALENV=0 python3 -m pip install --user -r requirements.txt" \
+    "python3 -m pip install -r requirements.txt" \
+    "python3 -m pip install --no-build-isolation --user -r requirements.txt" \
+    "python3 -m pip install selenium webdriver-manager requests urllib3"; do
+    debug "Trying: $pip_cmd"
+    if eval "$pip_cmd" >> "$LOG_FILE" 2>&1; then
+      pip_ok=true
+      break
+    fi
+  done
+
+  # ── 5. Last resort: venv ────────────────────────────────
+  if ! $pip_ok; then
+    info "pip install failed — trying virtual environment..."
+    python3 -m venv "$INSTALL_DIR/.venv" >> "$LOG_FILE" 2>&1 && {
+      source "$INSTALL_DIR/.venv/bin/activate" 2>/dev/null || true
+      if "$INSTALL_DIR/.venv/bin/pip" install -r requirements.txt >> "$LOG_FILE" 2>&1; then
+        pip_ok=true
+        info "Installed in venv at $INSTALL_DIR/.venv"
+        info "Activate: source $INSTALL_DIR/.venv/bin/activate"
+      fi
+    }
+  fi
+
   if $pip_ok; then
     STATE_PIP_DEPS="done"
     log "Python dependencies installed"
   else
-    warn "pip install failed — see log: $LOG_FILE"
+    warn "pip install failed — last 20 lines of log:"
+    tail -20 "$LOG_FILE" | sed 's/^/    /'
     STATE_PIP_DEPS="failed"
   fi
 }
@@ -498,25 +543,26 @@ create_global_command() {
     ln -sf "$launcher" "$PREFIX/bin/$SCRIPT_NAME"
     ln -sf "$desktop_launcher" "$PREFIX/bin/vplink-desktop" 2>/dev/null || true
     log "Symlinked $SCRIPT_NAME to $PREFIX/bin/"
-  else
-    mkdir -p "$HOME/.local/bin"
-    ln -sf "$launcher" "$HOME/.local/bin/$SCRIPT_NAME"
-    ln -sf "$desktop_launcher" "$HOME/.local/bin/vplink-desktop" 2>/dev/null || true
-    log "Symlinked $SCRIPT_NAME to ~/.local/bin/"
+    else
+      mkdir -p "$HOME/.local/bin"
+      ln -sf "$launcher" "$HOME/.local/bin/$SCRIPT_NAME"
+      ln -sf "$desktop_launcher" "$HOME/.local/bin/vplink-desktop" 2>/dev/null || true
+      log "Symlinked $SCRIPT_NAME to ~/.local/bin/"
 
-    # Ensure ~/.local/bin is in PATH
-    if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
-      local rcfile="$HOME/.bashrc"
-      [ -f "$HOME/.zshrc" ] && rcfile="$HOME/.zshrc"
-      [ -f "$HOME/.profile" ] && rcfile="$HOME/.profile"
-      # Only add if not already present in rcfile
-      if ! grep -q "Added by VPLink 3.0 installer" "$rcfile" 2>/dev/null; then
-        echo "" >> "$rcfile"
-        echo "# Added by VPLink 3.0 installer" >> "$rcfile"
-        echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$rcfile"
+      # Ensure ~/.local/bin is in PATH
+      if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
+        export PATH="$HOME/.local/bin:$PATH"
+        local rcfile="$HOME/.bashrc"
+        [ -f "$HOME/.zshrc" ] && rcfile="$HOME/.zshrc"
+        [ -f "$HOME/.profile" ] && rcfile="$HOME/.profile"
+        # Only add if not already present in rcfile
+        if ! grep -q "Added by VPLink 3.0 installer" "$rcfile" 2>/dev/null; then
+          echo "" >> "$rcfile"
+          echo "# Added by VPLink 3.0 installer" >> "$rcfile"
+          echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$rcfile"
+        fi
+        warn "Added ~/.local/bin to PATH for this session and future shells (via $rcfile)"
       fi
-      warn "Added ~/.local/bin to PATH — restart shell or run: export PATH=\"\$HOME/.local/bin:\$PATH\""
-    fi
   fi
 
   STATE_CMD="done"

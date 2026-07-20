@@ -65,6 +65,14 @@ def first_run_wizard(config: InstallerConfig, platform):
 
     config.set("setup_complete", True)
     config.save()
+
+    # Also save to the runtime config.py path so proxy_rotator can read it
+    try:
+        from config import save as runtime_save
+        runtime_save(config.as_dict())
+    except Exception:
+        pass
+
     status("Configuration saved", "ok")
 
 

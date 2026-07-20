@@ -37,6 +37,44 @@ def _check_native_binary(path: str) -> bool:
     except OSError:
         return False
 
+
+def _detect_chrome_binary() -> str:
+    """Find a working Chrome/Chromium binary. Always returns a string."""
+    import shutil
+
+    candidates = [
+        "/opt/google/chrome/chrome",
+        "/opt/google/chrome/google-chrome",
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/chromium",
+    ]
+
+    # 1. Prefer env var
+    env_path = os.environ.get("CHROMIUM_PATH", "")
+    if env_path:
+        candidates.insert(0, env_path)
+
+    # 2. Search PATH via shutil (same as verifier)
+    for name in ("google-chrome-stable", "google-chrome", "chromium-browser", "chromium", "google-chrome-beta"):
+        which = shutil.which(name)
+        if which:
+            candidates.insert(0, which)
+
+    # 3. Native ELF binary first
+    for p in candidates:
+        if _check_native_binary(p):
+            return p
+
+    # 4. Fallback: any existing file
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+
+    # 5. Last resort — return a reasonable default that will give a clear error
+    return "/usr/bin/chromium-browser"
+
 # ── Globals ──
 BASE_DOMAIN = "vplink.in"
 KEY = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("VPLINK_KEY", "")
@@ -1446,18 +1484,7 @@ def main():
     elif os.environ.get("CHROMIUM_PATH"):
         options.binary_location = os.environ["CHROMIUM_PATH"]
     else:
-        candidates = [
-            "/usr/bin/google-chrome-stable",
-            "/usr/bin/google-chrome",
-            "/usr/bin/chromium-browser",
-            "/usr/bin/chromium",
-        ]
-        options.binary_location = next((p for p in candidates if _check_native_binary(p)), None)
-        if not options.binary_location:
-            for p in candidates:
-                if os.path.exists(p):
-                    options.binary_location = p
-                    break
+        options.binary_location = _detect_chrome_binary()
 
     if PROXY:
         options.add_argument(f"--proxy-server={PROXY}")

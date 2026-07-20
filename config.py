@@ -5,10 +5,19 @@ import tempfile
 import time
 from pathlib import Path
 
-CONFIG_DIR = Path.home() / ".vplink3.0"
+CONFIG_DIR = Path.home() / ".config" / "vplink3"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 PROXY_HISTORY_PATH = CONFIG_DIR / "proxy_history.json"
 PROXY_BLACKLIST_PATH = CONFIG_DIR / "proxy_blacklist.json"
+
+# Migrate from legacy path (~/.vplink3.0/) if it exists and new path doesn't
+_LEGACY_DIR = Path.home() / ".vplink3.0"
+_LEGACY_CONFIG = _LEGACY_DIR / "config.json"
+if _LEGACY_CONFIG.exists() and not CONFIG_PATH.exists():
+    try:
+        _LEGACY_DIR.rename(CONFIG_DIR)
+    except OSError:
+        pass
 
 DEFAULTS = {
     "supabase_url": "",

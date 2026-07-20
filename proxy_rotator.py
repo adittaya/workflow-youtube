@@ -24,22 +24,40 @@ def _check_native_binary(path: str) -> bool:
 
 
 def _detect_chrome_binary() -> str:
-    """Find the first working Chrome/Chromium native binary."""
+    """Find a working Chrome/Chromium binary. Always returns a string."""
+    import shutil
+
     candidates = [
+        "/opt/google/chrome/chrome",
+        "/opt/google/chrome/google-chrome",
         "/usr/bin/google-chrome-stable",
         "/usr/bin/google-chrome",
         "/usr/bin/chromium-browser",
         "/usr/bin/chromium",
     ]
-    path = os.environ.get("CHROMIUM_PATH", "")
-    if path and os.path.exists(path):
-        return path
-    path = next((p for p in candidates if _check_native_binary(p)), None)
-    if path:
-        return path
+
+    # 1. Prefer env var
+    env_path = os.environ.get("CHROMIUM_PATH", "")
+    if env_path:
+        candidates.insert(0, env_path)
+
+    # 2. Search PATH via shutil (same as verifier)
+    for name in ("google-chrome-stable", "google-chrome", "chromium-browser", "chromium", "google-chrome-beta"):
+        which = shutil.which(name)
+        if which:
+            candidates.insert(0, which)
+
+    # 3. Native ELF binary first
+    for p in candidates:
+        if _check_native_binary(p):
+            return p
+
+    # 4. Fallback: any existing file
     for p in candidates:
         if os.path.exists(p):
             return p
+
+    # 5. Last resort
     return "/usr/bin/chromium-browser"
 
 SUPABASE_REST = "/rest/v1"

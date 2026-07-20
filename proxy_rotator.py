@@ -187,7 +187,7 @@ def test_proxy_selenium(proxy, timeout_s=60):
             driver = webdriver.Chrome(options=options)
         except Exception:
             chromedriver_path = "/usr/bin/chromedriver"
-            if os.path.exists(chromedriver_path):
+            if os.path.exists(chromedriver_path) and _check_native_binary(chromedriver_path):
                 service = Service(executable_path=chromedriver_path)
                 driver = webdriver.Chrome(service=service, options=options)
             else:
@@ -470,7 +470,7 @@ def verify_proxy_ip(proxy):
             driver = webdriver.Chrome(options=options)
         except Exception:
             chromedriver_path = "/usr/bin/chromedriver"
-            if os.path.exists(chromedriver_path):
+            if os.path.exists(chromedriver_path) and _check_native_binary(chromedriver_path):
                 service = Service(executable_path=chromedriver_path)
                 driver = webdriver.Chrome(service=service, options=options)
             else:

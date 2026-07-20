@@ -1518,7 +1518,7 @@ def main():
     ]
     driver = None
     for cpath in chromedriver_paths:
-        if os.path.exists(cpath):
+        if os.path.exists(cpath) and _check_native_binary(cpath):
             try:
                 service = Service(executable_path=cpath)
                 driver = webdriver.Chrome(service=service, options=options)
@@ -1526,10 +1526,21 @@ def main():
             except Exception:
                 continue
     if driver is None:
-        from webdriver_manager.chrome import ChromeDriverManager
-        cm_path = ChromeDriverManager().install()
-        service = Service(executable_path=cm_path)
-        driver = webdriver.Chrome(service=service, options=options)
+        try:
+            from webdriver_manager.chrome import ChromeDriverManager
+            cm_path = ChromeDriverManager().install()
+            service = Service(executable_path=cm_path)
+            driver = webdriver.Chrome(service=service, options=options)
+        except Exception:
+            # Last resort: try with any chromedriver even if snap-wrapped
+            for cpath in chromedriver_paths:
+                if os.path.exists(cpath):
+                    try:
+                        service = Service(executable_path=cpath)
+                        driver = webdriver.Chrome(service=service, options=options)
+                        break
+                    except Exception:
+                        continue
 
     driver.set_page_load_timeout(90)
     driver.implicitly_wait(0)

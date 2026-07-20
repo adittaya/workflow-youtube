@@ -552,16 +552,25 @@ create_global_command() {
       # Ensure ~/.local/bin is in PATH
       if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
         export PATH="$HOME/.local/bin:$PATH"
+        # Primary: interactive shell rc (bashrc for bash, zshrc for zsh)
         local rcfile="$HOME/.bashrc"
-        [ -f "$HOME/.zshrc" ] && rcfile="$HOME/.zshrc"
-        [ -f "$HOME/.profile" ] && rcfile="$HOME/.profile"
-        # Only add if not already present in rcfile
-        if ! grep -q "Added by VPLink 3.0 installer" "$rcfile" 2>/dev/null; then
-          echo "" >> "$rcfile"
-          echo "# Added by VPLink 3.0 installer" >> "$rcfile"
-          echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$rcfile"
+        if [ -f "$HOME/.bashrc" ]; then
+          rcfile="$HOME/.bashrc"
+        elif [ -f "$HOME/.zshrc" ]; then
+          rcfile="$HOME/.zshrc"
         fi
-        warn "Added ~/.local/bin to PATH for this session and future shells (via $rcfile)"
+        echo "" >> "$rcfile"
+        echo "# Added by VPLink 3.0 installer" >> "$rcfile"
+        echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$rcfile"
+        # Secondary: profile (login shells)
+        if [ -f "$HOME/.profile" ] && [ "$rcfile" != "$HOME/.profile" ]; then
+          if ! grep -q "Added by VPLink 3.0 installer" "$HOME/.profile" 2>/dev/null; then
+            echo "" >> "$HOME/.profile"
+            echo "# Added by VPLink 3.0 installer" >> "$HOME/.profile"
+            echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.profile"
+          fi
+        fi
+        warn "Added ~/.local/bin to PATH for this session and future shells"
       fi
   fi
 

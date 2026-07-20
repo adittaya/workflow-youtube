@@ -14,7 +14,7 @@ for _pyc_file in _installer_root.rglob("*.pyc"):
     _pyc_file.unlink(missing_ok=True)
 for _pyo_file in _installer_root.rglob("*.pyo"):
     _pyo_file.unlink(missing_ok=True)
-del _installer_root, _pyc_dir, _pyc_file, _pyo_file
+del _installer_root
 
 from installer import __version__, __app_name__, __repo__
 from installer.core.executor import run_command, check_command

@@ -338,6 +338,12 @@ def human_read(duration_sec=45):
     current_y = 0
     log(f"human read: {dur}s, page height={max_scroll}px")
 
+    if max_scroll < 200:
+        log("page height too small, performing quick scroll only")
+        for _ in range(3):
+            ms(1000)
+        return
+
     try:
         iterations = rand(12, 20)
         for i in range(iterations):
@@ -830,7 +836,7 @@ def handle_ce():
 
     log("waiting for ce-wait1 to become visible (after reload with cookie)...")
     ce_wait_visible = False
-    for w in range(20):
+    for w in range(5):
         ce_wait_visible = safe_eval("""
             var el = document.getElementById('ce-wait1');
             if (!el) return false;
@@ -1460,31 +1466,26 @@ def main():
     options.add_experimental_option("useAutomationExtension", False)
     options.add_argument(f"--user-agent={profile['userAgent']}")
 
-    options.binary_location = "/usr/bin/chromium-browser"
-
-    try:
-        driver = webdriver.Chrome(options=options)
-    except Exception:
-        chromedriver_paths = [
-            "/usr/bin/chromedriver",
-            "/snap/bin/chromium.chromedriver",
-            "/usr/lib/chromium-browser/chromedriver",
-            "/usr/lib/chromium/chromedriver",
-        ]
-        driver = None
-        for cpath in chromedriver_paths:
-            if os.path.exists(cpath):
-                try:
-                    service = Service(executable_path=cpath)
-                    driver = webdriver.Chrome(service=service, options=options)
-                    break
-                except Exception:
-                    continue
-        if driver is None:
-            from webdriver_manager.chrome import ChromeDriverManager
-            cm_path = ChromeDriverManager().install()
-            service = Service(executable_path=cm_path)
-            driver = webdriver.Chrome(service=service, options=options)
+    chromedriver_paths = [
+        "/usr/bin/chromedriver",
+        "/snap/bin/chromium.chromedriver",
+        "/usr/lib/chromium-browser/chromedriver",
+        "/usr/lib/chromium/chromedriver",
+    ]
+    driver = None
+    for cpath in chromedriver_paths:
+        if os.path.exists(cpath):
+            try:
+                service = Service(executable_path=cpath)
+                driver = webdriver.Chrome(service=service, options=options)
+                break
+            except Exception:
+                continue
+    if driver is None:
+        from webdriver_manager.chrome import ChromeDriverManager
+        cm_path = ChromeDriverManager().install()
+        service = Service(executable_path=cm_path)
+        driver = webdriver.Chrome(service=service, options=options)
 
     driver.set_page_load_timeout(90)
     driver.implicitly_wait(0)
@@ -1648,6 +1649,7 @@ def main():
     max_url_visits = 4
     max_ad_hijacks = 5
     url_visits = {}
+    exhausted_cycles = 0
 
     for cycle in range(30):
         if destination_url or skip_main_loop:
@@ -1940,8 +1942,13 @@ def main():
             inter_delay = rand(8000, 22000)
             log(f"inter-article delay: {inter_delay // 1000}s")
             ms(inter_delay)
+            exhausted_cycles = 0
             continue
-        log("exhausted, force-navigating to vplink.in")
+        exhausted_cycles += 1
+        log(f"exhausted (x{exhausted_cycles}), force-navigating to vplink.in")
+        if exhausted_cycles >= 2:
+            log("2 consecutive exhausted cycles — breaking to final get-link")
+            break
         last_base = ""
         try:
             adpt_load.set_page_load(driver)

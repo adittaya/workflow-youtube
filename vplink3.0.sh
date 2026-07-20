@@ -324,12 +324,13 @@ deep_cleanup
 
 # ════════════════════════════════════════════════════════
 #  SESSION-BASED PROXY ROTATION
-#  One proxy per session (2-4 views), not per view.
-#  CPM platforms reward stable IPs and punish rapid IP hopping.
+#  One proxy per session. Session rotates after SESSION_SIZE SUCCESSFUL views.
+#  On failure, proxy is invalidated immediately (fail-fast for bad IPs).
 # ════════════════════════════════════════════════════════
-SESSION_SIZE=3           # views per proxy session
-SESSION_BREAK_MIN=8     # minutes between sessions
-VIEW_IN_SESSION=0
+SESSION_SIZE=5           # successful views per proxy session
+SESSION_BREAK_MIN=5     # minutes between sessions
+SUCCESSFUL_IN_SESSION=0  # views that completed successfully with current proxy
+TOTAL_IN_SESSION=0       # total attempts with current proxy (safety limit)
 CURRENT_PROXY=""
 
 for (( i=1; i<=VIEWS; i++ )); do
@@ -361,17 +362,18 @@ for (( i=1; i<=VIEWS; i++ )); do
     fi
   fi
 
-  # ── Proxy (session-based: reuse same proxy for SESSION_SIZE views) ──
+  # ── Proxy (session-based: one IP for SESSION_SIZE SUCCESSFUL views) ──
   unset VPLINK_PROXY
   if [ "$PROXY_ENABLED" = "true" ]; then
-    # Only get a new proxy at start of session (every SESSION_SIZE views)
-    if [ -z "$CURRENT_PROXY" ] || [ "$VIEW_IN_SESSION" -ge "$SESSION_SIZE" ]; then
+    # Rotate on: (a) session completed SESSION_SIZE successes, or (b) safety limit reached
+    if [ -z "$CURRENT_PROXY" ] || [ "$SUCCESSFUL_IN_SESSION" -ge "$SESSION_SIZE" ] || [ "$TOTAL_IN_SESSION" -ge $((SESSION_SIZE * 2)) ]; then
       if [ -n "$CURRENT_PROXY" ]; then
-        info "Session ended ($SESSION_SIZE views). Waiting ${SESSION_BREAK_MIN}min break..."
+        info "Session ended ($SUCCESSFUL_IN_SESSION successful / $TOTAL_IN_SESSION total). Waiting ${SESSION_BREAK_MIN}min break..."
         SESSION_BREAK=$(( SESSION_BREAK_MIN * 60 + RANDOM % 300 ))
         sleep "$SESSION_BREAK"
       fi
-      VIEW_IN_SESSION=0
+      SUCCESSFUL_IN_SESSION=0
+      TOTAL_IN_SESSION=0
       info "Testing all proxies (clean + speed)..."
       PROXY_RESULT=$(run_with_timeout 300 $PYTHON_BIN "$PROXY_ROTATOR" "$PROXY_TIER" | tail -1) || true
       if [ -n "$PROXY_RESULT" ]; then
@@ -382,7 +384,8 @@ for (( i=1; i<=VIEWS; i++ )); do
         CURRENT_PROXY=""
       fi
     else
-      info "Reusing session proxy (view $((VIEW_IN_SESSION+1))/$SESSION_SIZE): http://${CURRENT_PROXY}"
+      remaining=$((SESSION_SIZE - SUCCESSFUL_IN_SESSION))
+      info "Reusing session proxy (${remaining} successes left): http://${CURRENT_PROXY}"
     fi
     if [ -n "$CURRENT_PROXY" ]; then
       export VPLINK_PROXY="http://${CURRENT_PROXY}"
@@ -429,19 +432,24 @@ for (( i=1; i<=VIEWS; i++ )); do
     mv "$SCRIPT_DIR/destination_url.txt" "$RESULTS_DIR/destination_url_${i}.txt"
     ok "Result $i: $DEST"
     TOTAL_OK=$((TOTAL_OK + 1))
+    SUCCESSFUL_IN_SESSION=$((SUCCESSFUL_IN_SESSION + 1))
   else
     TOTAL_FAIL=$((TOTAL_FAIL + 1))
     if [ "$EXIT_CODE" -eq 124 ]; then
       warn "View $i timed out after 600s"
+      SUCCESSFUL_IN_SESSION=0
+      CURRENT_PROXY=""
     elif [ "$EXIT_CODE" -eq 2 ]; then
       warn "View $i could not complete (blocked/unavailable path)"
-      # Backup: blacklist proxy locally if automation didn't get to it (e.g., timeout)
+      SUCCESSFUL_IN_SESSION=0
       if [ -n "$VPLINK_PROXY" ]; then
         PROXY_HOST=$(echo "$VPLINK_PROXY" | sed 's|http[s]*://||; s|:.*||')
         PROXY_PORT=$(echo "$VPLINK_PROXY" | grep -o ':[0-9]*' | tr -d ':')
         if [ -n "$PROXY_HOST" ] && [ -n "$PROXY_PORT" ]; then
           $PYTHON_BIN -c "import sys; sys.path.insert(0,'$SCRIPT_DIR'); from config import add_proxy_blacklist; add_proxy_blacklist('$PROXY_HOST',$PROXY_PORT)" 2>/dev/null || true
         fi
+        CURRENT_PROXY=""
+        info "Proxy failed — invalidated for remaining session views"
       fi
     elif [ "$EXIT_CODE" -eq 3 ]; then
       warn "View $i completed without a destination URL"
@@ -449,8 +457,7 @@ for (( i=1; i<=VIEWS; i++ )); do
       warn "View $i failed (exit $EXIT_CODE)"
     fi
   fi
-  echo ""
-  VIEW_IN_SESSION=$((VIEW_IN_SESSION + 1))
+  TOTAL_IN_SESSION=$((TOTAL_IN_SESSION + 1))
 done
 
 # ════════════════════════════════════════════════════════

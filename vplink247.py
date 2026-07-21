@@ -148,26 +148,61 @@ def _set_workflow_state(token, owner, repo, disable=True):
 
 # ── Account commands ─────────────────────────────────────
 
+def _verify_token(token):
+    try:
+        user = _api(token, "GET", "/user")
+        login = user.get("login", "?")
+        return True, login
+    except SystemExit:
+        return False, None
+
+def cmd_login(args):
+    _header("🔑 Login with GitHub Token")
+    _say("Paste your GitHub personal access token (classic, repo scope).")
+    _say("It will be validated before saving.\n")
+    token = args.token or _prompt("GitHub token")
+    if not token: _fail("Token is required"); return
+    ok, login = _verify_token(token)
+    if not ok:
+        _fail("Token rejected — check it has repo scope and is valid")
+        return
+    accounts = load_accounts()
+    if login in accounts:
+        accounts[login]["token"] = token
+        accounts[login]["created_at"] = time.time()
+        _ok(f"Updated token for existing account '{login}'")
+    else:
+        accounts[login] = {"token": token, "created_at": time.time()}
+        _ok(f"Authenticated as {G}{login}{N}")
+    save_accounts(accounts)
+    set_setting("active_account", login)
+    _ok(f"Account '{login}' set as active")
+
 def cmd_account_add(args):
     name = args.name or _prompt("Account name") or "default"
-    token = args.token or _prompt("GitHub PAT (repo scope)")
+    token = args.token or _prompt("GitHub token (classic PAT, repo scope)")
     if not name or not token:
         _fail("Name and token are required"); return
+    ok, login = _verify_token(token)
+    if not ok:
+        _fail("Token rejected — check it has repo scope and is valid")
+        return
     accounts = load_accounts()
-    accounts[name] = {"token": token, "created_at": time.time()}
+    accounts[name] = {"token": token, "github_user": login, "created_at": time.time()}
     save_accounts(accounts)
     set_setting("active_account", name)
-    _ok(f"Account '{name}' added and set as active")
+    _ok(f"Account '{name}' added (authenticated as {C}{login}{N}) and set as active")
 
 def cmd_account_list(_args):
     accounts = load_accounts(); active = get_setting("active_account")
-    if not accounts: _warn("No accounts. Use 'vplink247 account add'"); return
-    _say(f"{'':3} {C}{'Name':20}{N} {'Active':6} {'Created':20}")
-    _say(f"{'':3} {D}{'─'*20}{N} {'─'*6} {'─'*20}")
+    if not accounts: _warn("No accounts. Use 'vplink247 login'"); return
+    _say(f"{'':3} {C}{'Name':20}{N} {'Active':6} {'GitHub User':20} {'Created':20}")
+    _say(f"{'':3} {D}{'─'*20}{N} {'─'*6} {'─'*20} {'─'*20}")
     for name, info in accounts.items():
         mark = f"{G}●{N}" if name == active else f"{D}○{N}"
+        gh = info.get("github_user", "?")
         added = time.strftime("%Y-%m-%d %H:%M", time.localtime(info.get("created_at", 0)))
-        _say(f"  {mark:3} {name:20} {f'{G}YES{N}' if name == active else '':6} {added:20}")
+        _say(f"  {mark:3} {name:20} {f'{G}YES{N}' if name == active else '':6} {gh:20} {added:20}")
 
 def cmd_account_switch(args):
     accounts = load_accounts()
@@ -418,20 +453,22 @@ def _menu_accounts():
         else:
             _warn("No accounts configured.")
         print()
-        choice = _choose(["📋 List accounts", "➕ Add account", "🔀 Switch account", "🗑 Remove account"])
+        choice = _choose(["📋 List accounts", "🔑 Login with token", "➕ Add account", "🔀 Switch account", "🗑 Remove account"])
         if choice < 0: return
         if choice == 0:
             cmd_account_list(None); _pause()
         elif choice == 1:
-            name = _prompt("Account name") or "default"
-            token = _prompt("GitHub PAT (repo scope)")
-            cmd_account_add(argparse.Namespace(name=name, token=token)); _pause()
+            cmd_login(argparse.Namespace(token=None)); _pause()
         elif choice == 2:
+            name = _prompt("Account name") or "default"
+            token = _prompt("GitHub token (classic PAT, repo scope)")
+            cmd_account_add(argparse.Namespace(name=name, token=token)); _pause()
+        elif choice == 3:
             if not accounts: _warn("No accounts."); _pause(); continue
             _say(f"Available: {', '.join(accounts.keys())}")
             name = _prompt("Switch to")
             cmd_account_switch(argparse.Namespace(name=name))
-        elif choice == 3:
+        elif choice == 4:
             if not accounts: _warn("No accounts."); _pause(); continue
             name = _prompt("Account to remove")
             cmd_account_remove(argparse.Namespace(name=name))
@@ -522,6 +559,10 @@ def _run_menu():
             print(f"    {C}vplink247 account add{N}       Add a GitHub account")
             print(f"    {C}vplink247 account list{N}      List accounts")
             print(f"    {C}vplink247 account switch{N}    Switch active account")
+            print(f"    {C}vplink247 login <token>{N}     Login (validates against API)")
+            print(f"    {C}vplink247 account list{N}      List accounts")
+            print(f"    {C}vplink247 account add{N}       Add account with name + token")
+            print(f"    {C}vplink247 account switch{N}    Switch active account")
             print(f"    {C}vplink247 account remove{N}    Remove an account")
             print(f"    {C}vplink247 deploy new{N}        Create a new deployment")
             print(f"    {C}vplink247 deploy list{N}       List deployments")
@@ -533,6 +574,7 @@ def _run_menu():
             print()
             print(f"  {B}Flags:{N}")
             print(f"    account add default {C}--token ghp_xxxxx{N}")
+            print(f"    login {C}ghp_xxxxx{N}")
             print(f"    deploy new {C}--name my-relay --key UbpV2D{N}")
             print(f"      {C}--supabase-url <url> --supabase-key <key>{N}")
             print(f"      {C}--supabase-secret <secret>{N}")
@@ -605,6 +647,10 @@ Examples:
     p = sub.add_parser("start", help="Start (enable) automation for a deployment")
     p.add_argument("name", help="Deployment name")
     p.set_defaults(func=cmd_start)
+
+    p = sub.add_parser("login", help="Login with GitHub token (validates & saves)")
+    p.add_argument("token", nargs="?", help="GitHub token")
+    p.set_defaults(func=cmd_login)
 
     p = sub.add_parser("status", help="Show overall status")
     p.set_defaults(func=cmd_status)

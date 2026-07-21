@@ -86,6 +86,29 @@ def save_deployments(d): _save_json(DEPLOYMENTS_FILE, d)
 def get_setting(k):     return _load_json(SETTINGS_FILE).get(k)
 def set_setting(k, v):  s = _load_json(SETTINGS_FILE); s[k] = v; _save_json(SETTINGS_FILE, s)
 
+# ── Supabase config (persistent, shared across deployments) ──
+SUPABASE_KEYS = ["supabase_url", "supabase_key", "supabase_secret"]
+
+def get_db_config():
+    s = _load_json(SETTINGS_FILE)
+    return {k: s.get(k, "") for k in SUPABASE_KEYS}
+
+def set_db_config(url, key, secret):
+    s = _load_json(SETTINGS_FILE)
+    if url:  s["supabase_url"] = url
+    if key:  s["supabase_key"] = key
+    if secret: s["supabase_secret"] = secret
+    _save_json(SETTINGS_FILE, s)
+
+def _resolve_supabase(args):
+    cfg = get_db_config()
+    supabase_url = args.supabase_url or cfg["supabase_url"] or _prompt("Supabase URL")
+    supabase_key = args.supabase_key or cfg["supabase_key"] or _prompt("Supabase anon/public key")
+    supabase_secret = args.supabase_secret or cfg["supabase_secret"] or _input_secret("Supabase service/secret key")
+    if supabase_url and supabase_key and supabase_secret:
+        set_db_config(supabase_url, supabase_key, supabase_secret)
+    return supabase_url, supabase_key, supabase_secret
+
 
 # ── GitHub API ────────────────────────────────────────────
 
@@ -289,11 +312,7 @@ def cmd_deploy(args):
         auto = _prompt("Repo name (enter for random)")
         repo_name = auto or "".join(random.choices(string.ascii_lowercase + string.digits, k=10))
     key = args.key or _prompt("VPLink key to automate") or "UbpV2D"
-    _hline
-    _header("Supabase Configuration")
-    supabase_url = args.supabase_url or _prompt("Supabase URL")
-    supabase_key = args.supabase_key or _prompt("Supabase anon/public key")
-    supabase_secret = args.supabase_secret or _input_secret("Supabase service/secret key")
+    supabase_url, supabase_key, supabase_secret = _resolve_supabase(args)
     _hline
     _say(f"Deploying to {C}{active}/{repo_name}{N} ...")
     rname, rurl = _deploy_one(active, token, repo_name, key, supabase_url, supabase_key, supabase_secret)
@@ -317,12 +336,7 @@ def cmd_bulk_deploy(args):
         except ValueError: _fail("Enter a number"); return
     if count < 1 or count > 50: _fail("Count must be 1-50"); return
     key = args.key or _prompt("VPLink key for all") or "UbpV2D"
-    _hline
-    _header("Supabase Configuration (shared across all)")
-    supabase_url = args.supabase_url or _prompt("Supabase URL")
-    supabase_key = args.supabase_key or _prompt("Supabase anon/public key")
-    supabase_secret = args.supabase_secret or _input_secret("Supabase service/secret key")
-    _hline
+    supabase_url, supabase_key, supabase_secret = _resolve_supabase(args)
     _say(f"Bulk deploying {C}{count}{N} automations as {C}{active}{N}")
     if not _confirm(f"Create {count} repos with random names?"): _say("Cancelled"); return
     print()
@@ -386,6 +400,30 @@ def cmd_deploy_remove(args):
     _ok(f"Deployment '{args.name}' removed")
 
 
+# ── Database Config ──────────────────────────────────────
+
+def cmd_db_configure(_args):
+    cfg = get_db_config()
+    _header("🗄️  Database Configuration")
+    _say("Configure Supabase credentials once — they persist for all deployments.\n")
+    print(f"  Current:  {C}{cfg['supabase_url'] or '(not set)'}{N}")
+    print(f"  Key:      {D}{'set' if cfg['supabase_key'] else '(not set)'}{N}")
+    print(f"  Secret:   {D}{'set' if cfg['supabase_secret'] else '(not set)'}{N}")
+    print()
+    if not _confirm("Update database credentials?"): return
+    url = _prompt("Supabase URL") or cfg["supabase_url"]
+    key = _prompt("Supabase anon/public key") or cfg["supabase_key"]
+    secret = _input_secret("Supabase service/secret key") or cfg["supabase_secret"]
+    set_db_config(url, key, secret)
+    _ok("Database configuration saved")
+
+def cmd_db_show(_args):
+    cfg = get_db_config()
+    _header("🗄️  Database Configuration")
+    _say(f"URL:    {C}{cfg['supabase_url'] or '(not set)'}{N}")
+    _say(f"Key:    {D}{'✓ set' if cfg['supabase_key'] else '✗ not set'}{N}")
+    _say(f"Secret: {D}{'✓ set' if cfg['supabase_secret'] else '✗ not set'}{N}")
+
 # ── Stop / Start ─────────────────────────────────────────
 
 def _get_deployment_info(name):
@@ -412,6 +450,102 @@ def cmd_start(args):
     _say(f"Starting {C}{owner}/{repo}{N} ...")
     if _set_workflow_state(token, owner, repo, disable=False):
         _ok(f"Automation started for '{args.name}'")
+
+# ── Analytics ───────────────────────────────────────────
+
+def _fetch_run_logs(token, owner, repo, run_id):
+    url = f"https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}/logs"
+    req = urllib.request.Request(url, headers={
+        "Authorization": f"Bearer {token}", "User-Agent": "vplink247/1.0",
+    })
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return resp.read().decode(errors="replace")
+    except Exception:
+        return ""
+
+def _parse_run_logs(text):
+    dests = []
+    for line in text.split("\n"):
+        if "DESTINATION URL:" in line or "DESTINATION_URL:" in line:
+            for p in line.split():
+                if p.startswith("http") and len(p) > 10 and p not in dests:
+                    dests.append(p)
+                    break
+    return dests
+
+def _analyze_deployment(name, info, token):
+    owner, repo = info["account"], name
+    try:
+        runs = _api(token, "GET", f"/repos/{owner}/{repo}/actions/runs?per_page=10")
+    except SystemExit:
+        return None
+    wf = runs.get("workflow_runs", [])
+    total, success, failed, all_dests = 0, 0, 0, []
+    for r in wf:
+        total += 1
+        c = r.get("conclusion", "")
+        if c == "success": success += 1
+        elif c in ("failure", "cancelled", "timed_out"): failed += 1
+        if r.get("status") == "completed" and r.get("conclusion"):
+            logs = _fetch_run_logs(token, owner, repo, r["id"])
+            dests = _parse_run_logs(logs)
+            all_dests.extend(dests)
+    return {"total_runs": total, "success": success, "failed": failed,
+            "other": total - success - failed, "destinations": all_dests,
+            "unique_dests": len(set(all_dests))}
+
+def cmd_analytics(args):
+    deps = load_deployments(); accounts = load_accounts()
+    if args.name and args.name not in deps: _fail(f"Deployment '{args.name}' not found"); return
+    _header("📊 Analytics Report")
+    if args.aggregate or not args.name:
+        all_dests = []; total_s, total_f, total_r, total_u = 0, 0, 0, 0; dep_count = 0
+        for name, info in sorted(deps.items()):
+            token = accounts.get(info["account"], {}).get("token")
+            if not token: continue
+            _say(f"  Scanning {C}{name}{N} ...")
+            r = _analyze_deployment(name, info, token)
+            if not r: continue
+            total_r += r["total_runs"]; total_s += r["success"]; total_f += r["failed"]
+            all_dests.extend(r["destinations"]); dep_count += 1
+            total_u += r["unique_dests"]
+        print()
+        print(f"  {B}Aggregate ({dep_count} deployments){N}")
+        print(f"  {'Runs:':16} {total_r}")
+        print(f"  {'Succeeded:':16} {G}{total_s}{N}")
+        print(f"  {'Failed:':16} {R}{total_f}{N}")
+        print(f"  {'Other:':16} {total_r - total_s - total_f}")
+        print(f"  {'Total views:':16} {len(all_dests)}")
+        print(f"  {'Unique URLs:':16} {total_u}")
+        if all_dests:
+            _dash
+            _say(f"  {B}Destination URLs:{N}")
+            for d in sorted(set(all_dests)):
+                print(f"    {C}▸{N} {d}")
+        return
+    # Single deployment
+    name, info = args.name, deps[args.name]
+    token = accounts.get(info["account"], {}).get("token")
+    if not token: _fail(f"Account '{info['account']}' not found"); return
+    r = _analyze_deployment(name, info, token)
+    if not r: return
+    print(f"  {B}{name}{N}  ({C}{info['account']}{N})")
+    print(f"  {'Key:':16} {info.get('key','?')}")
+    print(f"  {'Runs analyzed:':16} {r['total_runs']}")
+    print(f"  {'Succeeded:':16} {G}{r['success']}{N}")
+    print(f"  {'Failed:':16} {R}{r['failed']}{N}")
+    print(f"  {'Other:':16} {r['other']}")
+    print(f"  {'Total views:':16} {len(r['destinations'])}")
+    print(f"  {'Unique URLs:':16} {r['unique_dests']}")
+    if r["destinations"]:
+        _dash
+        _say(f"  {B}Destination URLs:{N}")
+        for d in sorted(set(r["destinations"])):
+            print(f"    {C}▸{N} {d}")
+
+def cmd_analytics_all(_args):
+    cmd_analytics(argparse.Namespace(name=None, aggregate=True))
 
 # ── Check / Test / Status ───────────────────────────────
 
@@ -593,8 +727,9 @@ def _menu_deployments():
             _dash
         print()
         choice = _choose(["📋 List deployments", "🚀 Deploy new relay", "📦 Bulk deploy",
-                          "🧪 Test deployment", "🔍  Check latest run", "⏹  Stop automation",
-                          "▶️  Start automation", "🗑 Remove deployment", "⚡ Quick deploy (bare-bones)"])
+                          "📈 Analytics", "🧪 Test deployment", "🔍  Check latest run",
+                          "⏹  Stop automation", "▶️  Start automation",
+                          "🗑 Remove deployment", "⚡ Quick deploy (bare-bones)"])
         if choice < 0: return
         if choice == 0:
             cmd_deploy_list(None); _pause()
@@ -611,12 +746,13 @@ def _menu_deployments():
             else:
                 _say(f"\n  Deployments: {', '.join(sorted(deps.keys()))}")
                 name = _prompt("Deployment name")
-            if choice == 3: cmd_test(argparse.Namespace(name=name))
-            elif choice == 4: cmd_check(argparse.Namespace(name=name)); _pause()
-            elif choice == 5: cmd_stop(argparse.Namespace(name=name))
-            elif choice == 6: cmd_start(argparse.Namespace(name=name))
-            elif choice == 7: cmd_deploy_remove(argparse.Namespace(name=name))
-        elif choice == 8:
+            if choice == 3: cmd_analytics(argparse.Namespace(name=name, aggregate=False)); _pause()
+            elif choice == 4: cmd_test(argparse.Namespace(name=name))
+            elif choice == 5: cmd_check(argparse.Namespace(name=name)); _pause()
+            elif choice == 6: cmd_stop(argparse.Namespace(name=name))
+            elif choice == 7: cmd_start(argparse.Namespace(name=name))
+            elif choice == 8: cmd_deploy_remove(argparse.Namespace(name=name))
+        elif choice == 9:
             accts = load_accounts()
             if not accts: _warn("No accounts. Add one first."); _pause(); continue
             name = _prompt("Repo name (enter for random)")
@@ -651,6 +787,8 @@ def _run_menu():
             f"👤  Account Management      {D}{len(accounts)} account(s){N}",
             f"🚀  Deployment Management   {D}{len(deps)} deployment(s){N}",
             f"📊  Status & Monitoring     {D}live workflow health{N}",
+            f"🗄️  Database Config         {D}persistent Supabase credentials{N}",
+            f"📈  Analytics & Reports     {D}views, destinations, success/fail{N}",
             f"📖  Help / All Commands     {D}CLI reference{N}",
         ])
         if choice < 0:
@@ -658,7 +796,9 @@ def _run_menu():
         if choice == 0:      _menu_accounts()
         elif choice == 1:    _menu_deployments()
         elif choice == 2:    cmd_status(None); _pause()
-        elif choice == 3:
+        elif choice == 3:    cmd_db_configure(None); _pause()
+        elif choice == 4:    cmd_analytics(argparse.Namespace(name=None, aggregate=True)); _pause()
+        elif choice == 5:
             _header("📖 CLI Reference")
             print(f"    {C}vplink247{N}                   Interactive menu (this)")
             print(f"    {C}vplink247 setup{N}             Same as above")
@@ -678,6 +818,10 @@ def _run_menu():
             print(f"    {C}vplink247 check <name>{N}      Check latest run status (no dispatch)")
             print(f"    {C}vplink247 stop <name>{N}       Stop (disable) automation")
             print(f"    {C}vplink247 start <name>{N}      Start (enable) automation")
+            print(f"    {C}vplink247 db config{N}         Set Supabase credentials (persistent)")
+            print(f"    {C}vplink247 db show{N}           Show current DB config")
+            print(f"    {C}vplink247 analytics{N}          Aggregate analytics across all deployments")
+            print(f"    {C}vplink247 analytics <name>{N}   Analytics for a single deployment")
             print(f"    {C}vplink247 status{N}            Show overall status")
             print()
             print(f"  {B}Flags:{N}")
@@ -708,7 +852,11 @@ Examples:
   vplink247 check <name>          Check latest run (no dispatch)
   vplink247 stop <name>           Stop (disable) automation
   vplink247 start <name>          Start (enable) automation
-  vplink247 status                Show overall status
+  vplink247 db config            Set Supabase credentials (persistent)
+  vplink247 db show              Show current DB config
+  vplink247 analytics            Aggregate analytics across all deployments
+  vplink247 analytics <name>     Analytics for a single deployment
+  vplink247 status               Show overall status
         """
     )
     sub = parser.add_subparsers(dest="command")
@@ -757,6 +905,18 @@ Examples:
     p.add_argument("name", help="Deployment name")
     p.set_defaults(func=cmd_test)
 
+    p = sub.add_parser("db", help="Configure persistent Supabase database")
+    db_sub = p.add_subparsers(dest="subcmd")
+    p = db_sub.add_parser("config", help="Set database credentials")
+    p.set_defaults(func=cmd_db_configure)
+    p = db_sub.add_parser("show", help="Show current database config")
+    p.set_defaults(func=cmd_db_show)
+
+    p = sub.add_parser("analytics", aliases=["stats"],
+                       help="View analytics per deployment or full account")
+    p.add_argument("name", nargs="?", help="Deployment name (omit for aggregate)")
+    p.set_defaults(func=cmd_analytics)
+
     p = sub.add_parser("check", help="Check latest workflow run status (no dispatch)")
     p.add_argument("name", help="Deployment name")
     p.set_defaults(func=cmd_check)
@@ -784,6 +944,10 @@ Examples:
 
     if args.command == "deploy" and not getattr(args, "subcmd", None):
         args.func = cmd_deploy
+    if args.command in ("analytics", "stats") and not getattr(args, "name", None):
+        args.aggregate = True
+    if args.command == "db" and not getattr(args, "subcmd", None):
+        args.func = cmd_db_show
 
     try:
         args.func(args)

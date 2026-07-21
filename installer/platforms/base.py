@@ -1,46 +1,41 @@
-from dataclasses import dataclass, field
+"""
+Base platform class.
+"""
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Optional
+
+from installer.core.platform import PlatformInfo
 
 
 @dataclass
-class PlatformInfo:
-    name: str  # linux, macos, windows, termux
-    distribution: str  # ubuntu, debian, fedora, arch, opensuse, macos, windows, termux
-    version: str
-    arch: str  # x86_64, aarch64, armv7l
-    package_manager: str  # apt, dnf, pacman, zypper, brew, winget, pkg
-    has_sudo: bool
-    is_wsl: bool
-    is_docker: bool
-    config_dir: str
-    data_dir: str
-    cache_dir: str
-    shell: str  # bash, zsh, fish, powershell
-    shell_profile: str  # path to shell profile
-    home: str  # user home directory
-    user: str  # current username
+class InstallResult:
+    success: bool
+    package: str
+    version: Optional[str] = None
+    error: Optional[str] = None
 
 
-class BasePlatform:
-    """Base class for platform-specific operations."""
+class BasePlatform(ABC):
+    def __init__(self, info: PlatformInfo):
+        self.info = info
 
-    @staticmethod
-    def detect() -> PlatformInfo:
-        raise NotImplementedError
+    @abstractmethod
+    def install_package(self, name: str) -> InstallResult:
+        ...
 
-    @staticmethod
-    def install_package(pkg_name: str, sudo: bool = True) -> bool:
-        raise NotImplementedError
+    @abstractmethod
+    def install_packages(self, names: list[str]) -> list[InstallResult]:
+        ...
 
-    @staticmethod
-    def update_package_index(sudo: bool = True) -> bool:
-        raise NotImplementedError
+    @abstractmethod
+    def update_package_db(self) -> bool:
+        ...
 
-    @staticmethod
-    def package_available(pkg_name: str) -> bool:
-        """Check if a package exists in the repository."""
-        raise NotImplementedError
+    @abstractmethod
+    def system_info(self) -> dict:
+        ...
 
-    @staticmethod
-    def get_package_version(pkg_name: str) -> Optional[str]:
-        raise NotImplementedError
+    def is_installed(self, binary: str) -> bool:
+        import shutil
+        return shutil.which(binary) is not None

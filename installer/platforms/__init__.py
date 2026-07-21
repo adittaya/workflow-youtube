@@ -1,38 +1,64 @@
-from installer.platforms.base import PlatformInfo, BasePlatform
+"""
+Platform-specific implementations.
+"""
+from dataclasses import dataclass
 from installer.platforms.linux import LinuxPlatform
 from installer.platforms.macos import MacOSPlatform
 from installer.platforms.windows import WindowsPlatform
 from installer.platforms.termux import TermuxPlatform
 
-
-def detect_platform() -> PlatformInfo:
-    """Auto-detect current platform and return PlatformInfo."""
-    import os
-    import platform
-
-    if os.environ.get("TERMUX_VERSION") or os.environ.get("PREFIX", "").startswith(
-        "/data/data/com.termux"
-    ):
-        return TermuxPlatform.detect()
-
-    system = platform.system()
-    if system == "Linux":
-        return LinuxPlatform.detect()
-    elif system == "Darwin":
-        return MacOSPlatform.detect()
-    elif system == "Windows":
-        return WindowsPlatform.detect()
-    else:
-        raise RuntimeError(f"Unsupported platform: {system}")
+from installer.core.platform import PlatformInfo, detect
+from installer.core.env import detect as env_detect
 
 
-def get_platform() -> BasePlatform:
-    """Get the platform handler for the current OS."""
-    info = detect_platform()
-    cls = {
-        "linux": LinuxPlatform,
-        "macos": MacOSPlatform,
-        "windows": WindowsPlatform,
-        "termux": TermuxPlatform,
-    }[info.name]
-    return cls
+@dataclass
+class PlatformMeta:
+    """Unified platform metadata returned by detect_platform()."""
+    name: str
+    distribution: str
+    version: str
+    arch: str
+    package_manager: str
+    shell: str
+    is_root: bool
+    is_wsl: bool
+    is_docker: bool
+    home: str
+    config_dir: str
+    data_dir: str
+    bin_dir: str
+    user: str = ""
+    node: str = ""
+
+
+def detect_platform() -> PlatformMeta:
+    pi = detect()
+    meta = PlatformMeta(
+        name="macos" if pi.os_name == "darwin" else pi.os_name,
+        distribution=pi.distribution or "",
+        version=pi.dist_version or "",
+        arch=pi.arch,
+        package_manager=pi.package_manager,
+        shell=pi.shell,
+        is_root=pi.is_root,
+        is_wsl=pi.is_wsl,
+        is_docker=pi.is_docker,
+        home=pi.home,
+        config_dir=pi.config_dir,
+        data_dir=pi.data_dir,
+        bin_dir=pi.bin_dir,
+    )
+    import getpass, platform
+    meta.user = getpass.getuser()
+    meta.node = platform.node()
+    return meta
+
+
+def get_platform(info: PlatformInfo):
+    if info.os_name == "termux":
+        return TermuxPlatform(info)
+    if info.os_name == "darwin":
+        return MacOSPlatform(info)
+    if info.os_name == "windows":
+        return WindowsPlatform(info)
+    return LinuxPlatform(info)

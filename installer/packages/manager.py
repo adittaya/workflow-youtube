@@ -8,8 +8,11 @@ log = get_logger("packages")
 
 class PackageManager:
     def __init__(self):
-        self.platform = get_platform()
-        self.info = get_platform().detect() if hasattr(get_platform(), 'detect') else get_platform().detect()
+        from installer.core.platform import detect as core_detect
+        from installer.platforms import detect_platform
+        self._core_info = core_detect()
+        self.platform = get_platform(self._core_info)
+        self.info = detect_platform()
 
     def get_pm_name(self, pkg: PackageDef) -> str:
         """Get the package manager name for this package on current platform."""

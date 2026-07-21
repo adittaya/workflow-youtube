@@ -1,109 +1,66 @@
-from __future__ import annotations
-
-import os
-import platform
-from pathlib import Path
-from typing import Optional
-
-from installer.core.executor import check_command, run_command
-from installer.platforms.base import BasePlatform, PlatformInfo
+"""
+Windows platform implementation (PowerShell + Winget).
+"""
+import subprocess
+from installer.platforms.base import BasePlatform, InstallResult
+from installer.packages import get_package, is_installed
+from installer import logging as log
 
 
 class WindowsPlatform(BasePlatform):
+    def install_package(self, name: str) -> InstallResult:
+        installed, version = is_installed(name)
+        if installed:
+            return InstallResult(True, name, version)
 
-    @staticmethod
-    def detect() -> PlatformInfo:
-        version = platform.win32_ver()[0] or platform.release()
+        pkg = get_package(name)
+        if not pkg:
+            return InstallResult(False, name, error=f"Unknown package: {name}")
 
-        machine = platform.machine().lower()
-        ARCH_MAP = {
-            "x86_64": "x86_64", "amd64": "x86_64",
-            "aarch64": "aarch64", "arm64": "aarch64",
-            "i686": "i686", "i386": "i686",
+        cmd = pkg.windows.get("install", f"winget install {name}")
+        if "winget" in cmd and not self._has_winget():
+            return InstallResult(False, name, error="winget not available")
+
+        try:
+            result = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True, timeout=300
+            )
+            if result.returncode == 0:
+                installed, version = is_installed(name)
+                return InstallResult(True, name, version)
+            return InstallResult(False, name, error=result.stderr[:500])
+        except subprocess.TimeoutExpired:
+            return InstallResult(False, name, error="Timed out")
+        except Exception as e:
+            return InstallResult(False, name, error=str(e))
+
+    def install_packages(self, names: list[str]) -> list[InstallResult]:
+        return [self.install_package(n) for n in names]
+
+    def update_package_db(self) -> bool:
+        if self._has_winget():
+            try:
+                subprocess.run("winget source update", shell=True,
+                               capture_output=True, timeout=60)
+                return True
+            except Exception:
+                pass
+        return False
+
+    def system_info(self) -> dict:
+        ver = ""
+        try:
+            ver = subprocess.run(["cmd", "/c", "ver"], capture_output=True, text=True).stdout.strip()
+        except Exception:
+            pass
+        return {
+            "os": "Windows",
+            "version": ver,
+            "arch": self.info.arch,
+            "has_winget": self._has_winget(),
+            "shell": self.info.shell,
         }
-        arch = ARCH_MAP.get(machine, machine)
 
-        pkg_manager: str = "winget"
-        for pm in ("winget", "choco", "scoop"):
-            if check_command(pm):
-                pkg_manager = pm
-                break
-
-        has_sudo = bool(os.environ.get("PSModulePath", False))
-
-        home = os.path.expanduser("~")
-        user = os.environ.get("USERNAME", os.environ.get("USER", "unknown"))
-
-        shell = "powershell" if os.environ.get("PSModulePath") else "cmd"
-
-        shell_profile = os.path.join(
-            home, "Documents", "WindowsPowerShell",
-            "Microsoft.PowerShell_profile.ps1",
-        ) if shell == "powershell" else os.path.join(home, ".profile")
-
-        appdata = os.environ.get("LOCALAPPDATA", os.path.join(home, "AppData", "Local"))
-        roamdata = os.environ.get("APPDATA", os.path.join(home, "AppData", "Roaming"))
-
-        return PlatformInfo(
-            name="windows",
-            distribution="windows",
-            version=version,
-            arch=arch,
-            package_manager=pkg_manager,
-            has_sudo=has_sudo,
-            is_wsl=False,
-            is_docker=False,
-            config_dir=os.path.join(roamdata, "vplink3"),
-            data_dir=os.path.join(appdata, "vplink3"),
-            cache_dir=os.path.join(appdata, "vplink3", "cache"),
-            shell=shell,
-            shell_profile=shell_profile,
-            home=home,
-            user=user,
-        )
-
-    @staticmethod
-    def install_package(pkg_name: str, sudo: bool = True) -> bool:
-        pm = WindowsPlatform.detect().package_manager
-        if pm == "winget":
-            cmd = f'winget install --id {pkg_name}'
-        elif pm == "choco":
-            cmd = f"choco install -y {pkg_name}"
-        elif pm == "scoop":
-            cmd = f'scoop install {pkg_name}'
-        else:
-            return False
-        result = run_command(cmd, timeout=300)
-        return result.success
-
-    @staticmethod
-    def update_package_index(sudo: bool = True) -> bool:
-        pm = WindowsPlatform.detect().package_manager
-        cmd_map = {
-            "winget": "winget source update",
-            "choco": "choco upgrade chocolatey -y",
-            "scoop": "scoop update",
-        }
-        cmd = cmd_map.get(pm)
-        if not cmd:
-            return False
-        result = run_command(cmd, timeout=120)
-        return result.success
-
-    @staticmethod
-    def package_available(pkg_name: str) -> bool:
-        pm = WindowsPlatform.detect().package_manager
-        if pm == "winget":
-            cmd = f'winget search {pkg_name}'
-        elif pm == "choco":
-            cmd = f"choco search {pkg_name}"
-        elif pm == "scoop":
-            cmd = f"scoop search {pkg_name}"
-        else:
-            return False
-        result = run_command(cmd, timeout=60)
-        return result.success
-
-    @staticmethod
-    def get_package_version(pkg_name: str) -> Optional[str]:
-        return None
+    def _has_winget(self) -> bool:
+        import shutil
+        return shutil.which("winget") is not None

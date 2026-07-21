@@ -1,86 +1,48 @@
-from __future__ import annotations
-
-import os
-import platform
-import re
-from pathlib import Path
-from typing import Optional
-
-from installer.core.executor import check_command, run_command
-from installer.platforms.base import BasePlatform, PlatformInfo
+"""
+Termux (Android) platform implementation.
+"""
+import subprocess
+from installer.platforms.base import BasePlatform, InstallResult
+from installer.packages import get_package, is_installed
 
 
 class TermuxPlatform(BasePlatform):
+    def install_package(self, name: str) -> InstallResult:
+        installed, version = is_installed(name)
+        if installed:
+            return InstallResult(True, name, version)
 
-    @staticmethod
-    def detect() -> PlatformInfo:
-        prefix = os.environ.get("PREFIX", "/data/data/com.termux/files/usr")
-        version = os.environ.get("TERMUX_VERSION", platform.release())
+        pkg = get_package(name)
+        if not pkg:
+            return InstallResult(False, name, error=f"Unknown package: {name}")
 
-        machine = platform.machine().lower()
-        ARCH_MAP = {
-            "aarch64": "aarch64", "arm64": "aarch64",
-            "armv7l": "armv7l", "armv8l": "armv7l",
-            "x86_64": "x86_64", "i686": "i686",
+        cmd = pkg.termux.get("install", f"pkg install -y {name}")
+
+        try:
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=180)
+            if result.returncode == 0:
+                installed, version = is_installed(name)
+                return InstallResult(True, name, version)
+            return InstallResult(False, name, error=result.stderr[:500])
+        except subprocess.TimeoutExpired:
+            return InstallResult(False, name, error="Timed out")
+        except Exception as e:
+            return InstallResult(False, name, error=str(e))
+
+    def install_packages(self, names: list[str]) -> list[InstallResult]:
+        return [self.install_package(n) for n in names]
+
+    def update_package_db(self) -> bool:
+        try:
+            subprocess.run("pkg update -y", shell=True, capture_output=True, timeout=120)
+            return True
+        except Exception:
+            return False
+
+    def system_info(self) -> dict:
+        return {
+            "os": "Termux/Android",
+            "arch": self.info.arch,
+            "shell": self.info.shell,
+            "package_manager": "pkg",
         }
-        arch = ARCH_MAP.get(machine, machine)
-
-        pkg_manager = "pkg"
-
-        home = os.path.expanduser("~")
-        user = os.environ.get("USER", os.environ.get("LOGNAME", "unknown"))
-
-        # Termux uses bash by default
-        shell = "bash"
-        shell_profile = os.path.join(home, ".bashrc")
-
-        config_home = os.environ.get(
-            "VPLINK_CONFIG_DIR",
-            os.path.join(home, ".config", "vplink3"),
-        )
-
-        return PlatformInfo(
-            name="termux",
-            distribution="termux",
-            version=version,
-            arch=arch,
-            package_manager=pkg_manager,
-            has_sudo=False,
-            is_wsl=False,
-            is_docker=False,
-            config_dir=config_home,
-            data_dir=os.path.join(prefix, "var", "lib", "vplink3"),
-            cache_dir=os.path.join(prefix, "var", "cache", "vplink3"),
-            shell=shell,
-            shell_profile=shell_profile,
-            home=home,
-            user=user,
-        )
-
-    @staticmethod
-    def install_package(pkg_name: str, sudo: bool = True) -> bool:
-        cmd = f"pkg install -y {pkg_name}"
-        result = run_command(cmd, timeout=300)
-        return result.success
-
-    @staticmethod
-    def update_package_index(sudo: bool = True) -> bool:
-        result = run_command("pkg update", timeout=120)
-        return result.success
-
-    @staticmethod
-    def package_available(pkg_name: str) -> bool:
-        cmd = f"pkg show {pkg_name}"
-        result = run_command(cmd, timeout=30)
-        return result.success
-
-    @staticmethod
-    def get_package_version(pkg_name: str) -> Optional[str]:
-        cmd = f"dpkg -s {pkg_name}"
-        result = run_command(cmd, timeout=10)
-        if not result.success:
-            return None
-        match = re.search(r"^Version:\s*(\S+)", result.stdout, re.MULTILINE)
-        if match:
-            return match.group(1)
-        return None

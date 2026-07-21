@@ -352,7 +352,41 @@ def cmd_start(args):
     if _set_workflow_state(token, owner, repo, disable=False):
         _ok(f"Automation started for '{args.name}'")
 
-# ── Test / Status ────────────────────────────────────────
+# ── Check / Test / Status ───────────────────────────────
+
+def cmd_check(args):
+    deps = load_deployments()
+    if args.name not in deps:
+        _fail(f"Deployment '{args.name}' not found"); return
+    info = deps[args.name]
+    accounts = load_accounts()
+    token = accounts.get(info["account"], {}).get("token")
+    if not token: _fail(f"Account '{info['account']}' not found"); return
+    owner, repo = info["account"], args.name
+    _header("🔍 Latest Workflow Run")
+    try:
+        runs = _api(token, "GET", f"/repos/{owner}/{repo}/actions/runs?per_page=1")
+    except SystemExit:
+        return
+    wf_runs = runs.get("workflow_runs", [])
+    if not wf_runs:
+        _warn("No workflow runs found yet. Trigger one:")
+        _say(f"  vplink247 test {args.name}"); return
+    r = wf_runs[0]
+    status = r.get("status", "?")
+    conclusion = r.get("conclusion")
+    created = r.get("created_at", "").replace("T", " ").replace("Z", "")
+    updated = r.get("updated_at", "").replace("T", " ").replace("Z", "")
+    color = G if conclusion == "success" else (R if conclusion in ("failure","cancelled","timed_out") else Y)
+    print(f"  {B}Run#{r['id']}{N}  {color}{conclusion or status}{N}")
+    print(f"  {'Created:':14} {created}")
+    print(f"  {'Updated:':14} {updated}")
+    print(f"  {'Branch:':14} {r.get('head_branch','?')}")
+    print(f"  {'Commit:':14} {r.get('head_commit',{}).get('message','?')[:60]}")
+    print(f"  {'URL:':14} {r.get('html_url','')}")
+    print()
+    if conclusion != "success" and status != "completed":
+        _ok("Still running — use 'vplink247 test' to monitor live")
 
 def cmd_test(args):
     deps = load_deployments()
@@ -498,7 +532,7 @@ def _menu_deployments():
             _dash
         print()
         choice = _choose(["📋 List deployments", "🚀 Deploy new relay", "🧪 Test deployment",
-                          "⏹  Stop automation", "▶️  Start automation",
+                          "🔍  Check latest run", "⏹  Stop automation", "▶️  Start automation",
                           "🗑 Remove deployment", "⚡ Quick deploy (bare-bones)"])
         if choice < 0: return
         if choice == 0:
@@ -512,17 +546,21 @@ def _menu_deployments():
             cmd_test(argparse.Namespace(name=name))
         elif choice == 3:
             if not deps: _warn("No deployments."); _pause(); continue
+            name = _prompt("Deployment to check")
+            cmd_check(argparse.Namespace(name=name)); _pause()
+        elif choice == 4:
+            if not deps: _warn("No deployments."); _pause(); continue
             name = _prompt("Deployment to stop")
             cmd_stop(argparse.Namespace(name=name))
-        elif choice == 4:
+        elif choice == 5:
             if not deps: _warn("No deployments."); _pause(); continue
             name = _prompt("Deployment to start")
             cmd_start(argparse.Namespace(name=name))
-        elif choice == 5:
+        elif choice == 6:
             if not deps: _warn("No deployments."); _pause(); continue
             name = _prompt("Deployment name to remove")
             cmd_deploy_remove(argparse.Namespace(name=name))
-        elif choice == 6:
+        elif choice == 7:
             accts = load_accounts()
             if not accts: _warn("No accounts. Add one first."); _pause(); continue
             name = _prompt("Repo name (enter for random)")
@@ -579,7 +617,8 @@ def _run_menu():
             print(f"    {C}vplink247 deploy new{N}        Create a new deployment")
             print(f"    {C}vplink247 deploy list{N}       List deployments")
             print(f"    {C}vplink247 deploy remove{N}     Remove a deployment")
-            print(f"    {C}vplink247 test <name>{N}       Test a deployment")
+            print(f"    {C}vplink247 test <name>{N}       Test a deployment (dispatch + monitor)")
+            print(f"    {C}vplink247 check <name>{N}      Check latest run status (no dispatch)")
             print(f"    {C}vplink247 stop <name>{N}       Stop (disable) automation")
             print(f"    {C}vplink247 start <name>{N}      Start (enable) automation")
             print(f"    {C}vplink247 status{N}            Show overall status")
@@ -607,7 +646,8 @@ Examples:
   vplink247 account list          List all accounts
   vplink247 deploy new            Deploy automation relay
   vplink247 deploy list           List deployments
-  vplink247 test <name>           Test a deployment
+  vplink247 test <name>           Test (dispatch + monitor)
+  vplink247 check <name>          Check latest run (no dispatch)
   vplink247 stop <name>           Stop (disable) automation
   vplink247 start <name>          Start (enable) automation
   vplink247 status                Show overall status
@@ -651,6 +691,10 @@ Examples:
     p = sub.add_parser("test", help="Test a deployment")
     p.add_argument("name", help="Deployment name")
     p.set_defaults(func=cmd_test)
+
+    p = sub.add_parser("check", help="Check latest workflow run status (no dispatch)")
+    p.add_argument("name", help="Deployment name")
+    p.set_defaults(func=cmd_check)
 
     p = sub.add_parser("stop", help="Stop (disable) automation for a deployment")
     p.add_argument("name", help="Deployment name")

@@ -279,13 +279,12 @@ def _deploy_one(active, token, repo_name, key, supabase_url, supabase_key, supab
         if template_dir:
             tgt = Path(tmpdir) / repo_name
             shutil.copytree(template_dir, tgt)
-            _git_run(["git", "init", "-b", "main"], cwd=tgt)
         else:
             tgt = Path(tmpdir) / repo_name
             _git_run(["git", "clone", "--depth=1", f"https://github.com/{TEMPLATE_REPO}.git", str(tgt)])
             subprocess.run(["rm", "-rf", str(tgt / ".git")])
-            _git_run(["git", "init", "-b", "main"], cwd=tgt)
-            _git_run(["git", "add", "-A"], cwd=tgt)
+        _git_run(["git", "init", "-b", "main"], cwd=tgt)
+        _git_run(["git", "add", "-A"], cwd=tgt)
         _git_run(["git", "commit", "-m", "initial deploy by vplink247"], cwd=tgt)
         authed = clone_url.replace("https://", f"https://{token}@")
         _git_run(["git", "remote", "add", "origin", authed], cwd=tgt)
@@ -346,9 +345,6 @@ def cmd_bulk_deploy(args):
         template_dir = Path(tmpdir) / "template"
         _git_run(["git", "clone", "--depth=1", f"https://github.com/{TEMPLATE_REPO}.git", str(template_dir)])
         subprocess.run(["rm", "-rf", str(template_dir / ".git")])
-        _git_run(["git", "init", "-b", "main"], cwd=template_dir)
-        _git_run(["git", "add", "-A"], cwd=template_dir)
-        _git_run(["git", "commit", "-m", "initial deploy by vplink247"], cwd=template_dir)
         ok, fail = 0, 0
         for i in range(count):
             rname = "".join(random.choices(string.ascii_lowercase + string.digits, k=10))

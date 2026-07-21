@@ -1,58 +1,34 @@
-# VPLink 3.0
+# vplink247
 
-Automated vplink.in funnel — runs views, captures destination URLs.
+24/7 VPLink automation — deploy, manage, and monitor endless relay chains on GitHub Actions.
 
-## One-line install
-
-```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/adittaya/VPLINK-3.0/main/installer/installer.sh)"
-```
-
-Works on: **Ubuntu**, **Debian**, **Fedora**, **Arch**, **openSUSE**, **macOS**, **Windows**, **Termux**.
-
-After install, verify:
+## One-line installer
 
 ```bash
-python3 -m installer status
+curl -fsSL https://raw.githubusercontent.com/adittaya/workflow-vplink/main/install-vplink247.sh | bash
 ```
 
-## Quick start
+Installs the `vplink247` global command, then runs setup wizard.
 
-```bash
-git clone https://github.com/adittaya/VPLINK-3.0
-cd VPLINK-3.0
-python3 -m pip install -r requirements.txt
-python3 automation.py <your-key>
+## Commands
+
+```
+vplink247 setup              Interactive wizard
+vplink247 account add        Add GitHub account
+vplink247 account list       List accounts
+vplink247 account switch     Switch active account
+vplink247 deploy             Deploy automation to a new repo
+vplink247 deploy list        List deployments
+vplink247 test <name>        Test a deployment
+vplink247 status             Overall status
 ```
 
-Or with interactive setup:
+## How it works
 
-```bash
-bash vplink3.0.sh
-```
+Each deployed repo runs a GitHub Actions workflow that:
+1. Gets a premium proxy from the Supabase pool
+2. Runs the vplink.in funnel (TP → CE → destination)
+3. On success, triggers the next run via repository_dispatch (endless relay chain)
+4. On failure, invalidates the proxy and still continues the chain
 
-## What it is
-
-- Python 3 + Selenium + ChromeDriver automation
-- Runs through article funnels (TP → CE → LINK1S) to reach vplink.in destination
-- Proxy rotation with session-based IP reuse
-- Mobile emulation, YouTube referral, human-like behavior
-
-## Installer commands
-
-```bash
-python3 -m installer install     # Full one-time setup
-python3 -m installer status      # Check installed packages
-python3 -m installer verify      # Verify all dependencies
-python3 -m installer doctor      # System diagnostics
-python3 -m installer config      # Manage credentials
-python3 -m installer logs        # Show install logs
-python3 -m installer uninstall   # Remove config
-```
-
-## Requirements
-
-- Python 3.10+
-- Chromium / Chrome 120+
-- Linux (Xvfb + x11vnc optional for debug)
-- Supabase account (for proxy rotation)
+Cron fallback every 15 minutes.

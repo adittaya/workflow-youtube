@@ -1376,7 +1376,7 @@ def do_get_link():
                         log(f"[get-link {i}s] popup: {popup_url[:100]}")
                     is_redirect = any(x in popup_url for x in [
                         "linkedin.com/redir", "google.com/url", "facebook.com/l.php", "t.co/",
-                        "wistfulseverely.com", "one-vv", "amazingbaba.com"
+                        "wistfulseverely.com", "one-vv", "amazingbaba.com", "lnkd.in"
                     ])
                     if is_redirect:
                         log(f"redirect/tracking URL detected ({popup_url[:60]}), waiting for final...")
@@ -1391,7 +1391,7 @@ def do_get_link():
                                     popup_url = new_url
                                     if not any(x in popup_url for x in [
                                         "wistfulseverely.com", "one-vv", "linkedin.com/redir",
-                                        "google.com/url", "facebook.com/l.php", "t.co/", "amazingbaba.com"
+                                        "google.com/url", "facebook.com/l.php", "t.co/", "amazingbaba.com", "lnkd.in"
                                     ]):
                                         redirect_done = True
                                         break

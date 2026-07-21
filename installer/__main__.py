@@ -288,6 +288,17 @@ def cmd_version():
     print(__version__)
 
 
+def cmd_remedy():
+    """Self-healing: detect and fix runtime dependency issues."""
+    log.init(LOG_DIR)
+    from installer.remedy import remedy_all, check_all, print_report
+    if len(sys.argv) > 2 and sys.argv[2] == "check":
+        report = check_all()
+        print_report(report)
+    else:
+        remedy_all()
+
+
 # ── main ──────────────────────────────────────────────────────────────
 
 def main():
@@ -307,6 +318,7 @@ def main():
         print("  logs       View installation logs")
         print("  status     Show installation status")
         print("  repair     Attempt repair")
+        print("  remedy     Self-heal runtime dependencies")
         print("  version    Show version")
         return
 
@@ -321,6 +333,7 @@ def main():
         "logs": cmd_logs,
         "status": cmd_status,
         "repair": cmd_repair,
+        "remedy": cmd_remedy,
         "version": cmd_version,
     }
     if command in commands:

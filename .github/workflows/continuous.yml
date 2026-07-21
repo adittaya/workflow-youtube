@@ -53,11 +53,11 @@ jobs:
         run: |
           pip install selenium webdriver-manager requests urllib3 --quiet
           # Pre-cache chromedriver so automation.py finds it
-          python3 -c "
+          python3 << 'PYEOF'
 from webdriver_manager.chrome import ChromeDriverManager
 cm = ChromeDriverManager().install()
 print(f'chromedriver cached at: {cm}')
-" 2>&1
+PYEOF
 
       - name: Configure Supabase
         run: |

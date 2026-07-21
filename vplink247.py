@@ -242,6 +242,44 @@ def _git_run(args, cwd=None):
         raise SystemExit(f"  {R}git error:{N} {err}")
     return r
 
+def _deploy_one(active, token, repo_name, key, supabase_url, supabase_key, supabase_secret, template_dir=None):
+    _say(f"\n  {C}── {repo_name} ──{N}")
+    _say(f"  {C}▸{N} Creating repository ...")
+    repo = _api(token, "POST", "/user/repos", {
+        "name": repo_name, "private": False, "auto_init": True,
+        "description": "VPLink 24/7 Automation — endless relay chain"
+    })
+    clone_url = repo["clone_url"]
+    _ok(f"Created {repo['html_url']}")
+    _say(f"  {C}▸{N} Pushing automation code ...")
+    with tempfile.TemporaryDirectory(prefix="vplink247-") as tmpdir:
+        if template_dir:
+            tgt = Path(tmpdir) / repo_name
+            shutil.copytree(template_dir, tgt)
+            _git_run(["git", "init", "-b", "main"], cwd=tgt)
+        else:
+            tgt = Path(tmpdir) / repo_name
+            _git_run(["git", "clone", "--depth=1", f"https://github.com/{TEMPLATE_REPO}.git", str(tgt)])
+            subprocess.run(["rm", "-rf", str(tgt / ".git")])
+            _git_run(["git", "init", "-b", "main"], cwd=tgt)
+            _git_run(["git", "add", "-A"], cwd=tgt)
+        _git_run(["git", "commit", "-m", "initial deploy by vplink247"], cwd=tgt)
+        authed = clone_url.replace("https://", f"https://{token}@")
+        _git_run(["git", "remote", "add", "origin", authed], cwd=tgt)
+        _git_run(["git", "push", "-u", "origin", "main", "--force"], cwd=tgt)
+    _say(f"  {C}▸{N} Configuring GitHub Secrets ...")
+    for sn, sv in [("SUPABASE_URL", supabase_url), ("SUPABASE_KEY", supabase_key),
+                   ("SUPABASE_SECRET", supabase_secret), ("GH_PAT", token)]:
+        _set_secret(token, active, repo_name, sn, sv)
+    _ok("Secrets set")
+    deps = load_deployments()
+    deps[repo_name] = {"account": active, "key": key, "repo_url": repo["html_url"], "created_at": time.time()}
+    save_deployments(deps)
+    _say(f"  {C}▸{N} Triggering first run ...")
+    _trigger_workflow(token, active, repo_name, key)
+    _ok("Workflow dispatched")
+    return repo_name, repo["html_url"]
+
 def cmd_deploy(args):
     accounts = load_accounts(); active = get_setting("active_account")
     if not active or active not in accounts: _fail("No active account. Add one first: vplink247 account add"); return
@@ -258,41 +296,64 @@ def cmd_deploy(args):
     supabase_secret = args.supabase_secret or _input_secret("Supabase service/secret key")
     _hline
     _say(f"Deploying to {C}{active}/{repo_name}{N} ...")
+    rname, rurl = _deploy_one(active, token, repo_name, key, supabase_url, supabase_key, supabase_secret)
     print()
-    # 1. Create repo
-    _say(f"  {C}▸{N} Creating repository ...")
-    repo = _api(token, "POST", "/user/repos", {
-        "name": repo_name, "private": False, "auto_init": True,
-        "description": "VPLink 24/7 Automation — endless relay chain"
-    })
-    clone_url = repo["clone_url"]
-    _ok(f"Created {repo['html_url']}")
-    # 2. Push template
-    _say(f"  {C}▸{N} Pushing automation code ...")
-    with tempfile.TemporaryDirectory(prefix="vplink247-") as tmpdir:
-        tgt = Path(tmpdir) / repo_name
-        _git_run(["git", "clone", "--depth=1", f"https://github.com/{TEMPLATE_REPO}.git", str(tgt)])
-        subprocess.run(["rm", "-rf", str(tgt / ".git")])
-        _git_run(["git", "init", "-b", "main"], cwd=tgt)
-        _git_run(["git", "add", "-A"], cwd=tgt)
-        _git_run(["git", "commit", "-m", "initial deploy by vplink247"], cwd=tgt)
-        authed = clone_url.replace("https://", f"https://{token}@")
-        _git_run(["git", "remote", "add", "origin", authed], cwd=tgt)
-        _git_run(["git", "push", "-u", "origin", "main", "--force"], cwd=tgt)
-    # 3. Secrets
-    _say(f"  {C}▸{N} Configuring GitHub Secrets ...")
-    for sn, sv in [("SUPABASE_URL", supabase_url), ("SUPABASE_KEY", supabase_key),
-                   ("SUPABASE_SECRET", supabase_secret), ("GH_PAT", token)]:
-        _set_secret(token, active, repo_name, sn, sv)
-    _ok("Secrets set (SUPABASE_URL, KEY, SECRET, GH_PAT)")
-    # 4. Save
-    deps = load_deployments()
-    deps[repo_name] = {"account": active, "key": key, "repo_url": repo["html_url"], "created_at": time.time()}
-    save_deployments(deps)
-    # 5. Trigger
-    _say(f"  {C}▸{N} Triggering first run ...")
-    _trigger_workflow(token, active, repo_name, key)
-    _ok("Workflow dispatched")
+    print(f"  {G}╭{'─'*46}╮{N}")
+    print(f"  {G}│{N}  {B}✓ DEPLOYED SUCCESSFULLY{N}{' ' * 24} {G}│{N}")
+    print(f"  {G}├{'─'*46}┤{N}")
+    print(f"  {G}│{N}  Repo:  {C}{rurl:<39}{N} {G}│{N}")
+    print(f"  {G}│{N}  Name:  {C}{repo_name:<39}{N} {G}│{N}")
+    print(f"  {G}│{N}  Key:   {C}{key:<39}{N} {G}│{N}")
+    print(f"  {G}╰{'─'*46}╯{N}")
+    print(f"\n  Run {C}vplink247 test {repo_name}{N} to verify it works.\n")
+
+def cmd_bulk_deploy(args):
+    accounts = load_accounts(); active = get_setting("active_account")
+    if not active or active not in accounts: _fail("No active account."); return
+    token = accounts[active]["token"]
+    count = args.count
+    if not count:
+        try: count = int(_prompt("How many automations to create") or "0")
+        except ValueError: _fail("Enter a number"); return
+    if count < 1 or count > 50: _fail("Count must be 1-50"); return
+    key = args.key or _prompt("VPLink key for all") or "UbpV2D"
+    _hline
+    _header("Supabase Configuration (shared across all)")
+    supabase_url = args.supabase_url or _prompt("Supabase URL")
+    supabase_key = args.supabase_key or _prompt("Supabase anon/public key")
+    supabase_secret = args.supabase_secret or _input_secret("Supabase service/secret key")
+    _hline
+    _say(f"Bulk deploying {C}{count}{N} automations as {C}{active}{N}")
+    if not _confirm(f"Create {count} repos with random names?"): _say("Cancelled"); return
+    print()
+    # Clone template once
+    _say(f"{C}▸{N} Cloning template (one-time)...")
+    with tempfile.TemporaryDirectory(prefix="vplink247-bulk-") as tmpdir:
+        template_dir = Path(tmpdir) / "template"
+        _git_run(["git", "clone", "--depth=1", f"https://github.com/{TEMPLATE_REPO}.git", str(template_dir)])
+        subprocess.run(["rm", "-rf", str(template_dir / ".git")])
+        _git_run(["git", "init", "-b", "main"], cwd=template_dir)
+        _git_run(["git", "add", "-A"], cwd=template_dir)
+        _git_run(["git", "commit", "-m", "initial deploy by vplink247"], cwd=template_dir)
+        ok, fail = 0, 0
+        for i in range(count):
+            rname = "".join(random.choices(string.ascii_lowercase + string.digits, k=10))
+            try:
+                _deploy_one(active, token, rname, key, supabase_url, supabase_key, supabase_secret, template_dir)
+                ok += 1
+            except SystemExit as e:
+                _fail(f"  {rname}: {e}")
+                fail += 1
+            except Exception as e:
+                _fail(f"  {rname}: {e}")
+                fail += 1
+    print()
+    print(f"  {G}╭{'─'*46}╮{N}")
+    print(f"  {G}│{N}  {B}✓ BULK DEPLOY COMPLETE{N}{' ' * 24} {G}│{N}")
+    print(f"  {G}├{'─'*46}┤{N}")
+    print(f"  {G}│{N}  {G}Success:{N} {ok:<5} {' ' * 32} {G}│{N}")
+    print(f"  {G}│{N}  {R}Failed:{N}  {fail:<5} {' ' * 32} {G}│{N}")
+    print(f"  {G}╰{'─'*46}╯{N}")
     print()
     print(f"  {G}╭{'─'*46}╮{N}")
     print(f"  {G}│{N}  {B}✓ DEPLOYED SUCCESSFULLY{N}{' ' * 24} {G}│{N}")
@@ -531,28 +592,31 @@ def _menu_deployments():
                 print(f"  {C}■{N} {B}{name}{N}  ({C}{key}{N})  →  {D}{info.get('account','?')}{N}")
             _dash
         print()
-        choice = _choose(["📋 List deployments", "🚀 Deploy new relay", "🧪 Test deployment",
-                          "🔍  Check latest run", "⏹  Stop automation", "▶️  Start automation",
-                          "🗑 Remove deployment", "⚡ Quick deploy (bare-bones)"])
+        choice = _choose(["📋 List deployments", "🚀 Deploy new relay", "📦 Bulk deploy",
+                          "🧪 Test deployment", "🔍  Check latest run", "⏹  Stop automation",
+                          "▶️  Start automation", "🗑 Remove deployment", "⚡ Quick deploy (bare-bones)"])
         if choice < 0: return
         if choice == 0:
             cmd_deploy_list(None); _pause()
         elif choice == 1:
             cmd_deploy(argparse.Namespace(name=None, key=None,
                         supabase_url=None, supabase_key=None, supabase_secret=None)); _pause()
-        elif choice in (2, 3, 4, 5, 6):
+        elif choice == 2:
+            cmd_bulk_deploy(argparse.Namespace(count=None, key=None,
+                            supabase_url=None, supabase_key=None, supabase_secret=None)); _pause()
+        elif choice in (3, 4, 5, 6, 7):
             if not deps: _warn("No deployments."); _pause(); continue
             if len(deps) == 1:
                 name = next(iter(deps))
             else:
                 _say(f"\n  Deployments: {', '.join(sorted(deps.keys()))}")
                 name = _prompt("Deployment name")
-            if choice == 2: cmd_test(argparse.Namespace(name=name))
-            elif choice == 3: cmd_check(argparse.Namespace(name=name)); _pause()
-            elif choice == 4: cmd_stop(argparse.Namespace(name=name))
-            elif choice == 5: cmd_start(argparse.Namespace(name=name))
-            elif choice == 6: cmd_deploy_remove(argparse.Namespace(name=name))
-        elif choice == 7:
+            if choice == 3: cmd_test(argparse.Namespace(name=name))
+            elif choice == 4: cmd_check(argparse.Namespace(name=name)); _pause()
+            elif choice == 5: cmd_stop(argparse.Namespace(name=name))
+            elif choice == 6: cmd_start(argparse.Namespace(name=name))
+            elif choice == 7: cmd_deploy_remove(argparse.Namespace(name=name))
+        elif choice == 8:
             accts = load_accounts()
             if not accts: _warn("No accounts. Add one first."); _pause(); continue
             name = _prompt("Repo name (enter for random)")
@@ -607,6 +671,7 @@ def _run_menu():
             print(f"    {C}vplink247 account switch{N}    Switch active account")
             print(f"    {C}vplink247 account remove{N}    Remove an account")
             print(f"    {C}vplink247 deploy new{N}        Create a new deployment")
+            print(f"    {C}vplink247 deploy bulk{N}       Bulk-deploy N automations")
             print(f"    {C}vplink247 deploy list{N}       List deployments")
             print(f"    {C}vplink247 deploy remove{N}     Remove a deployment")
             print(f"    {C}vplink247 test <name>{N}       Test a deployment (dispatch + monitor)")
@@ -637,6 +702,7 @@ Examples:
   vplink247 account add           Add a GitHub account
   vplink247 account list          List all accounts
   vplink247 deploy new            Deploy automation relay
+  vplink247 deploy bulk <N>       Bulk-deploy N automations
   vplink247 deploy list           List deployments
   vplink247 test <name>           Test (dispatch + monitor)
   vplink247 check <name>          Check latest run (no dispatch)
@@ -674,6 +740,13 @@ Examples:
     p.add_argument("--supabase-key", help="Supabase anon key")
     p.add_argument("--supabase-secret", help="Supabase service key")
     p.set_defaults(func=cmd_deploy)
+    p = dep_sub.add_parser("bulk", help="Bulk-deploy multiple automations")
+    p.add_argument("count", nargs="?", type=int, help="Number of automations to create")
+    p.add_argument("--key", help="VPLink key (shared across all)")
+    p.add_argument("--supabase-url", help="Supabase project URL")
+    p.add_argument("--supabase-key", help="Supabase anon key")
+    p.add_argument("--supabase-secret", help="Supabase service key")
+    p.set_defaults(func=cmd_bulk_deploy)
     p = dep_sub.add_parser("list", help="List deployments")
     p.set_defaults(func=cmd_deploy_list)
     p = dep_sub.add_parser("remove", help="Remove a deployment")

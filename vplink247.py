@@ -333,13 +333,15 @@ def cmd_bulk_deploy(args):
     if not count:
         try: count = int(_prompt("How many automations to create") or "0")
         except ValueError: _fail("Enter a number"); return
-    if count < 1 or count > 50: _fail("Count must be 1-50"); return
+    if count < 1 or count > 1000: _fail("Count must be 1-1000"); return
     key = args.key or _prompt("VPLink key for all") or "UbpV2D"
     supabase_url, supabase_key, supabase_secret = _resolve_supabase(args)
     _say(f"Bulk deploying {C}{count}{N} automations as {C}{active}{N}")
     if not _confirm(f"Create {count} repos with random names?"): _say("Cancelled"); return
+    if count > 100:
+        _warn(f"Large batch ({count}) — expect ~30s per repo due to API + git operations.")
+        if not _confirm(f"Continue with {count} repos?"): _say("Cancelled"); return
     print()
-    # Clone template once
     _say(f"{C}▸{N} Cloning template (one-time)...")
     with tempfile.TemporaryDirectory(prefix="vplink247-bulk-") as tmpdir:
         template_dir = Path(tmpdir) / "template"
@@ -357,6 +359,8 @@ def cmd_bulk_deploy(args):
             except Exception as e:
                 _fail(f"  {rname}: {e}")
                 fail += 1
+            if (i + 1) % 10 == 0 or i == count - 1:
+                _say(f"  Progress: {i+1}/{count} ({ok} ok, {fail} failed)")
     print()
     print(f"  {G}╭{'─'*46}╮{N}")
     print(f"  {G}│{N}  {B}✓ BULK DEPLOY COMPLETE{N}{' ' * 24} {G}│{N}")

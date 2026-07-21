@@ -227,6 +227,21 @@ def cmd_account_remove(args):
 
 # ── Deploy commands ─────────────────────────────────────
 
+def _git_env():
+    env = os.environ.copy()
+    env.setdefault("GIT_AUTHOR_NAME", "vplink247")
+    env.setdefault("GIT_AUTHOR_EMAIL", "vplink247@users.noreply.github.com")
+    env.setdefault("GIT_COMMITTER_NAME", "vplink247")
+    env.setdefault("GIT_COMMITTER_EMAIL", "vplink247@users.noreply.github.com")
+    return env
+
+def _git_run(args, cwd=None):
+    r = subprocess.run(args, cwd=cwd, capture_output=True, text=True, env=_git_env())
+    if r.returncode != 0:
+        err = r.stderr.strip() or r.stdout.strip() or f"exit code {r.returncode}"
+        raise SystemExit(f"  {R}git error:{N} {err}")
+    return r
+
 def cmd_deploy(args):
     accounts = load_accounts(); active = get_setting("active_account")
     if not active or active not in accounts: _fail("No active account. Add one first: vplink247 account add"); return
@@ -256,17 +271,14 @@ def cmd_deploy(args):
     _say(f"  {C}▸{N} Pushing automation code ...")
     with tempfile.TemporaryDirectory(prefix="vplink247-") as tmpdir:
         tgt = Path(tmpdir) / repo_name
-        subprocess.run(["git", "clone", "--depth=1", f"https://github.com/{TEMPLATE_REPO}.git", str(tgt)],
-                       capture_output=True, check=True)
-        subprocess.run(["rm", "-rf", str(tgt / ".git")], capture_output=True)
-        subprocess.run(["git", "init", "-b", "main"], cwd=str(tgt), capture_output=True, check=True)
-        subprocess.run(["git", "add", "-A"], cwd=str(tgt), capture_output=True, check=True)
-        subprocess.run(["git", "commit", "-m", "initial deploy by vplink247"],
-                       cwd=str(tgt), capture_output=True, check=True)
+        _git_run(["git", "clone", "--depth=1", f"https://github.com/{TEMPLATE_REPO}.git", str(tgt)])
+        subprocess.run(["rm", "-rf", str(tgt / ".git")])
+        _git_run(["git", "init", "-b", "main"], cwd=tgt)
+        _git_run(["git", "add", "-A"], cwd=tgt)
+        _git_run(["git", "commit", "-m", "initial deploy by vplink247"], cwd=tgt)
         authed = clone_url.replace("https://", f"https://{token}@")
-        subprocess.run(["git", "remote", "add", "origin", authed], cwd=str(tgt), capture_output=True, check=True)
-        subprocess.run(["git", "push", "-u", "origin", "main", "--force"],
-                       cwd=str(tgt), capture_output=True, timeout=120)
+        _git_run(["git", "remote", "add", "origin", authed], cwd=tgt)
+        _git_run(["git", "push", "-u", "origin", "main", "--force"], cwd=tgt)
     # 3. Secrets
     _say(f"  {C}▸{N} Configuring GitHub Secrets ...")
     for sn, sv in [("SUPABASE_URL", supabase_url), ("SUPABASE_KEY", supabase_key),

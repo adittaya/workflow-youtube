@@ -2,17 +2,13 @@ name: 24/7 VPLink Automation Loop
 
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: '*/10 * * * *'
   workflow_dispatch:
     inputs:
       key:
-        description: 'vplink.in key or URL'
+        description: 'vplink.in key'
         required: false
         default: 'UbpV2D'
-      views:
-        description: 'Number of views to run'
-        required: false
-        default: '5'
   repository_dispatch:
     types: [relay]
 
@@ -26,11 +22,12 @@ env:
   SUPABASE_SECRET: ${{ secrets.SUPABASE_SECRET }}
   VPLINK_HEADLESS: '1'
   VPLINK_NONINTERACTIVE: '1'
+  VPLINK_KEY: ${{ github.event.inputs.key || 'UbpV2D' }}
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -38,18 +35,14 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.11'
+          cache: pip
 
-      - name: Install System Dependencies
+      - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq chromium-browser chromium-chromedriver xvfb >/dev/null 2>&1
-          echo "Chromium: $(chromium-browser --version 2>/dev/null || true)"
-          echo "ChromeDriver: $(chromedriver --version 2>/dev/null || true)"
-
-      - name: Install Python Dependencies
-        run: |
-          pip install --upgrade pip --quiet
+          sudo apt-get install -y --no-install-recommends chromium-browser chromium-chromedriver >/dev/null 2>&1 || echo "apt chromium not available"
+          which chromedriver || echo "chromedriver not in PATH"
           pip install selenium webdriver-manager requests urllib3 --quiet
 
       - name: Configure Supabase
@@ -60,38 +53,35 @@ jobs:
           python3 config.py --set proxy_enabled true
           python3 config.py --set proxy_tier premium
 
-      - name: Get Proxy & Run Automation
-        id: automate
+      - name: Get proxy
+        id: proxy
         run: |
-          KEY="${{ github.event.inputs.key || 'UbpV2D' }}"
-          VIEWS="${{ github.event.inputs.views || '5' }}"
-          echo "Running $VIEWS view(s) on KEY=$KEY"
-
-          # Get a fresh proxy
           PROXY=$(python3 proxy_rotator.py premium | tail -1)
-          echo "Proxy: $PROXY"
-          export VPLINK_PROXY="http://$PROXY"
+          echo "proxy=$PROXY" >> $GITHUB_OUTPUT
+          echo "Got proxy: $PROXY"
 
-          # Run automation for each view
-          SUCCESS=0
-          FAIL=0
-          for ((i=1; i<=VIEWS; i++)); do
-            echo "--- View $i of $VIEWS ---"
-            if python3 automation.py "$KEY" 2>&1; then
-              SUCCESS=$((SUCCESS + 1))
-            else
-              FAIL=$((FAIL + 1))
-            fi
-            # Rotate proxy for next view
-            PROXY=$(python3 proxy_rotator.py premium | tail -1)
-            export VPLINK_PROXY="http://$PROXY"
-            echo "Rotated proxy: $PROXY"
-          done
-          echo "Done: $SUCCESS success, $FAIL failed"
+      - name: Run automation
+        id: automate
+        env:
+          VPLINK_PROXY: http://${{ steps.proxy.outputs.proxy }}
+        run: |
+          python3 automation.py "$VPLINK_KEY" 2>&1
+          echo "status=success" >> $GITHUB_OUTPUT
 
-      - name: Relay Chain — Re-trigger via Repository Dispatch
+      - name: Invalidate proxy on failure
+        if: failure()
+        env:
+          FAILED_PROXY: ${{ steps.proxy.outputs.proxy }}
+        run: |
+          HOST=$(echo "$FAILED_PROXY" | cut -d: -f1)
+          PORT=$(echo "$FAILED_PROXY" | cut -d: -f2)
+          python3 -c "import sys; sys.path.insert(0,'.'); from config import add_proxy_blacklist; add_proxy_blacklist('$HOST',$PORT)" 2>/dev/null || true
+          echo "Blacklisted $HOST:$PORT"
+
+      - name: Relay — trigger next run
         if: success()
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.GH_PAT }}
           event-type: relay
+          client-payload: '{"key": "${{ env.VPLINK_KEY }}"}'

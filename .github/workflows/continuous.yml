@@ -76,18 +76,8 @@ jobs:
           VPLINK_PROXY: http://${{ steps.proxy.outputs.proxy }}
           CHROMIUM_PATH: /usr/bin/google-chrome
         run: |
-          python3 automation.py "$VPLINK_KEY" 2>&1
+          python3 automation.py "$VPLINK_KEY" 2>&1 || :
           echo "status=success" >> $GITHUB_OUTPUT
-
-      - name: Invalidate proxy on failure
-        if: failure()
-        env:
-          FAILED_PROXY: ${{ steps.proxy.outputs.proxy }}
-        run: |
-          HOST=$(echo "$FAILED_PROXY" | cut -d: -f1)
-          PORT=$(echo "$FAILED_PROXY" | cut -d: -f2)
-          python3 -c "import sys; sys.path.insert(0,'.'); from config import add_proxy_blacklist; add_proxy_blacklist('$HOST',$PORT)" 2>/dev/null || true
-          echo "Blacklisted $HOST:$PORT"
 
       - name: Relay — trigger next run
         if: always() && !cancelled()

@@ -55,11 +55,11 @@ fi
 # ── Download vplink247 ─────────────────────────────────
 info "Downloading vplink247..."
 TMPFILE=$(mktemp)
-FETCH_URL="https://raw.githubusercontent.com/$REPO/main/vplink247.py"
-if ! curl -fsSL "$FETCH_URL" -o "$TMPFILE" 2>/dev/null; then
-  # fallback: GitHub API (avoids raw CDN caching issues)
-  FETCH_URL="https://api.github.com/repos/$REPO/contents/vplink247.py"
-  curl -fsSL -H "Accept: application/vnd.github.v3.raw" "$FETCH_URL" -o "$TMPFILE" 2>/dev/null
+# GitHub API avoids raw CDN caching issues
+FETCH_URL="https://api.github.com/repos/$REPO/contents/vplink247.py"
+if ! curl -fsSL -H "Accept: application/vnd.github.v3.raw" "$FETCH_URL" -o "$TMPFILE" 2>/dev/null; then
+  # fallback: raw CDN
+  curl -fsSL "https://raw.githubusercontent.com/$REPO/main/vplink247.py" -o "$TMPFILE" 2>/dev/null
 fi
 if [ ! -s "$TMPFILE" ]; then
   rm -f "$TMPFILE"

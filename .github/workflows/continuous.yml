@@ -2,7 +2,7 @@ name: VPLink Automation Loop
 
 on:
   schedule:
-    - cron: '0 */2 * * *'
+    - cron: '*/15 * * * *'
   workflow_dispatch:
     inputs:
       key:
@@ -27,7 +27,7 @@ env:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -90,7 +90,7 @@ jobs:
           echo "Blacklisted $HOST:$PORT"
 
       - name: Relay — trigger next run
-        if: success()
+        if: always() && !cancelled()
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.GH_PAT }}

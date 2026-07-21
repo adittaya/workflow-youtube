@@ -16,7 +16,7 @@ from typing import Optional
 from installer import logging as log
 from installer.core.platform import detect
 from installer.platforms import get_platform
-from installer.packages import register_packages, is_installed
+from installer.packages import register_packages, is_installed, install as pkg_install
 from installer.interactive import Spinner
 
 
@@ -26,8 +26,8 @@ RUNTIME_PIP_PACKAGES = {
     "pynacl": "pynacl",
     "requests": "requests",
     "webdriver-manager": "webdriver-manager",
+    "urllib3": "urllib3",
 }
-
 
 RUNTIME_SYSTEM_TOOLS = {
     "git": "git",
@@ -40,15 +40,21 @@ CHROME_CANDIDATES = [
     "chromium-browser", "chromium",
 ]
 
+REQUIREMENTS_FILES = [
+    Path(__file__).resolve().parent.parent.parent / "requirements.txt",
+    Path(__file__).resolve().parent.parent.parent / "manager" / "requirements.txt",
+]
+
 
 def _check_pip_package(name: str) -> tuple[bool, str]:
     """Check if a pip package is installed."""
+    module_name = name.replace("-", "_")
     try:
-        importlib.import_module(name.replace("-", "_"))
-        return True, ""
+        mod = importlib.import_module(module_name)
+        ver = getattr(mod, "__version__", "")
+        return True, ver
     except ImportError:
         pass
-    
     result = subprocess.run(
         [sys.executable, "-m", "pip", "show", name],
         capture_output=True, text=True, timeout=15,
@@ -60,34 +66,44 @@ def _check_pip_package(name: str) -> tuple[bool, str]:
     return False, ""
 
 
-def _install_pip_package(name: str) -> bool:
-    """Install a pip package."""
-    try:
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--quiet", name],
-            capture_output=True, text=True, timeout=120,
-        )
-        if result.returncode == 0:
-            log.success(f"Installed pip package: {name}")
-            return True
-        log.error(f"pip install {name}: {result.stderr[:200]}")
-        return False
-    except subprocess.TimeoutExpired:
-        log.error(f"pip install {name} timed out")
-        return False
+def _install_via_platform(pkg_name: str) -> bool:
+    """Install a package through the installer platform layer."""
+    info = detect()
+    platform = get_platform(info)
+    result = platform.install_package(pkg_name)
+    return result.success
+
+
+def _install_from_requirements(req_paths: list[Path]) -> list[str]:
+    """Batch-install from requirements.txt files. Returns list of installed names."""
+    installed = []
+    for req_path in req_paths:
+        if not req_path.is_file():
+            continue
+        log.info(f"Installing from {req_path.name}...")
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-r", str(req_path), "--quiet"],
+                capture_output=True, text=True, timeout=180,
+            )
+            if result.returncode == 0:
+                log.success(f"Installed from {req_path.name}")
+            else:
+                log.warn(f"pip install -r {req_path.name}: {result.stderr[:200]}")
+        except subprocess.TimeoutExpired:
+            log.warn(f"pip install -r {req_path.name} timed out")
+    return installed
 
 
 def _check_chrome() -> tuple[bool, str]:
     """Find a working Chrome/Chromium binary."""
-    env_path = Path(os.environ.get("CHROMIUM_PATH", ""))
-    if env_path.is_file():
-        return True, str(env_path)
-
+    env_path = os.environ.get("CHROMIUM_PATH", "")
+    if env_path and Path(env_path).is_file():
+        return True, env_path
     for name in CHROME_CANDIDATES:
         path = shutil.which(name)
         if path:
             return True, path
-
     extra = [
         "/opt/google/chrome/chrome",
         "/opt/google/chrome/google-chrome",
@@ -99,7 +115,6 @@ def _check_chrome() -> tuple[bool, str]:
     for path in extra:
         if Path(path).is_file():
             return True, path
-
     return False, ""
 
 
@@ -108,7 +123,6 @@ def _check_chromedriver() -> tuple[bool, str]:
     path = shutil.which("chromedriver")
     if path:
         return True, path
-
     try:
         result = subprocess.run(
             [sys.executable, "-c",
@@ -120,7 +134,6 @@ def _check_chromedriver() -> tuple[bool, str]:
             return True, result.stdout.strip()
     except Exception:
         pass
-
     return False, ""
 
 
@@ -167,15 +180,24 @@ def check_all() -> dict:
 def remedy_python() -> list[str]:
     """Install all missing Python packages. Returns list of installed names."""
     log.header("Remedy: Python Packages")
+    register_packages()
     installed = []
+
     for name, pkg in RUNTIME_PIP_PACKAGES.items():
         ok, ver = _check_pip_package(pkg)
         if ok:
             log.success(f"{name}: {ver or 'present'}")
         else:
             with Spinner(f"Installing {name}..."):
-                if _install_pip_package(pkg):
+                if pkg_install(pkg):
+                    _, ver = _check_pip_package(pkg)
+                    log.success(f"{name}: {ver or 'installed'}")
                     installed.append(name)
+                else:
+                    log.error(f"Failed to install {name}")
+
+    # requirements.txt fallback
+    _install_from_requirements(REQUIREMENTS_FILES)
     return installed
 
 
@@ -211,30 +233,39 @@ def remedy_browser() -> bool:
     if chrome_ok:
         log.success(f"Chrome: {chrome_path}")
     else:
-        log.warn("Chrome not found — install manually or set CHROMIUM_PATH")
-        log.info("Try:  installer install")
-        return False
+        log.info("Attempting to install Chromium via system package manager...")
+        with Spinner("Installing chromium..."):
+            ok = _install_via_platform("chromium")
+        chrome_ok, chrome_path = _check_chrome()
+        if chrome_ok:
+            log.success(f"Chrome: installed ({chrome_path})")
+            fixed = True
+        else:
+            log.warn("Chrome not found — install manually or set CHROMIUM_PATH")
 
     if driver_ok:
         log.success(f"ChromeDriver: {driver_path}")
     else:
-        with Spinner("Installing ChromeDriver via webdriver-manager..."):
-            try:
-                result = subprocess.run(
+        log.info("Attempting to install ChromeDriver...")
+        with Spinner("Installing chromedriver..."):
+            ok = _install_via_platform("chromedriver")
+        driver_ok, driver_path = _check_chromedriver()
+        if driver_ok:
+            log.success(f"ChromeDriver: installed ({driver_path})")
+            fixed = True
+        else:
+            log.info("Trying via webdriver-manager...")
+            with Spinner("Installing webdriver-manager..."):
+                subprocess.run(
                     [sys.executable, "-m", "pip", "install", "--quiet", "webdriver-manager"],
                     capture_output=True, text=True, timeout=60,
                 )
-                if result.returncode == 0:
-                    _ok, d_path = _check_chromedriver()
-                    if _ok:
-                        log.success(f"ChromeDriver: {d_path}")
-                        fixed = True
-                else:
-                    log.error(f"ChromeDriver install: {result.stderr[:200]}")
-            except subprocess.TimeoutExpired:
-                log.error("ChromeDriver install timed out")
-        if not fixed:
-            return False
+            driver_ok, driver_path = _check_chromedriver()
+            if driver_ok:
+                log.success(f"ChromeDriver: {driver_path}")
+                fixed = True
+            else:
+                log.warn("ChromeDriver not available")
 
     return fixed
 

@@ -16,9 +16,10 @@ from selenium.webdriver.support.ui import WebDriverWait
 import selenium.webdriver.support.expected_conditions as EC
 
 try:
-    from proxy_rotator import mark_dead, get_proxy
+    from proxy_rotator import mark_dead, mark_proxy_used, get_proxy
 except ImportError:
     mark_dead = lambda *a, **kw: False
+    mark_proxy_used = lambda *a, **kw: False
     get_proxy = None
 
 try:
@@ -2069,6 +2070,8 @@ def main():
     if destination_url:
         print("  " + destination_url)
         (Path(__file__).parent / "destination_url.txt").write_text(destination_url, "utf-8")
+        if PROXY_IP and PROXY_PORT:
+            mark_proxy_used(PROXY_IP, PROXY_PORT)
     ms(2000)
     try:
         driver.quit()

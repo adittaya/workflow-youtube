@@ -11,6 +11,8 @@ from urllib.parse import urlparse
 
 import requests as req_lib
 
+import datetime
+
 import config
 
 
@@ -65,7 +67,7 @@ TEST_KEY = "gbd1b"
 TEST_URL = f"https://vplink.in/{TEST_KEY}"
 
 
-def supabase_fetch(endpoint, method="GET", timeout=25):
+def supabase_fetch(endpoint, method="GET", timeout=25, data=None):
     cfg = config.load()
     url = f"{cfg['supabase_url']}{SUPABASE_REST}{endpoint}"
     headers = {
@@ -73,16 +75,25 @@ def supabase_fetch(endpoint, method="GET", timeout=25):
         "Authorization": f"Bearer {cfg.get('supabase_secret') or cfg.get('supabase_key', '')}",
         "Content-Type": "application/json",
     }
+    body = json.dumps(data).encode() if data else None
     try:
-        resp = req_lib.request(method, url, headers=headers, timeout=timeout)
+        resp = req_lib.request(method, url, headers=headers, data=body, timeout=timeout)
         return resp
     except Exception as e:
         raise RuntimeError(f"Supabase request failed: {e}")
 
 
-def fetch_proxies(tier="premium"):
+def fetch_proxies(tier="premium", exclude_minutes=30):
+    from urllib.parse import quote as url_quote
     field = "vplink_ok" if tier == "premium" else "e2_ok"
-    endpoint = f"/proxy_results?select=ip,port,proto,country,latency_ms&{field}=eq.true&order=latency_ms.asc&limit=500"
+    cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=exclude_minutes)).isoformat()
+    encoded_cutoff = url_quote(cutoff, safe="")
+    endpoint = (
+        f"/proxy_results?select=ip,port,proto,country,latency_ms"
+        f"&{field}=eq.true"
+        f"&or=(last_seen.is.null,last_seen.lt.{encoded_cutoff})"
+        f"&order=latency_ms.asc&limit=500"
+    )
     resp = supabase_fetch(endpoint)
     if not resp.ok:
         raise RuntimeError(f"Supabase failed: {resp.status_code}")
@@ -115,6 +126,22 @@ def batch_delete_dead(dead_list):
             except Exception:
                 pass
     return deleted
+
+
+def mark_proxy_used(ip, port):
+    from urllib.parse import quote as url_quote
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    data = {"last_seen": now}
+    endpoint = f"/proxy_results?ip=eq.{url_quote(str(ip), safe='')}&port=eq.{port}"
+    try:
+        resp = supabase_fetch(endpoint, method="PATCH", data=data)
+        ok = resp.ok
+        if ok:
+            print(f"  [Proxy] Marked {ip}:{port} as used", file=sys.stderr)
+        return ok
+    except Exception as e:
+        print(f"  [Proxy] Failed to mark {ip}:{port} as used: {e}", file=sys.stderr)
+        return False
 
 
 # ══════════════════════════════════════════════════════════════

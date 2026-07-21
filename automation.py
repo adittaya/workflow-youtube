@@ -1334,7 +1334,7 @@ def do_get_link():
 
         if new_tab:
             driver.switch_to.window(new_tab)
-            time.sleep(1)
+            ms(5000)
             try:
                 tab_url = driver.current_url
                 from urllib.parse import urlparse, parse_qs
@@ -1379,6 +1379,7 @@ def do_get_link():
                     ])
                     if is_redirect:
                         log(f"redirect/tracking URL detected ({popup_url[:60]}), waiting for final...")
+                        redirect_done = False
                         for r in range(int(adpt_getlink.get())):
                             ms(1000)
                             try:
@@ -1391,18 +1392,22 @@ def do_get_link():
                                         "wistfulseverely.com", "one-vv", "linkedin.com/redir",
                                         "google.com/url", "facebook.com/l.php", "t.co/", "amazingbaba.com"
                                     ]):
+                                        redirect_done = True
                                         break
                             except Exception:
                                 break
-                    destination_url = popup_url
-                    log(f"destination (popup): {popup_url[:100]}")
-                    elapsed_ms = (time.time() - click_time) * 1000
-                    tracking_wait = int(adpt_getlink.get() * 500)
-                    wait = max(0, tracking_wait - elapsed_ms) / 1000
-                    if wait > 0.5:
-                        log(f"tracking wait: {int(wait * 1000)}ms")
-                        time.sleep(wait)
-                    return True
+                        if redirect_done:
+                            destination_url = popup_url
+                            log(f"destination (popup): {popup_url[:100]}")
+                            elapsed_ms = (time.time() - click_time) * 1000
+                            tracking_wait = int(adpt_getlink.get() * 500)
+                            wait = max(0, tracking_wait - elapsed_ms) / 1000
+                            if wait > 0.5:
+                                log(f"tracking wait: {int(wait * 1000)}ms")
+                                time.sleep(wait)
+                            return True
+                        # Redirect loop exhausted but still on a tracking URL — skip and keep looking
+                        continue
 
             try:
                 driver.switch_to.window(driver.window_handles[0])

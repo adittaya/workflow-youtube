@@ -1406,8 +1406,8 @@ def do_get_link():
                                 log(f"tracking wait: {int(wait * 1000)}ms")
                                 time.sleep(wait)
                             return True
-                        # Redirect loop exhausted but still on a tracking URL — skip and keep looking
-                        continue
+                        # Redirect loop exhausted but still on a tracking URL — give up on popup
+                        break
 
             try:
                 driver.switch_to.window(driver.window_handles[0])

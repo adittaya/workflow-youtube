@@ -82,7 +82,7 @@ echo -e "${BOLD}╔════════════════════�
 echo -e "${BOLD}║  ✓ vplink247 installed!                                 ║${NC}"
 echo -e "${BOLD}╠══════════════════════════════════════════════════════════╣${NC}"
 echo -e "${BOLD}║  Next:                                                  ║${NC}"
-echo -e "${BOLD}║    vplink247 --help              # all commands        ║${NC}"
+echo -e "${BOLD}║    vplink247                    # interactive menu   ║${NC}"
 echo -e "${BOLD}║    vplink247 setup               # interactive wizard ║${NC}"
 echo -e "${BOLD}║    vplink247 account add         # add GitHub account  ║${NC}"
 echo -e "${BOLD}║    vplink247 deploy create       # deploy relay        ║${NC}"

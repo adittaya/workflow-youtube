@@ -1452,9 +1452,10 @@ const reportProxyFailure = async (reason) => {
             const isRedirect = popupUrl.includes('linkedin.com/redir') || popupUrl.includes('google.com/url')
               || popupUrl.includes('facebook.com/l.php') || popupUrl.includes('t.co/')
               || popupUrl.includes('wistfulseverely.com') || popupUrl.includes('one-vv')
-              || popupUrl.includes('amazingbaba.com');
+              || popupUrl.includes('amazingbaba.com') || popupUrl.includes('lnkd.in');
             if (isRedirect) {
               log(`redirect/tracking URL detected (${popupUrl.substring(0,60)}), waiting for final...`);
+              let redirectDone = false;
               for (let r = 0; r < 60; r++) {
                 await ms(1000);
                 try {
@@ -1466,10 +1467,23 @@ const reportProxyFailure = async (reason) => {
                     if (!popupUrl.includes('wistfulseverely.com') && !popupUrl.includes('one-vv')
                       && !popupUrl.includes('linkedin.com/redir') && !popupUrl.includes('google.com/url')
                       && !popupUrl.includes('facebook.com/l.php') && !popupUrl.includes('t.co/')
-                      && !popupUrl.includes('amazingbaba.com')) break;
+                      && !popupUrl.includes('amazingbaba.com') && !popupUrl.includes('lnkd.in')) {
+                      redirectDone = true;
+                      break;
+                    }
                   }
                 } catch { break; }
               }
+              if (redirectDone) {
+                destinationUrl = popupUrl;
+                log(`destination (popup): ${popupUrl.substring(0,100)}`);
+                const elapsed = Date.now() - clickTime;
+                const wait = Math.max(0, 25000 - elapsed);
+                if (wait > 500) { log(`tracking wait: ${wait}ms`); await ms(wait); }
+                return true;
+              }
+              // Redirect loop exhausted — give up on popup
+              break;
             }
             destinationUrl = popupUrl;
             log(`destination (popup): ${popupUrl.substring(0,100)}`);

@@ -1358,6 +1358,7 @@ def do_get_link():
         click_time = time.time()
         stable_url = ""
         stable_count = 0
+        tracking_wait = int(adpt_getlink.get() * 500)
 
         max_dest_wait = int(adpt_getlink.get() * 1.5)
         for i in range(max_dest_wait):
@@ -1400,7 +1401,6 @@ def do_get_link():
                             destination_url = popup_url
                             log(f"destination (popup): {popup_url[:100]}")
                             elapsed_ms = (time.time() - click_time) * 1000
-                            tracking_wait = int(adpt_getlink.get() * 500)
                             wait = max(0, tracking_wait - elapsed_ms) / 1000
                             if wait > 0.5:
                                 log(f"tracking wait: {int(wait * 1000)}ms")
@@ -1408,6 +1408,16 @@ def do_get_link():
                             return True
                         # Redirect loop exhausted but still on a tracking URL — give up on popup
                         break
+
+                    # Popup URL is not a redirect — this is the destination
+                    destination_url = popup_url
+                    log(f"destination (popup): {popup_url[:100]}")
+                    elapsed_ms = (time.time() - click_time) * 1000
+                    wait = max(0, tracking_wait - elapsed_ms) / 1000
+                    if wait > 0.5:
+                        log(f"tracking wait: {int(wait * 1000)}ms")
+                        time.sleep(wait)
+                    return True
 
             try:
                 driver.switch_to.window(driver.window_handles[0])

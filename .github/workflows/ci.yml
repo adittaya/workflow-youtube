@@ -1,9 +1,6 @@
 name: CI/CD
 
 on:
-  push:
-    branches: [main, 'v*']
-    paths-ignore: ['**.md', '.gitignore']
   pull_request:
     branches: [main]
   schedule:

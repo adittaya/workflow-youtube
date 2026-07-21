@@ -465,14 +465,35 @@ def _fetch_run_logs(token, owner, repo, run_id):
         return ""
 
 def _parse_run_logs(text):
-    dests = []
-    for line in text.split("\n"):
-        if "DESTINATION URL:" in line or "DESTINATION_URL:" in line:
+    dests = []; ips = []; lines = text.split("\n")
+    for i, line in enumerate(lines):
+        # Destination URL is on the line AFTER "DESTINATION URL:" marker
+        if line.strip().startswith("DESTINATION URL:"):
+            for j in range(i+1, min(i+3, len(lines))):
+                p = lines[j].strip()
+                if p.startswith("http") and len(p) > 10:
+                    if p not in dests: dests.append(p)
+                    break
+        # Also catch "destination" log lines with inline URL
+        if "destination" in line.lower() and "http" in line:
             for p in line.split():
                 if p.startswith("http") and len(p) > 10 and p not in dests:
                     dests.append(p)
                     break
-    return dests
+        # Proxy IPs used during rotation
+        if "selected:" in line.lower() and ":" in line:
+            for p in line.split():
+                if ":" in p and p.replace(".","").replace(":","").isdigit():
+                    if p not in ips: ips.append(p)
+        if "[proxy] got:" in line.lower():
+            for p in line.split():
+                if ":" in p and p.replace(".","").replace(":","").isdigit():
+                    if p not in ips: ips.append(p)
+        if "proxy:" in line.lower() and ("selected" in line.lower() or "using" in line.lower()):
+            for p in line.split():
+                if ":" in p and p.replace(".","").replace(":","").isdigit():
+                    if p not in ips: ips.append(p)
+    return dests, ips
 
 def _analyze_deployment(name, info, token):
     owner, repo = info["account"], name
@@ -481,26 +502,52 @@ def _analyze_deployment(name, info, token):
     except SystemExit:
         return None
     wf = runs.get("workflow_runs", [])
-    total, success, failed, all_dests = 0, 0, 0, []
+    total, success, failed, all_dests, all_ips = 0, 0, 0, [], []
     for r in wf:
-        total += 1
-        c = r.get("conclusion", "")
+        total += 1; c = r.get("conclusion", "")
         if c == "success": success += 1
         elif c in ("failure", "cancelled", "timed_out"): failed += 1
         if r.get("status") == "completed" and r.get("conclusion"):
             logs = _fetch_run_logs(token, owner, repo, r["id"])
-            dests = _parse_run_logs(logs)
-            all_dests.extend(dests)
+            dests, ips = _parse_run_logs(logs)
+            all_dests.extend(dests); all_ips.extend(ips)
     return {"total_runs": total, "success": success, "failed": failed,
-            "other": total - success - failed, "destinations": all_dests,
-            "unique_dests": len(set(all_dests))}
+            "other": total - success - failed,
+            "destinations": all_dests, "unique_dests": len(set(all_dests)),
+            "ips": all_ips, "unique_ips": len(set(all_ips))}
+
+def _print_analytics(name, info, r, is_aggregate=False):
+    tag = f"{B}Aggregate ({len(name)} deployments){N}" if is_aggregate else f"{B}{name}{N} ({C}{info['account']}{N})"
+    print(f"  {tag}")
+    print(f"  {'Key:':16} {info['key'] if info else '-'}")
+    print(f"  {'Runs:':16} {r['total_runs']}")
+    print(f"  {G}{'✓ Succeeded:':16}{N} {r['success']}")
+    print(f"  {R}{'✗ Failed:':16}{N} {r['failed']}")
+    print(f"  {'Other:':16} {r['other']}")
+    print(f"  {'Views (total):':16} {len(r['destinations'])}")
+    print(f"  {'Unique URLs:':16} {r['unique_dests']}")
+    print(f"  {'Proxies used:':16} {r['unique_ips']}")
+    if r["destinations"]:
+        _dash
+        _say(f"  {B}Destination URLs & Verified IPs:{N}")
+        dests_sorted = sorted(set(r["destinations"]))
+        ips_sorted = sorted(set(r["ips"]))
+        for d in dests_sorted:
+            print(f"    {C}▸{N} {G}{d}{N}")
+        if ips_sorted:
+            print()
+            _say(f"  {B}Proxy IPs verified in rotation:{N}")
+            for ip in ips_sorted:
+                print(f"    {C}■{N} {ip}")
+    print()
 
 def cmd_analytics(args):
     deps = load_deployments(); accounts = load_accounts()
     if args.name and args.name not in deps: _fail(f"Deployment '{args.name}' not found"); return
     _header("📊 Analytics Report")
     if args.aggregate or not args.name:
-        all_dests = []; total_s, total_f, total_r, total_u = 0, 0, 0, 0; dep_count = 0
+        all_dests = []; all_ips = []
+        total_s, total_f, total_r, total_u, total_ip, dep_count = 0, 0, 0, 0, 0, 0
         for name, info in sorted(deps.items()):
             token = accounts.get(info["account"], {}).get("token")
             if not token: continue
@@ -508,41 +555,21 @@ def cmd_analytics(args):
             r = _analyze_deployment(name, info, token)
             if not r: continue
             total_r += r["total_runs"]; total_s += r["success"]; total_f += r["failed"]
-            all_dests.extend(r["destinations"]); dep_count += 1
-            total_u += r["unique_dests"]
+            all_dests.extend(r["destinations"]); all_ips.extend(r["ips"])
+            total_u += r["unique_dests"]; total_ip += r["unique_ips"]; dep_count += 1
         print()
-        print(f"  {B}Aggregate ({dep_count} deployments){N}")
-        print(f"  {'Runs:':16} {total_r}")
-        print(f"  {'Succeeded:':16} {G}{total_s}{N}")
-        print(f"  {'Failed:':16} {R}{total_f}{N}")
-        print(f"  {'Other:':16} {total_r - total_s - total_f}")
-        print(f"  {'Total views:':16} {len(all_dests)}")
-        print(f"  {'Unique URLs:':16} {total_u}")
-        if all_dests:
-            _dash
-            _say(f"  {B}Destination URLs:{N}")
-            for d in sorted(set(all_dests)):
-                print(f"    {C}▸{N} {d}")
+        if dep_count == 0: _warn("No deployments found."); return
+        agg = {"total_runs": total_r, "success": total_s, "failed": total_f,
+               "other": total_r - total_s - total_f, "destinations": all_dests,
+               "unique_dests": len(set(all_dests)), "ips": all_ips, "unique_ips": len(set(all_ips))}
+        _print_analytics([d for d in deps], None, agg, is_aggregate=True)
         return
-    # Single deployment
     name, info = args.name, deps[args.name]
     token = accounts.get(info["account"], {}).get("token")
     if not token: _fail(f"Account '{info['account']}' not found"); return
     r = _analyze_deployment(name, info, token)
     if not r: return
-    print(f"  {B}{name}{N}  ({C}{info['account']}{N})")
-    print(f"  {'Key:':16} {info.get('key','?')}")
-    print(f"  {'Runs analyzed:':16} {r['total_runs']}")
-    print(f"  {'Succeeded:':16} {G}{r['success']}{N}")
-    print(f"  {'Failed:':16} {R}{r['failed']}{N}")
-    print(f"  {'Other:':16} {r['other']}")
-    print(f"  {'Total views:':16} {len(r['destinations'])}")
-    print(f"  {'Unique URLs:':16} {r['unique_dests']}")
-    if r["destinations"]:
-        _dash
-        _say(f"  {B}Destination URLs:{N}")
-        for d in sorted(set(r["destinations"])):
-            print(f"    {C}▸{N} {d}")
+    _print_analytics(name, info, r)
 
 def cmd_analytics_all(_args):
     cmd_analytics(argparse.Namespace(name=None, aggregate=True))

@@ -1515,6 +1515,7 @@ def main():
         "/snap/bin/chromium.chromedriver",
         "/usr/lib/chromium-browser/chromedriver",
         "/usr/lib/chromium/chromedriver",
+        "/usr/local/bin/chromedriver",
     ]
     driver = None
     for cpath in chromedriver_paths:

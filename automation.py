@@ -30,10 +30,11 @@ from profile_generator import generate_profile
 
 
 def _check_native_binary(path: str) -> bool:
-    """Check if path is a real ELF binary (not a snap wrapper shell script)."""
+    """Check if path is a runnable binary (ELF binary or shebang script)."""
     try:
         with open(path, "rb") as f:
-            return f.read(4) == b"\x7fELF"
+            header = f.read(4)
+            return header in (b"\x7fELF", b"#!/u", b"#!/b", b"#!/s")
     except OSError:
         return False
 

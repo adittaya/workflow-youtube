@@ -7,6 +7,8 @@ One-command management: accounts, deployment, testing, and monitoring.
 import os, sys, json, time, random, string, shutil, tempfile, subprocess, base64, urllib.request, urllib.error, argparse
 from pathlib import Path
 
+_STDIN_TTY = sys.stdin.isatty()
+
 VERSION = "1.0.0"
 CONFIG_DIR = Path.home() / ".vplink247"
 ACCOUNTS_FILE = CONFIG_DIR / "accounts.json"
@@ -411,6 +413,16 @@ def cmd_status(args):
 
 def cmd_wizard(args):
     _print_header()
+    if not _STDIN_TTY:
+        print("  [!] Interactive wizard requires a terminal (stdin is not a TTY).")
+        print("  Set up manually:")
+        print("    1. vplink247 account add <name> --token <pat>")
+        print("    2. vplink247 deploy create \\")
+        print("         --name <repo> --key <vplink-key> \\")
+        print("         --supabase-url <url> --supabase-key <key> --supabase-secret <secret>")
+        print("    3. vplink247 test <repo>")
+        print()
+        return
     print("  Welcome to vplink247 setup wizard!\n")
 
     accounts = load_accounts()

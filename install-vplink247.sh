@@ -80,7 +80,10 @@ mkdir -p "$HOME/.vplink247"
 # ── Run setup wizard ───────────────────────────────────
 echo ""
 info "Running setup wizard..."
-vplink247 setup
+vplink247 setup </dev/tty 2>/dev/null || {
+  info "Non-interactive shell — skipping setup."
+  info "Run manually: vplink247 setup"
+}
 
 echo ""
 echo -e "${BOLD}╔══════════════════════════════════════════════╗${NC}"

@@ -1,0 +1,65 @@
+{% extends "manager/base.html" %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h4 class="mb-0"><i class="bi bi-github"></i> GitHub Accounts</h4>
+  <button type="button" class="btn btn-primary btn-sm" data-bs-toggle="collapse" data-bs-target="#addForm"><i class="bi bi-plus"></i> Add Account</button>
+</div>
+
+<div class="collapse mb-4" id="addForm">
+  <div class="card">
+    <div class="card-header">New GitHub Account</div>
+    <div class="card-body">
+      <form method="post" action="{{ url_for('accounts_new') }}">
+        <div class="mb-3">
+          <label class="form-label">Display Name</label>
+          <input type="text" name="name" class="form-control" placeholder="e.g. My Main Account" required>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Personal Access Token</label>
+          <input type="password" name="token" class="form-control" placeholder="ghp_..." required>
+          <div class="text-muted small mt-1">Requires <code>repo</code> and <code>workflow</code> scopes</div>
+        </div>
+        <button type="submit" class="btn btn-success"><i class="bi bi-check-lg"></i> Verify & Add</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+{% if accounts %}
+<div class="table-responsive">
+  <table class="table table-hover align-middle">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Username</th>
+        <th>Email</th>
+        <th>Added</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for acct in accounts %}
+      <tr>
+        <td class="fw-bold">{{ acct.name }}</td>
+        <td><a href="https://github.com/{{ acct.username }}" target="_blank">{{ acct.username }}</a></td>
+        <td>{{ acct.email or '-' }}</td>
+        <td class="small">{{ acct.created_at }}</td>
+        <td>
+          <form method="post" action="{{ url_for('accounts_delete', aid=acct.id) }}" onsubmit="return confirm('Remove this account?')">
+            <button type="submit" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="card">
+  <div class="card-body text-center py-4">
+    <p class="text-muted">No GitHub accounts added yet.</p>
+    <button type="button" class="btn btn-primary" data-bs-toggle="collapse" data-bs-target="#addForm">Add Your First Account</button>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

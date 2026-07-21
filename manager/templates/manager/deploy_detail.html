@@ -1,0 +1,151 @@
+{% extends "manager/base.html" %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h4 class="mb-0"><i class="bi bi-box"></i> {{ dep.repo_name }}</h4>
+  <div>
+    <a href="{{ url_for('dashboard') }}" class="btn btn-outline-light btn-sm"><i class="bi bi-arrow-left"></i> Back</a>
+    <a href="{{ dep.repo_url }}" target="_blank" class="btn btn-outline-light btn-sm"><i class="bi bi-github"></i> Repo</a>
+  </div>
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-md-3">
+    <div class="card stat-card p-3">
+      <div class="small text-muted">Status</div>
+      <div><span class="badge badge-{{ dep.status }} fs-6">{{ dep.status }}</span></div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card stat-card p-3">
+      <div class="small text-muted">Account</div>
+      <div class="fw-bold">{{ dep.account_name }}</div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card stat-card p-3">
+      <div class="small text-muted">VPLink Key</div>
+      <div><code>{{ dep.vplink_key }}</code></div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card stat-card p-3">
+      <div class="small text-muted">Total Views</div>
+      <div class="fw-bold fs-5">{{ status.total_views }}</div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-md-6">
+    <div class="card">
+      <div class="card-header">Actions</div>
+      <div class="card-body">
+        <form method="post" action="{{ url_for('api_refresh', dep_id=dep.id) }}" class="d-inline" id="refresh-form">
+          <button type="button" class="btn btn-outline-light btn-sm" onclick="refreshStatus()"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+        </form>
+        {% if dep.status == 'active' or dep.status == 'error' %}
+        <form method="post" action="{{ url_for('deploy_stop', dep_id=dep.id) }}" class="d-inline">
+          <button type="submit" class="btn btn-warning btn-sm"><i class="bi bi-pause-circle"></i> Stop</button>
+        </form>
+        {% endif %}
+        {% if dep.status == 'stopped' or dep.status == 'error' %}
+        <form method="post" action="{{ url_for('deploy_restart', dep_id=dep.id) }}" class="d-inline">
+          <button type="submit" class="btn btn-success btn-sm"><i class="bi bi-play-circle"></i> Restart</button>
+        </form>
+        {% endif %}
+        <form method="post" action="{{ url_for('deploy_delete', dep_id=dep.id) }}" class="d-inline" onsubmit="return confirm('Delete this repo and deployment?')">
+          <button type="submit" class="btn btn-danger btn-sm"><i class="bi bi-trash"></i> Delete</button>
+        </form>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="card">
+      <div class="card-header">Target URLs</div>
+      <div class="card-body">
+        {% if urls %}
+        <ul class="list-unstyled mb-0">
+          {% for u in urls %}
+          <li><code class="small">{{ u.url }}</code></li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <span class="text-muted">No specific URLs — using default</span>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span>Workflow Runs (last 5)</span>
+    <span class="badge bg-secondary">{{ status.runs|length }} runs</span>
+  </div>
+  <div class="card-body">
+    {% if status.runs %}
+    <div class="table-responsive">
+      <table class="table table-hover align-middle">
+        <thead>
+          <tr>
+            <th>Run</th>
+            <th>Status</th>
+            <th>Conclusion</th>
+            <th>Started</th>
+            <th>Destinations</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for run in status.runs %}
+          <tr>
+            <td>
+              <a href="{{ run.html_url }}" target="_blank"><code>#{{ run.id }}</code></a>
+            </td>
+            <td>
+              {% if run.status == 'completed' %}
+                <span class="badge bg-success">{{ run.conclusion }}</span>
+              {% elif run.status == 'in_progress' %}
+                <span class="badge bg-info">running</span>
+              {% else %}
+                <span class="badge bg-secondary">{{ run.status }}</span>
+              {% endif %}
+            </td>
+            <td>{{ run.conclusion or '-' }}</td>
+            <td class="small">{{ run.created_at[:16] }}</td>
+            <td>
+              {% if run.destinations %}
+                {% for d in run.destinations %}
+                <div><code class="small">{{ d[:80] }}</code></div>
+                {% endfor %}
+              {% else %}
+                <span class="text-muted">-</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="text-center text-muted py-4">
+      <i class="bi bi-hourglass-split" style="font-size: 2rem;"></i>
+      <p class="mt-2">No runs yet. The first run will start shortly.</p>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function refreshStatus() {
+  const btn = event.target.closest('button');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Refreshing...';
+  fetch('{{ url_for("api_refresh", dep_id=dep.id) }}')
+    .then(r => r.json())
+    .then(() => location.reload())
+    .catch(() => location.reload());
+}
+</script>
+{% endblock %}

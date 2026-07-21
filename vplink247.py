@@ -4,7 +4,7 @@ vplink247 — VPLink 24/7 Automation Deployer & Manager
 One-command management: accounts, deployment, testing, and monitoring.
 """
 
-import os, sys, json, time, random, string, shutil, tempfile, subprocess, base64, urllib.request, urllib.error
+import os, sys, json, time, random, string, shutil, tempfile, subprocess, base64, urllib.request, urllib.error, argparse
 from pathlib import Path
 
 VERSION = "1.0.0"
@@ -443,8 +443,6 @@ def cmd_wizard(args):
 ###############################################################################
 
 def main():
-    import argparse
-
     parser = argparse.ArgumentParser(
         prog="vplink247",
         description="VPLink 24/7 Automation Deployer & Manager",

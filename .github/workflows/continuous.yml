@@ -1,8 +1,8 @@
-name: 24/7 VPLink Automation Loop
+name: VPLink Automation Loop
 
 on:
   schedule:
-    - cron: '*/10 * * * *'
+    - cron: '0 */2 * * *'
   workflow_dispatch:
     inputs:
       key:
@@ -53,11 +53,7 @@ jobs:
         run: |
           pip install selenium webdriver-manager requests urllib3 --quiet
           # Pre-cache chromedriver so automation.py finds it
-          python3 << 'PYEOF'
-from webdriver_manager.chrome import ChromeDriverManager
-cm = ChromeDriverManager().install()
-print(f'chromedriver cached at: {cm}')
-PYEOF
+          python3 -c "from webdriver_manager.chrome import ChromeDriverManager; print(ChromeDriverManager().install())"
 
       - name: Configure Supabase
         run: |

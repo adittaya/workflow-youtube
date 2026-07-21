@@ -125,6 +125,26 @@ def _trigger_workflow(token, owner, repo, key):
     _api(token, "POST", f"/repos/{owner}/{repo}/actions/workflows/continuous.yml/dispatches",
          {"ref": "main", "inputs": {"key": key}})
 
+def _get_workflow_id(token, owner, repo):
+    wfs = _api(token, "GET", f"/repos/{owner}/{repo}/actions/workflows")
+    for wf in wfs.get("workflows", []):
+        if wf["path"].endswith("continuous.yml"):
+            return wf["id"], wf["state"]
+    return None, None
+
+def _set_workflow_state(token, owner, repo, disable=True):
+    wid, state = _get_workflow_id(token, owner, repo)
+    if not wid: _fail("Workflow continuous.yml not found"); return False
+    if disable and state == "disabled_inactivity":
+        _ok("Workflow already disabled (inactivity)"); return True
+    if disable and state == "disabled_manually":
+        _ok("Workflow already disabled"); return True
+    if not disable and state == "active":
+        _ok("Workflow already active"); return True
+    action = "disable" if disable else "enable"
+    _api(token, "PUT", f"/repos/{owner}/{repo}/actions/workflows/{wid}/{action}")
+    return True
+
 
 # ── Account commands ─────────────────────────────────────
 
@@ -257,6 +277,33 @@ def cmd_deploy_remove(args):
     del deps[args.name]; save_deployments(deps)
     _ok(f"Deployment '{args.name}' removed")
 
+
+# ── Stop / Start ─────────────────────────────────────────
+
+def _get_deployment_info(name):
+    deps = load_deployments()
+    if name not in deps: _fail(f"Deployment '{name}' not found"); return None
+    info = deps[name]
+    accounts = load_accounts()
+    token = accounts.get(info["account"], {}).get("token")
+    if not token: _fail(f"Account '{info['account']}' not found"); return None
+    return info["account"], name, token, info.get("key", "?")
+
+def cmd_stop(args):
+    r = _get_deployment_info(args.name)
+    if not r: return
+    owner, repo, token, key = r
+    _say(f"Stopping {C}{owner}/{repo}{N} ...")
+    if _set_workflow_state(token, owner, repo, disable=True):
+        _ok(f"Automation stopped for '{args.name}'")
+
+def cmd_start(args):
+    r = _get_deployment_info(args.name)
+    if not r: return
+    owner, repo, token, key = r
+    _say(f"Starting {C}{owner}/{repo}{N} ...")
+    if _set_workflow_state(token, owner, repo, disable=False):
+        _ok(f"Automation started for '{args.name}'")
 
 # ── Test / Status ────────────────────────────────────────
 
@@ -402,6 +449,7 @@ def _menu_deployments():
             _dash
         print()
         choice = _choose(["📋 List deployments", "🚀 Deploy new relay", "🧪 Test deployment",
+                          "⏹  Stop automation", "▶️  Start automation",
                           "🗑 Remove deployment", "⚡ Quick deploy (bare-bones)"])
         if choice < 0: return
         if choice == 0:
@@ -415,10 +463,19 @@ def _menu_deployments():
             cmd_test(argparse.Namespace(name=name))
         elif choice == 3:
             if not deps: _warn("No deployments."); _pause(); continue
+            name = _prompt("Deployment to stop")
+            cmd_stop(argparse.Namespace(name=name))
+        elif choice == 4:
+            if not deps: _warn("No deployments."); _pause(); continue
+            name = _prompt("Deployment to start")
+            cmd_start(argparse.Namespace(name=name))
+        elif choice == 5:
+            if not deps: _warn("No deployments."); _pause(); continue
             name = _prompt("Deployment name to remove")
             cmd_deploy_remove(argparse.Namespace(name=name))
-        elif choice == 4:
-            if not accounts: _warn("No accounts. Add one first."); _pause(); continue
+        elif choice == 6:
+            accts = load_accounts()
+            if not accts: _warn("No accounts. Add one first."); _pause(); continue
             name = _prompt("Repo name (enter for random)")
             key = _prompt("VPLink key to automate") or "UbpV2D"
             cmd_deploy(argparse.Namespace(name=name or None, key=key,
@@ -470,6 +527,8 @@ def _run_menu():
             print(f"    {C}vplink247 deploy list{N}       List deployments")
             print(f"    {C}vplink247 deploy remove{N}     Remove a deployment")
             print(f"    {C}vplink247 test <name>{N}       Test a deployment")
+            print(f"    {C}vplink247 stop <name>{N}       Stop (disable) automation")
+            print(f"    {C}vplink247 start <name>{N}      Start (enable) automation")
             print(f"    {C}vplink247 status{N}            Show overall status")
             print()
             print(f"  {B}Flags:{N}")
@@ -495,6 +554,8 @@ Examples:
   vplink247 deploy new            Deploy automation relay
   vplink247 deploy list           List deployments
   vplink247 test <name>           Test a deployment
+  vplink247 stop <name>           Stop (disable) automation
+  vplink247 start <name>          Start (enable) automation
   vplink247 status                Show overall status
         """
     )
@@ -536,6 +597,14 @@ Examples:
     p = sub.add_parser("test", help="Test a deployment")
     p.add_argument("name", help="Deployment name")
     p.set_defaults(func=cmd_test)
+
+    p = sub.add_parser("stop", help="Stop (disable) automation for a deployment")
+    p.add_argument("name", help="Deployment name")
+    p.set_defaults(func=cmd_stop)
+
+    p = sub.add_parser("start", help="Start (enable) automation for a deployment")
+    p.add_argument("name", help="Deployment name")
+    p.set_defaults(func=cmd_start)
 
     p = sub.add_parser("status", help="Show overall status")
     p.set_defaults(func=cmd_status)

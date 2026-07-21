@@ -454,15 +454,25 @@ def cmd_start(args):
 # ── Analytics ───────────────────────────────────────────
 
 def _fetch_run_logs(token, owner, repo, run_id):
+    import io, zipfile
     url = f"https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}/logs"
     req = urllib.request.Request(url, headers={
         "Authorization": f"Bearer {token}", "User-Agent": "vplink247/1.0",
     })
     try:
         with urllib.request.urlopen(req) as resp:
-            return resp.read().decode(errors="replace")
+            raw = resp.read()
     except Exception:
         return ""
+    try:
+        text_parts = []
+        with zipfile.ZipFile(io.BytesIO(raw)) as z:
+            for name in z.namelist():
+                if name.endswith(".txt"):
+                    text_parts.append(z.read(name).decode(errors="replace"))
+        return "\n".join(text_parts)
+    except zipfile.BadZipFile:
+        return raw.decode(errors="replace")
 
 def _parse_run_logs(text):
     dests = []; ips = []; lines = text.split("\n")

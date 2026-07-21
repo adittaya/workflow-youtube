@@ -9,6 +9,12 @@ from pathlib import Path
 
 _STDIN_TTY = sys.stdin.isatty()
 
+try:
+    from installer.interactive import confirm, choose, input_text, header
+    _HAS_TUI = True
+except ImportError:
+    _HAS_TUI = False
+
 VERSION = "1.0.0"
 CONFIG_DIR = Path.home() / ".vplink247"
 ACCOUNTS_FILE = CONFIG_DIR / "accounts.json"
@@ -408,46 +414,189 @@ def cmd_status(args):
 
 
 ###############################################################################
-#  WIZARD (interactive first-run setup)
+#  MENU / TUI
 ###############################################################################
 
-def cmd_wizard(args):
-    _print_header()
-    if not _STDIN_TTY:
-        print("  [!] Interactive wizard requires a terminal (stdin is not a TTY).")
-        print("  Set up manually:")
-        print("    1. vplink247 account add <name> --token <pat>")
-        print("    2. vplink247 deploy create \\")
-        print("         --name <repo> --key <vplink-key> \\")
-        print("         --supabase-url <url> --supabase-key <key> --supabase-secret <secret>")
-        print("    3. vplink247 test <repo>")
-        print()
-        return
-    print("  Welcome to vplink247 setup wizard!\n")
-
+def _print_summary():
     accounts = load_accounts()
-    if not accounts:
-        print("  Step 1: Add your GitHub account")
-        name = input("    Account name (e.g. 'personal', 'work'): ").strip() or "default"
-        token = input("    GitHub personal access token (repo scope): ").strip()
-        accounts[name] = {"token": token, "created_at": time.time()}
-        save_accounts(accounts)
-        set_setting("active_account", name)
-        print(f"  ✓ Account '{name}' added\n")
+    active = get_setting("active_account")
+    deps = load_deployments()
+    print(f"  Accounts:    {len(accounts)} ({active or 'none'} active)")
+    print(f"  Deployments: {len(deps)}")
+    if deps and active:
+        tok = accounts.get(active, {}).get("token")
+        if tok:
+            n = sum(1 for d in deps.values() if d.get("account") == active)
+            print(f"  Yours:       {n}")
+    print()
 
-    if not load_deployments():
-        print("  Step 2: Deploy the automation")
-        deploy_now = input("    Deploy now? (Y/n): ").strip().lower()
-        if deploy_now != "n":
-            repo_name = input("    Repo name (enter for random): ").strip()
-            key = input("    VPLink key (e.g. UbpV2D): ").strip() or "UbpV2D"
-            print()
+def _menu_accounts():
+    while True:
+        accounts = load_accounts()
+        active = get_setting("active_account")
+        header("Account Management")
+        print(f"  Active: {active or 'none'}  |  Total: {len(accounts)}\n")
+        if accounts:
+            print(f"  {'':3} {'Name':20} {'Active':6}")
+            print(f"  {'':3} {'-'*20} {'-'*6}")
+            for name in accounts:
+                marker = "●" if name == active else "○"
+                print(f"  {marker:3} {name:20} {'YES' if name == active else ''}")
+        print()
+        opts = ["List account details", "Add new account", "Switch account",
+                "Remove account"]
+        if not _HAS_TUI:
+            opts.append("Back")
+            choice = input("  Choice [0-4]: ").strip()
+            if choice == "0": return
+            choice = int(choice) - 1 if choice.isdigit() else -1
+            if choice < 0 or choice >= len(opts): continue
+        else:
+            choice = choose("Options", opts)
+            if choice == -1: return
+        if choice == 0:
+            cmd_account_list(None)
+            input("\n  Press Enter to continue...")
+        elif choice == 1:
+            name = input("    Account name: ").strip() or "default"
+            token = input("    GitHub personal access token (repo scope): ").strip()
+            cmd_account_add(argparse.Namespace(name=name, token=token))
+            input("\n  Press Enter to continue...")
+        elif choice == 2:
+            if not accounts:
+                print("  No accounts to switch to.\n")
+                continue
+            print("  Available:", ", ".join(accounts.keys()))
+            name = input("  Switch to: ").strip()
+            cmd_account_switch(argparse.Namespace(name=name))
+        elif choice == 3:
+            if not accounts:
+                print("  No accounts to remove.\n")
+                continue
+            name = input("  Account to remove: ").strip()
+            cmd_account_remove(argparse.Namespace(name=name))
+
+def _menu_deployments():
+    while True:
+        deps = load_deployments()
+        header("Deployment Management")
+        print(f"  Total deployments: {len(deps)}\n")
+        if deps:
+            print(f"  {'Name':25} {'Account':20} {'Key':15}")
+            print(f"  {'-'*25} {'-'*20} {'-'*15}")
+            for name, info in sorted(deps.items()):
+                print(f"  {name:25} {info.get('account','?'):20} {info.get('key','?'):15}")
+        print()
+        opts = ["List deployments", "Deploy new relay", "Test deployment",
+                "Remove deployment", "Quick deploy (wizard)"]
+        if not _HAS_TUI:
+            opts.append("Back")
+            choice = input("  Choice [0-4]: ").strip()
+            if choice == "0": return
+            choice = int(choice) - 1 if choice.isdigit() else -1
+            if choice < 0 or choice >= len(opts): continue
+        else:
+            choice = choose("Options", opts)
+            if choice == -1: return
+        if choice == 0:
+            cmd_deploy_list(None)
+            input("\n  Press Enter to continue...")
+        elif choice == 1:
             cmd_deploy(argparse.Namespace(
-                name=repo_name, key=key,
+                name=None, key=None,
+                supabase_url=None, supabase_key=None, supabase_secret=None,
+            ))
+        elif choice == 2:
+            if not deps:
+                print("  No deployments yet.\n")
+                continue
+            name = input("  Deployment name to test: ").strip()
+            cmd_test(argparse.Namespace(name=name))
+        elif choice == 3:
+            if not deps:
+                print("  No deployments to remove.\n")
+                continue
+            name = input("  Deployment name to remove: ").strip()
+            cmd_deploy_remove(argparse.Namespace(name=name))
+        elif choice == 4:
+            accounts = load_accounts()
+            if not accounts:
+                print("  No accounts. Add one first.\n")
+                continue
+            name = input("  Repo name (enter for random): ").strip()
+            key = input("  VPLink key (e.g. UbpV2D): ").strip() or "UbpV2D"
+            cmd_deploy(argparse.Namespace(
+                name=name, key=key,
                 supabase_url=None, supabase_key=None, supabase_secret=None,
             ))
 
-    print("\n  ✓ Setup complete! Run 'vplink247 --help' for available commands.\n")
+def cmd_wizard(args):
+    if not _STDIN_TTY:
+        print("  [!] Interactive menu requires a terminal.\n")
+        return
+    try:
+        menu_main()
+    except (SystemExit, KeyboardInterrupt):
+        pass
+
+def menu_main():
+    if not _STDIN_TTY:
+        print("  [!] Interactive menu requires a terminal.\n")
+        return
+    _print_header()
+    while True:
+        _print_summary()
+        opts = [
+            "Account Management",
+            "Deployment Management",
+            "Status & Monitoring",
+            "Help / All Commands",
+        ]
+        if not _HAS_TUI:
+            print("  1) Account Management")
+            print("  2) Deployment Management")
+            print("  3) Status & Monitoring")
+            print("  4) Help / All Commands")
+            print("  0) Exit\n")
+            choice = input("  Choice: ").strip()
+            if choice == "0":
+                print("\n  Bye.\n")
+                break
+            choice = int(choice) - 1 if choice.isdigit() else -1
+            if choice < 0 or choice >= len(opts):
+                continue
+        else:
+            choice = choose("Main Menu", opts)
+            if choice == -1:
+                print("\n  Bye.\n")
+                break
+        if choice == 0:
+            _menu_accounts()
+        elif choice == 1:
+            _menu_deployments()
+        elif choice == 2:
+            cmd_status(None)
+            input("\n  Press Enter to continue...")
+        elif choice == 3:
+            print("""
+  Available commands:
+    vplink247 setup              This interactive menu
+    vplink247 account add        Add a GitHub account
+    vplink247 account list       List all accounts
+    vplink247 account switch     Switch active account
+    vplink247 account remove     Remove an account
+    vplink247 deploy new/create  Deploy automation relay
+    vplink247 deploy list        List deployments
+    vplink247 deploy remove      Remove a deployment
+    vplink247 test <name>        Test a deployment
+    vplink247 status             Show overall status
+
+  Flags:
+    vplink247 account add default --token ghp_xxxxx
+    vplink247 deploy new --name my-relay --key UbpV2D
+      --supabase-url <url> --supabase-key <key> --supabase-secret <secret>
+""")
+            input("  Press Enter to continue...")
 
 
 ###############################################################################
@@ -474,8 +623,8 @@ Examples:
 
     sub = parser.add_subparsers(dest="command")
 
-    # setup / wizard
-    p = sub.add_parser("setup", help="Interactive setup wizard")
+    # setup / menu
+    p = sub.add_parser("setup", aliases=["menu"], help="Interactive management menu")
     p.set_defaults(func=cmd_wizard)
 
     # account group
@@ -529,7 +678,7 @@ Examples:
     args = parser.parse_args()
 
     if not args.command:
-        parser.print_help()
+        cmd_wizard(args)
         return
 
     # deploy with no subcommand → interactive deploy

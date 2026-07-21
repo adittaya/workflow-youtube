@@ -540,26 +540,18 @@ def _menu_deployments():
         elif choice == 1:
             cmd_deploy(argparse.Namespace(name=None, key=None,
                         supabase_url=None, supabase_key=None, supabase_secret=None)); _pause()
-        elif choice == 2:
-            if not deps: _warn("No deployments yet."); _pause(); continue
-            name = _prompt("Deployment name to test")
-            cmd_test(argparse.Namespace(name=name))
-        elif choice == 3:
+        elif choice in (2, 3, 4, 5, 6):
             if not deps: _warn("No deployments."); _pause(); continue
-            name = _prompt("Deployment to check")
-            cmd_check(argparse.Namespace(name=name)); _pause()
-        elif choice == 4:
-            if not deps: _warn("No deployments."); _pause(); continue
-            name = _prompt("Deployment to stop")
-            cmd_stop(argparse.Namespace(name=name))
-        elif choice == 5:
-            if not deps: _warn("No deployments."); _pause(); continue
-            name = _prompt("Deployment to start")
-            cmd_start(argparse.Namespace(name=name))
-        elif choice == 6:
-            if not deps: _warn("No deployments."); _pause(); continue
-            name = _prompt("Deployment name to remove")
-            cmd_deploy_remove(argparse.Namespace(name=name))
+            if len(deps) == 1:
+                name = next(iter(deps))
+            else:
+                _say(f"\n  Deployments: {', '.join(sorted(deps.keys()))}")
+                name = _prompt("Deployment name")
+            if choice == 2: cmd_test(argparse.Namespace(name=name))
+            elif choice == 3: cmd_check(argparse.Namespace(name=name)); _pause()
+            elif choice == 4: cmd_stop(argparse.Namespace(name=name))
+            elif choice == 5: cmd_start(argparse.Namespace(name=name))
+            elif choice == 6: cmd_deploy_remove(argparse.Namespace(name=name))
         elif choice == 7:
             accts = load_accounts()
             if not accts: _warn("No accounts. Add one first."); _pause(); continue

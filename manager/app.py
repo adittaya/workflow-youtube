@@ -9,6 +9,7 @@ import sqlite3
 import string
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -16,6 +17,9 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
+import nacl.secret
+import nacl.utils
+import nacl.encoding
 from flask import (
     Flask, abort, jsonify, redirect, render_template, request, session, url_for,
 )
@@ -70,9 +74,10 @@ def init_db():
             github_account_id INTEGER NOT NULL,
             proxy_credential_id INTEGER,
             repo_name TEXT NOT NULL,
-            repo_url TEXT NOT NULL,
+            repo_url TEXT DEFAULT '',
             owner TEXT NOT NULL,
             vplink_key TEXT NOT NULL,
+            is_public INTEGER DEFAULT 0,
             status TEXT DEFAULT 'deploying',
             last_run_at TIMESTAMP,
             total_views INTEGER DEFAULT 0,
@@ -90,7 +95,29 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (deployment_id) REFERENCES deployments(id) ON DELETE CASCADE
         );
+        CREATE TABLE IF NOT EXISTS credentials (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            cred_type TEXT NOT NULL,
+            value_encrypted TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
     """)
+    # Migration: add is_public if missing
+    try:
+        db.execute("ALTER TABLE deployments ADD COLUMN is_public INTEGER DEFAULT 0")
+    except Exception:
+        pass
+    try:
+        db.execute("ALTER TABLE deployments ADD COLUMN repo_url TEXT DEFAULT ''")
+    except Exception:
+        pass
+    try:
+        db.execute("ALTER TABLE credentials ADD COLUMN notes TEXT DEFAULT ''")
+    except Exception:
+        pass
     db.commit()
     if not db.execute("SELECT id FROM users WHERE username='admin'").fetchone():
         db.execute("INSERT INTO users (username, password_hash) VALUES (?, ?)",
@@ -120,6 +147,25 @@ def login_required(f):
             return redirect(url_for("login"))
         return f(*a, **kw)
     return wrapper
+
+
+def _encryption_key():
+    raw = app.secret_key.encode() if isinstance(app.secret_key, str) else app.secret_key
+    return hashlib.sha256(raw).digest()
+
+
+def encrypt_value(plaintext):
+    key = _encryption_key()
+    box = nacl.secret.SecretBox(key)
+    encrypted = box.encrypt(plaintext.encode(), nacl.utils.random(nacl.secret.SecretBox.NONCE_SIZE))
+    return nacl.encoding.Base64Encoder.encode(encrypted).decode()
+
+
+def decrypt_value(ciphertext_b64):
+    key = _encryption_key()
+    box = nacl.secret.SecretBox(key)
+    decrypted = box.decrypt(nacl.encoding.Base64Encoder.decode(ciphertext_b64.encode()))
+    return decrypted.decode()
 
 
 def gh_headers(token):
@@ -163,9 +209,10 @@ def create_repo_and_deploy(deployment_id):
     owner = acct["username"]
     key = dep["vplink_key"]
 
+    is_public = bool(dep.get("is_public"))
     try:
         gh_api("POST", "https://api.github.com/user/repos", token, json={
-            "name": repo, "private": True, "auto_init": False,
+            "name": repo, "private": not is_public, "auto_init": False,
             "description": f"VPLink automation deployment {repo}",
         })
     except RuntimeError as e:
@@ -356,6 +403,7 @@ def deploy_new():
         account_id = request.form.get("github_account_id")
         proxy_id = request.form.get("proxy_credential_id") or None
         vplink_key = request.form.get("vplink_key", "").strip()
+        is_public = 1 if request.form.get("is_public") else 0
         urls_raw = request.form.get("urls", "").strip()
 
         if not account_id or not vplink_key:
@@ -370,8 +418,8 @@ def deploy_new():
         repo = random_repo_name()
         dep_id = db.execute(
             "INSERT INTO deployments (user_id, github_account_id, proxy_credential_id, "
-            "repo_name, owner, vplink_key, status) VALUES (?,?,?,?,?,?,'deploying')",
-            (session["user_id"], account_id, proxy_id, repo, acct["username"], vplink_key)
+            "repo_name, owner, vplink_key, is_public, status) VALUES (?,?,?,?,?,?,?,'deploying')",
+            (session["user_id"], account_id, proxy_id, repo, acct["username"], vplink_key, is_public)
         ).lastrowid
 
         if urls_raw:
@@ -569,6 +617,255 @@ def settings():
     return render_template("manager/settings.html")
 
 
+# ══════════════════════════════════════════════════════════
+#  Bulk Deploy
+# ══════════════════════════════════════════════════════════
+
+def create_n_repos(n, account_id, vplink_key, is_public, repo_names=None, proxy_id=None):
+    """Create n deployment repos sequentially. Returns list of (dep_id, repo_name)."""
+    db = get_db()
+    acct = db.execute("SELECT * FROM github_accounts WHERE id=?", (account_id,)).fetchone()
+    if not acct:
+        return []
+    results = []
+    for i in range(n):
+        repo = repo_names[i] if repo_names and i < len(repo_names) else random_repo_name()
+        dep_id = db.execute(
+            "INSERT INTO deployments (user_id, github_account_id, proxy_credential_id, "
+            "repo_name, owner, vplink_key, is_public, status) VALUES (?,?,?,?,?,?,?,'deploying')",
+            (acct["user_id"], account_id, proxy_id, repo, acct["username"], vplink_key, is_public)
+        ).lastrowid
+        db.commit()
+        threading.Thread(target=create_repo_and_deploy, args=(dep_id,), daemon=True).start()
+        results.append((dep_id, repo))
+    return results
+
+
+@app.route("/deploy/bulk", methods=["GET", "POST"])
+@login_required
+def deploy_bulk():
+    db = get_db()
+    if request.method == "POST":
+        account_id = request.form.get("github_account_id")
+        vplink_key = request.form.get("vplink_key", "").strip()
+        count = int(request.form.get("count", 1))
+        is_public = 1 if request.form.get("is_public") else 0
+        proxy_id = request.form.get("proxy_credential_id") or None
+        naming = request.form.get("naming", "auto")
+        names_raw = request.form.get("repo_names", "").strip()
+
+        if not account_id or not vplink_key or count < 1:
+            return render_template("manager/deploy_bulk.html",
+                                   error="Account, key, and count >= 1 required")
+        if count > 50:
+            return render_template("manager/deploy_bulk.html",
+                                   error="Maximum 50 deployments at once")
+
+        repo_names = None
+        if naming == "manual" and names_raw:
+            names = [n.strip() for n in names_raw.split("\n") if n.strip()]
+            if len(names) < count:
+                return render_template("manager/deploy_bulk.html",
+                                       error=f"Need {count} names, got {len(names)}")
+            repo_names = names[:count]
+
+        acct = db.execute("SELECT * FROM github_accounts WHERE id=? AND user_id=?",
+                          (account_id, session["user_id"])).fetchone()
+        if not acct:
+            return render_template("manager/deploy_bulk.html", error="Invalid account")
+
+        results = create_n_repos(count, account_id, vplink_key, is_public, repo_names, proxy_id)
+
+        return render_template("manager/deploy_bulk.html", results=results, count=count)
+
+    accounts = db.execute("SELECT * FROM github_accounts WHERE user_id=?",
+                          (session["user_id"],)).fetchall()
+    proxies = db.execute("SELECT * FROM proxy_credentials WHERE user_id=?",
+                         (session["user_id"],)).fetchall()
+    return render_template("manager/deploy_bulk.html", accounts=accounts, proxies=proxies)
+
+
+# ══════════════════════════════════════════════════════════
+#  Account Scan — detect existing vplink repos on GitHub
+# ══════════════════════════════════════════════════════════
+
+@app.route("/accounts/<int:aid>")
+@login_required
+def account_detail(aid):
+    db = get_db()
+    acct = db.execute("SELECT * FROM github_accounts WHERE id=? AND user_id=?",
+                      (aid, session["user_id"])).fetchone()
+    if not acct:
+        abort(404)
+    repos = db.execute(
+        "SELECT * FROM deployments WHERE github_account_id=? AND user_id=? ORDER BY created_at DESC",
+        (aid, session["user_id"])).fetchall()
+    return render_template("manager/account_detail.html", acct=acct, repos=repos)
+
+
+@app.route("/accounts/<int:aid>/scan", methods=["POST"])
+@login_required
+def account_scan(aid):
+    db = get_db()
+    acct = db.execute("SELECT * FROM github_accounts WHERE id=? AND user_id=?",
+                      (aid, session["user_id"])).fetchone()
+    if not acct:
+        abort(404)
+
+    try:
+        all_repos = []
+        page = 1
+        while True:
+            data = gh_api("GET",
+                          f"https://api.github.com/user/repos?per_page=100&page={page}&type=all",
+                          acct["token"])
+            if not data:
+                break
+            all_repos.extend(data)
+            if len(data) < 100:
+                break
+            page += 1
+
+        existing = {r["repo_name"] for r in db.execute(
+            "SELECT repo_name FROM deployments WHERE github_account_id=?", (aid,)).fetchall()}
+        found = []
+        for r in all_repos:
+            name = r["name"]
+            if name.startswith("vplink-") and name not in existing:
+                dep_id = db.execute(
+                    "INSERT INTO deployments (user_id, github_account_id, repo_name, owner, "
+                    "vplink_key, status, repo_url, is_public) VALUES (?,?,?,?,?,'imported',?,?)",
+                    (session["user_id"], aid, name, acct["username"], name,
+                     r["html_url"], 0 if r["private"] else 1)
+                ).lastrowid
+                db.commit()
+                found.append({"name": name, "dep_id": dep_id})
+
+        return jsonify({"found": len(found), "repos": found})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ══════════════════════════════════════════════════════════
+#  Credential Management (encrypted at rest)
+# ══════════════════════════════════════════════════════════
+
+@app.route("/credentials")
+@login_required
+def credentials_list():
+    db = get_db()
+    creds = db.execute("SELECT id, name, cred_type, created_at FROM credentials WHERE user_id=?",
+                       (session["user_id"],)).fetchall()
+    return render_template("manager/credentials.html", credentials=creds)
+
+
+@app.route("/credentials/new", methods=["POST"])
+@login_required
+def credentials_new():
+    name = request.form.get("name", "").strip()
+    cred_type = request.form.get("cred_type", "").strip()
+    value = request.form.get("value", "").strip()
+
+    if not name or not cred_type or not value:
+        return redirect(url_for("credentials_list"))
+
+    encrypted = encrypt_value(value)
+    db = get_db()
+    db.execute("INSERT INTO credentials (user_id, name, cred_type, value_encrypted) VALUES (?,?,?,?)",
+               (session["user_id"], name, cred_type, encrypted))
+    db.commit()
+    return redirect(url_for("credentials_list"))
+
+
+@app.route("/credentials/<int:cid>/delete", methods=["POST"])
+@login_required
+def credentials_delete(cid):
+    db = get_db()
+    db.execute("DELETE FROM credentials WHERE id=? AND user_id=?", (cid, session["user_id"]))
+    db.commit()
+    return redirect(url_for("credentials_list"))
+
+
+@app.route("/credentials/<int:cid>/reveal")
+@login_required
+def credentials_reveal(cid):
+    db = get_db()
+    cred = db.execute("SELECT * FROM credentials WHERE id=? AND user_id=?",
+                      (cid, session["user_id"])).fetchone()
+    if not cred:
+        return jsonify({"error": "not found"}), 404
+    try:
+        plain = decrypt_value(cred["value_encrypted"])
+        return jsonify({"name": cred["name"], "value": plain, "type": cred["cred_type"]})
+    except Exception:
+        return jsonify({"error": "decryption failed"}), 500
+
+
+# ══════════════════════════════════════════════════════════
+#  Unified Status — comprehensive dashboard
+# ══════════════════════════════════════════════════════════
+
+@app.route("/status/unified")
+@login_required
+def unified_status():
+    db = get_db()
+    accounts = db.execute("SELECT * FROM github_accounts WHERE user_id=?",
+                          (session["user_id"],)).fetchall()
+    summary = {"total_accounts": len(accounts), "total_deployments": 0,
+               "active": 0, "error": 0, "stopped": 0, "imported": 0,
+               "total_views": 0, "total_destinations": 0}
+
+    account_data = []
+    for acct in accounts:
+        deps = db.execute(
+            "SELECT * FROM deployments WHERE github_account_id=? ORDER BY created_at DESC",
+            (acct["id"],)).fetchall()
+        dep_data = []
+        for dep in deps:
+            status_data = {"runs": [], "total_views": 0, "total_destinations": 0}
+            try:
+                status_data = fetch_deployment_status(dep, acct["token"])
+            except Exception:
+                pass
+            summary["total_deployments"] += 1
+            summary["total_views"] += status_data["total_views"]
+            summary["total_destinations"] += status_data["total_destinations"]
+            if dep["status"] == "active": summary["active"] += 1
+            elif dep["status"] == "error": summary["error"] += 1
+            elif dep["status"] == "stopped": summary["stopped"] += 1
+            elif dep["status"] == "imported": summary["imported"] += 1
+            dep_data.append({"dep": dep, "status_data": status_data})
+
+        account_data.append({"acct": acct, "deps": dep_data})
+
+    return render_template("manager/unified_status.html",
+                           accounts=account_data, summary=summary)
+
+
+# ══════════════════════════════════════════════════════════
+#  API: Refresh all statuses at once
+# ══════════════════════════════════════════════════════════
+
+@app.route("/api/refresh/all")
+@login_required
+def api_refresh_all():
+    db = get_db()
+    deps = db.execute(
+        "SELECT d.*, ga.token, ga.username as owner FROM deployments d "
+        "JOIN github_accounts ga ON ga.id = d.github_account_id WHERE d.user_id=?",
+        (session["user_id"],)).fetchall()
+    results = []
+    for dep in deps:
+        try:
+            s = fetch_deployment_status(dep, dep["token"])
+            results.append({"id": dep["id"], "repo": dep["repo_name"],
+                            "views": s["total_views"], "error": None})
+        except Exception as e:
+            results.append({"id": dep["id"], "repo": dep["repo_name"],
+                            "error": str(e)})
+    return jsonify(results)
+
+
 @app.route("/api/refresh/<int:dep_id>")
 @login_required
 def api_refresh(dep_id):
@@ -585,10 +882,29 @@ def api_refresh(dep_id):
 
 def main():
     init_db()
+
+    # Load env file if it exists (for systemd / installed setups)
+    env_file = Path("/etc/default/vplink-manager")
+    if env_file.exists():
+        for line in env_file.read_text().split("\n"):
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k, v)
+
     port = int(os.environ.get("MANAGER_PORT", 8888))
     host = os.environ.get("MANAGER_HOST", "0.0.0.0")
+    secret = os.environ.get("MANAGER_SECRET")
+    if secret:
+        app.secret_key = secret
+
+    has_supabase = all(os.environ.get(k) for k in ("SUPABASE_URL", "SUPABASE_KEY", "SUPABASE_SECRET"))
     print(f"VPLink Manager starting on http://{host}:{port}")
     print(f"Default login: admin / admin")
+    if has_supabase:
+        print(f"Supabase: configured")
+    else:
+        print(f"Supabase: NOT CONFIGURED — deployments will fail!")
     app.run(host=host, port=port, debug=True)
 
 

@@ -42,17 +42,26 @@
       <h5 class="mb-0"><i class="bi bi-diagram-3"></i> VPLink Manager</h5>
     </div>
     <nav class="nav flex-column mt-2">
-      <a class="nav-link {% if request.path == '/' or request.path.startswith('/deploy') %}active{% endif %}" href="{{ url_for('dashboard') }}">
+      <a class="nav-link {% if request.path == '/' or request.path.startswith('/dashboard') %}active{% endif %}" href="{{ url_for('dashboard') }}">
         <i class="bi bi-speedometer2"></i> Dashboard
       </a>
       <a class="nav-link {% if request.path == '/deploy/new' %}active{% endif %}" href="{{ url_for('deploy_new') }}">
-        <i class="bi bi-plus-circle"></i> New Deployment
+        <i class="bi bi-plus-circle"></i> Single Deploy
+      </a>
+      <a class="nav-link {% if request.path == '/deploy/bulk' %}active{% endif %}" href="{{ url_for('deploy_bulk') }}">
+        <i class="bi bi-layers"></i> Bulk Deploy
+      </a>
+      <a class="nav-link {% if '/status/unified' in request.path %}active{% endif %}" href="{{ url_for('unified_status') }}">
+        <i class="bi bi-graph-up-arrow"></i> All Status
       </a>
       <a class="nav-link {% if request.path == '/accounts' %}active{% endif %}" href="{{ url_for('accounts') }}">
         <i class="bi bi-github"></i> GitHub Accounts
       </a>
       <a class="nav-link {% if request.path == '/proxies' %}active{% endif %}" href="{{ url_for('proxies') }}">
-        <i class="bi bi-shield-check"></i> Proxy Credentials
+        <i class="bi bi-shield-check"></i> Proxies
+      </a>
+      <a class="nav-link {% if request.path == '/credentials' %}active{% endif %}" href="{{ url_for('credentials_list') }}">
+        <i class="bi bi-key"></i> Credentials
       </a>
       <a class="nav-link {% if request.path == '/settings' %}active{% endif %}" href="{{ url_for('settings') }}">
         <i class="bi bi-gear"></i> Settings

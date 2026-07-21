@@ -9,10 +9,16 @@
 </div>
 
 <div class="row g-3 mb-4">
-  <div class="col-md-3">
+  <div class="col-md-2">
     <div class="card stat-card p-3">
       <div class="small text-muted">Status</div>
       <div><span class="badge badge-{{ dep.status }} fs-6">{{ dep.status }}</span></div>
+    </div>
+  </div>
+  <div class="col-md-2">
+    <div class="card stat-card p-3">
+      <div class="small text-muted">Visibility</div>
+      <div>{% if dep.is_public %}<span class="badge bg-secondary">public</span>{% else %}<span class="badge bg-dark">private</span>{% endif %}</div>
     </div>
   </div>
   <div class="col-md-3">
@@ -27,7 +33,7 @@
       <div><code>{{ dep.vplink_key }}</code></div>
     </div>
   </div>
-  <div class="col-md-3">
+  <div class="col-md-2">
     <div class="card stat-card p-3">
       <div class="small text-muted">Total Views</div>
       <div class="fw-bold fs-5">{{ status.total_views }}</div>

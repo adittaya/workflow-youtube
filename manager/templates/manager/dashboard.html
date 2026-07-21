@@ -47,13 +47,13 @@
     <thead>
       <tr>
         <th>Repo</th>
+        <th>Type</th>
         <th>Account</th>
         <th>Key</th>
         <th>Status</th>
         <th>Views</th>
         <th>Destinations</th>
         <th>Last Run</th>
-        <th>Created</th>
         <th></th>
       </tr>
     </thead>
@@ -61,13 +61,13 @@
       {% for dep in deployments %}
       <tr>
         <td><a href="{{ url_for('deploy_detail', dep_id=dep.id) }}"><code>{{ dep.repo_name }}</code></a></td>
+        <td>{% if dep.is_public %}<span class="badge bg-secondary">public</span>{% else %}<span class="badge bg-dark">private</span>{% endif %}</td>
         <td>{{ dep.account_name }}</td>
         <td><code>{{ dep.vplink_key[:12] }}...</code></td>
         <td><span class="badge badge-{{ dep.status }}">{{ dep.status }}</span></td>
         <td>{{ dep.total_views }}</td>
         <td>{{ dep.total_destinations }}</td>
         <td>{{ dep.last_run_at or '-' }}</td>
-        <td>{{ dep.created_at }}</td>
         <td>
           <a href="{{ url_for('deploy_detail', dep_id=dep.id) }}" class="btn btn-sm btn-outline-light"><i class="bi bi-eye"></i></a>
         </td>

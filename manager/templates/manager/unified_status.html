@@ -1,0 +1,140 @@
+{% extends "manager/base.html" %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h4 class="mb-0"><i class="bi bi-graph-up-arrow"></i> All Status — Unified View</h4>
+  <button class="btn btn-primary btn-sm" onclick="refreshAll()"><i class="bi bi-arrow-clockwise"></i> Refresh All</button>
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-md-2">
+    <div class="card stat-card p-3 text-center">
+      <div class="fs-4 fw-bold">{{ summary.total_accounts }}</div>
+      <div class="text-muted small">Accounts</div>
+    </div>
+  </div>
+  <div class="col-md-2">
+    <div class="card stat-card p-3 text-center">
+      <div class="fs-4 fw-bold">{{ summary.total_deployments }}</div>
+      <div class="text-muted small">Total Repos</div>
+    </div>
+  </div>
+  <div class="col-md-2">
+    <div class="card stat-card active p-3 text-center">
+      <div class="fs-4 fw-bold">{{ summary.active }}</div>
+      <div class="text-muted small">Active</div>
+    </div>
+  </div>
+  <div class="col-md-2">
+    <div class="card stat-card p-3 text-center">
+      <div class="fs-4 fw-bold">{{ summary.error }}</div>
+      <div class="text-muted small">Error</div>
+    </div>
+  </div>
+  <div class="col-md-2">
+    <div class="card stat-card p-3 text-center">
+      <div class="fs-4 fw-bold">{{ summary.stopped }}</div>
+      <div class="text-muted small">Stopped</div>
+    </div>
+  </div>
+  <div class="col-md-2">
+    <div class="card stat-card p-3 text-center">
+      <div class="fs-4 fw-bold">{{ summary.total_views }}</div>
+      <div class="text-muted small">Total Views</div>
+    </div>
+  </div>
+</div>
+
+{% for item in accounts %}
+<div class="card mb-3">
+  <div class="card-header d-flex justify-content-between align-items-center" style="cursor:pointer" onclick="toggleSection('section-{{ item.acct.id }}')">
+    <span>
+      <i class="bi bi-chevron-right" id="icon-{{ item.acct.id }}"></i>
+      <strong>{{ item.acct.name }}</strong>
+      <span class="text-muted ms-2">({{ item.acct.username }})</span>
+    </span>
+    <span>
+      <span class="badge bg-secondary">{{ item.deps|length }} repos</span>
+      <a href="{{ url_for('account_detail', aid=item.acct.id) }}" class="btn btn-sm btn-outline-light ms-2" onclick="event.stopPropagation()"><i class="bi bi-eye"></i></a>
+    </span>
+  </div>
+  <div id="section-{{ item.acct.id }}" class="card-body" style="display:none">
+    {% if item.deps %}
+    <table class="table table-hover align-middle mb-0">
+      <thead>
+        <tr>
+          <th>Repo</th>
+          <th>Key</th>
+          <th>Visibility</th>
+          <th>Status</th>
+          <th>Views</th>
+          <th>Latest Run</th>
+          <th>Destinations</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for d in item.deps %}
+        <tr>
+          <td><code>{{ d.dep.repo_name }}</code></td>
+          <td><code>{{ d.dep.vplink_key[:12] }}..</code></td>
+          <td>{% if d.dep.is_public %}<span class="badge bg-secondary">pub</span>{% else %}<span class="badge bg-dark">priv</span>{% endif %}</td>
+          <td><span class="badge badge-{{ d.dep.status }}">{{ d.dep.status }}</span></td>
+          <td>{{ d.status_data.total_views }}</td>
+          <td class="small">{{ d.dep.last_run_at or '-' }}</td>
+          <td>
+            {% set all_dests = [] %}
+            {% for run in d.status_data.runs %}
+              {% for dest in run.destinations %}
+                {% if dest not in all_dests %}{% set _ = all_dests.append(dest) %}{% endif %}
+              {% endfor %}
+            {% endfor %}
+            <span class="small">{{ all_dests|length }} unique</span>
+          </td>
+          <td><a href="{{ url_for('deploy_detail', dep_id=d.dep.id) }}" class="btn btn-sm btn-outline-light"><i class="bi bi-box-arrow-up-right"></i></a></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="text-muted text-center mb-0 py-2">No repos on this account.</p>
+    {% endif %}
+  </div>
+</div>
+{% endfor %}
+
+{% if not accounts %}
+<div class="card">
+  <div class="card-body text-center py-5">
+    <i class="bi bi-inbox" style="font-size: 2.5rem; color: #475569;"></i>
+    <p class="mt-3 text-muted">No accounts or deployments yet.</p>
+    <a href="{{ url_for('accounts') }}" class="btn btn-primary">Add a GitHub Account</a>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+function toggleSection(id) {
+  const el = document.getElementById(id);
+  const icon = document.getElementById('icon-' + id.replace('section-', ''));
+  if (el.style.display === 'none') {
+    el.style.display = 'block';
+    icon.className = 'bi bi-chevron-down';
+  } else {
+    el.style.display = 'none';
+    icon.className = 'bi bi-chevron-right';
+  }
+}
+
+function refreshAll() {
+  const btn = event.target.closest('button');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Refreshing...';
+  fetch('/api/refresh/all')
+    .then(r => r.json())
+    .then(() => location.reload())
+    .catch(() => location.reload());
+}
+</script>
+{% endblock %}

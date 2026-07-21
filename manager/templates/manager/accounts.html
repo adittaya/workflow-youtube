@@ -40,12 +40,13 @@
     <tbody>
       {% for acct in accounts %}
       <tr>
-        <td class="fw-bold">{{ acct.name }}</td>
+        <td class="fw-bold"><a href="{{ url_for('account_detail', aid=acct.id) }}">{{ acct.name }}</a></td>
         <td><a href="https://github.com/{{ acct.username }}" target="_blank">{{ acct.username }}</a></td>
         <td>{{ acct.email or '-' }}</td>
         <td class="small">{{ acct.created_at }}</td>
         <td>
-          <form method="post" action="{{ url_for('accounts_delete', aid=acct.id) }}" onsubmit="return confirm('Remove this account?')">
+          <a href="{{ url_for('account_detail', aid=acct.id) }}" class="btn btn-sm btn-outline-light"><i class="bi bi-eye"></i></a>
+          <form method="post" action="{{ url_for('accounts_delete', aid=acct.id) }}" class="d-inline" onsubmit="return confirm('Remove this account?')">
             <button type="submit" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
           </form>
         </td>

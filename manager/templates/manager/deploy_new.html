@@ -28,6 +28,15 @@
           </div>
 
           <div class="mb-3">
+            <label class="form-label">Repository Visibility</label>
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" name="is_public" id="isPublic" value="1">
+              <label class="form-check-label" for="isPublic">Public repository</label>
+            </div>
+            <div class="text-muted small mt-1">Private hides the automation code; public makes it visible to anyone on GitHub.</div>
+          </div>
+
+          <div class="mb-3">
             <label class="form-label">Proxy Credentials (optional)</label>
             <select name="proxy_credential_id" class="form-select">
               <option value="">-- No proxy --</option>
@@ -56,8 +65,9 @@
         <ol class="small">
           <li class="mb-2">Select a <strong>GitHub account</strong> with a PAT that has <code>repo</code> + <code>workflow</code> scopes.</li>
           <li class="mb-2">Enter your <strong>VPLink key</strong> — the short code from your vplink.in URL.</li>
+          <li class="mb-2">Choose <strong>Private</strong> or <strong>Public</strong> repo visibility.</li>
           <li class="mb-2">Optionally link <strong>proxy credentials</strong> for IP rotation.</li>
-          <li class="mb-2">Click <strong>Deploy</strong> — the system creates a private repo, pushes the automation code, sets secrets, and triggers the first run.</li>
+          <li class="mb-2">Click <strong>Deploy</strong> — the system creates a repo, pushes the automation code, sets secrets, and triggers the first run.</li>
           <li class="mb-2">Monitor everything from the <strong>Dashboard</strong> — view counts, destination URLs, and run status.</li>
         </ol>
       </div>

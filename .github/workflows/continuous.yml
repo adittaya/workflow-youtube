@@ -38,21 +38,26 @@ jobs:
           python-version: '3.11'
           cache: pip
 
-      - name: Install Chrome + chromedriver
+      - name: Install Google Chrome
         run: |
-          # On ubuntu-24.04, chromium-browser is a snap wrapper shell script
-          # _check_native_binary() rejects it. Use webdriver-manager as fallback.
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            chromium-browser chromium-chromedriver >/dev/null 2>&1 || true
-          pip install webdriver-manager --quiet
-          echo "--- Versions ---"
-          chromium-browser --version 2>/dev/null || echo "no chromium-browser"
-          chromedriver --version 2>/dev/null | head -1 || echo "no chromedriver in PATH"
+          # Remove snap chromium that doesn't work in CI
+          sudo apt-get remove -y chromium-browser chromium-chromedriver >/dev/null 2>&1 || true
+          # Install real Google Chrome
+          wget -q -O /tmp/chrome.deb \
+            https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo apt-get install -y -qq /tmp/chrome.deb >/dev/null 2>&1
+          sudo ln -sf /usr/bin/google-chrome /usr/bin/chromium-browser 2>/dev/null || true
+          google-chrome --version
 
-      - name: Install Python deps
+      - name: Install chromedriver + Python deps
         run: |
-          pip install selenium requests urllib3 --quiet
+          pip install selenium webdriver-manager requests urllib3 --quiet
+          # Pre-cache chromedriver so automation.py finds it
+          python3 -c "
+from webdriver_manager.chrome import ChromeDriverManager
+cm = ChromeDriverManager().install()
+print(f'chromedriver cached at: {cm}')
+" 2>&1
 
       - name: Configure Supabase
         run: |
@@ -73,6 +78,7 @@ jobs:
         id: automate
         env:
           VPLINK_PROXY: http://${{ steps.proxy.outputs.proxy }}
+          CHROMIUM_PATH: /usr/bin/google-chrome
         run: |
           python3 automation.py "$VPLINK_KEY" 2>&1
           echo "status=success" >> $GITHUB_OUTPUT

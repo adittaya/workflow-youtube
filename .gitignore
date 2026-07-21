@@ -16,3 +16,5 @@ record.js
 record.sh
 recorder.log
 __pycache__/
+manager/.venv/
+manager/manager.db

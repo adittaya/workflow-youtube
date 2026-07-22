@@ -1444,10 +1444,10 @@ def do_get_link():
             except Exception:
                 pass
 
+        tracking_wait = int(adpt_getlink.get() * 500)
         click_time = time.time()
         stable_url = ""
         stable_count = 0
-        tracking_wait = int(adpt_getlink.get() * 500)
 
         max_dest_wait = int(adpt_getlink.get() * 1.5)
         for i in range(max_dest_wait):

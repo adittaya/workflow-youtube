@@ -83,7 +83,7 @@ def supabase_fetch(endpoint, method="GET", timeout=25, data=None):
         raise RuntimeError(f"Supabase request failed: {e}")
 
 
-def fetch_proxies(tier="premium", exclude_minutes=30):
+def fetch_proxies(tier="premium", exclude_minutes=5):
     from urllib.parse import quote as url_quote
     field = "vplink_ok" if tier == "premium" else "e2_ok"
     cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=exclude_minutes)).isoformat()

@@ -1321,14 +1321,42 @@ def do_get_link():
         link_hrefs = safe_eval("""
             var getLink = document.getElementById('get-link');
             var gtLink = document.getElementById('gt-link');
+            var allScripts = Array.from(document.querySelectorAll('script')).map(function(s){return s.textContent||s.src||''}).join('\\n');
+            var allData = '';
+            document.querySelectorAll('[data-href],[data-url],[data-dest],[data-link],[data-target]').forEach(function(el){
+                allData += (el.getAttribute('data-href')||'') + ' ' + (el.getAttribute('data-url')||'') + ' ' + (el.getAttribute('data-dest')||'') + ' ' + (el.getAttribute('data-link')||'') + ' ' + (el.getAttribute('data-target')||'') + ' ';
+            });
+            var allHrefs = Array.from(document.querySelectorAll('a[href]')).map(function(a){return a.href}).filter(function(h){return h.indexOf('http')===0}).join('\\n');
             return {{
                 getLinkHref: getLink ? getLink.href : '',
-                gtLinkHref: gtLink ? gtLink.href : ''
+                gtLinkHref: gtLink ? gtLink.href : '',
+                scripts: allScripts.substring(0, 5000),
+                data: allData.trim(),
+                hrefs: allHrefs.substring(0, 3000)
             }};
         """) or {}
         link_href = (link_hrefs.get("gtLinkHref") or link_hrefs.get("getLinkHref") or "").replace("javascript:void(0)", "")
         if link_href and link_href.startswith("http"):
             log(f"captured href before click: gt-link={bool(link_hrefs.get('gtLinkHref'))}, get-link={bool(link_hrefs.get('getLinkHref'))}")
+        pre_scan_dest = None
+        import re as _re
+        for scan_field in ["scripts", "hrefs", "data"]:
+            scan_text = link_hrefs.get(scan_field, "")
+            if not scan_text:
+                continue
+            for m in _re.finditer(r'https?://[^\s"\'<>]+', scan_text):
+                u = m.group(0).rstrip('.,;:)"\'')
+                if any(x in u for x in ["lnkd.in", "linkedin.com", "google.com", "gstatic.com", "cloudflare", "facebook.com", "twitter.com", "cloudflareinsights"]):
+                    continue
+                if is_destination(u):
+                    pre_scan_dest = u
+                    break
+            if pre_scan_dest:
+                break
+        if pre_scan_dest:
+            log(f"destination found in page scan: {pre_scan_dest[:100]}")
+            destination_url = pre_scan_dest
+            return True
 
         t0 = time.time()
         try:
@@ -1350,6 +1378,31 @@ def do_get_link():
 
         log("clicking Get Link")
         pre_handles = set(driver.window_handles)
+
+        captured_redirects = []
+        try:
+            driver.execute_cdp_cmd("Network.enable", {"maxTotalBufferSize": 1048576})
+            def _on_response(event):
+                try:
+                    url = event.get("params", {}).get("response", {}).get("url", "")
+                    loc = ""
+                    for h in event.get("params", {}).get("response", {}).get("headers", {}):
+                        if h.lower() == "location":
+                            loc = event["params"]["response"]["headers"][h]
+                            break
+                    if url and ("linkedin.com" in url or "lnkd.in" in url):
+                        captured_redirects.append({"url": url, "location": loc})
+                        if loc:
+                            log(f"[network] {url[:60]} -> {loc[:80]}")
+                except Exception:
+                    pass
+            try:
+                driver.add_cdp_listener("Network.responseReceived", _on_response)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
         human_click("#get-link")
 
         new_tab = None
@@ -1410,6 +1463,7 @@ def do_get_link():
                     if is_redirect:
                         log(f"redirect/tracking URL detected ({popup_url[:60]}), waiting for final...")
                         redirect_done = False
+                        lnkd_stuck_count = 0
                         for r in range(int(adpt_getlink.get())):
                             ms(1000)
                             try:
@@ -1424,6 +1478,35 @@ def do_get_link():
                                     ]):
                                         redirect_done = True
                                         break
+                                    if "lnkd.in" in popup_url or "linkedin.com" in popup_url:
+                                        lnkd_stuck_count += 1
+                                        if lnkd_stuck_count >= 5 and r >= 5:
+                                            log(f"stuck on {popup_url[:40]} for {r}s, trying HTTP resolve...")
+                                            try:
+                                                import urllib.request as _urllib_req
+                                                for _att in range(2):
+                                                    try:
+                                                        req = _urllib_req.Request(popup_url, headers={
+                                                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
+                                                        })
+                                                        resp = _urllib_req.urlopen(req, timeout=15)
+                                                        final_url = resp.geturl()
+                                                        if final_url and final_url != popup_url and "lnkd.in" not in final_url and "linkedin.com" not in final_url:
+                                                            log(f"resolved via early HTTP: {final_url[:100]}")
+                                                            destination_url = final_url
+                                                            try:
+                                                                driver.close()
+                                                                driver.switch_to.window(driver.window_handles[0])
+                                                            except Exception:
+                                                                pass
+                                                            return True
+                                                        break
+                                                    except Exception:
+                                                        if _att < 1:
+                                                            ms(2000)
+                                            except Exception:
+                                                pass
+                                            break
                             except Exception:
                                 break
                         if redirect_done:
@@ -1435,7 +1518,77 @@ def do_get_link():
                                 log(f"tracking wait: {int(wait * 1000)}ms")
                                 time.sleep(wait)
                             return True
-                        # Redirect loop exhausted but still on a tracking URL — give up on popup
+                        # Redirect loop exhausted but still on a tracking URL
+                        # Try to resolve via HTTP redirect (lnkd.in redirects via HTTP 302)
+                        try:
+                            import urllib.request
+                            import re as _re
+                            for _attempt in range(3):
+                                try:
+                                    req = urllib.request.Request(popup_url, headers={
+                                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
+                                    })
+                                    resp = urllib.request.urlopen(req, timeout=15)
+                                    final_url = resp.geturl()
+                                    if final_url and final_url != popup_url:
+                                        if "lnkd.in" not in final_url and "linkedin.com" not in final_url:
+                                            log(f"resolved via HTTP redirect: {final_url[:100]}")
+                                            destination_url = final_url
+                                            try:
+                                                driver.close()
+                                                driver.switch_to.window(driver.window_handles[0])
+                                            except Exception:
+                                                pass
+                                            return True
+                                    body = resp.read(50000).decode("utf-8", errors="ignore")
+                                    meta_match = _re.search(r'<meta[^>]+http-equiv=["\']?refresh["\']?[^>]+content=["\']?\d+;\s*url=([^\s"\']+)', body, _re.I)
+                                    if meta_match:
+                                        meta_url = meta_match.group(1)
+                                        if meta_url.startswith("http") and "lnkd.in" not in meta_url and "linkedin.com" not in meta_url:
+                                            log(f"extracted from meta refresh: {meta_url[:100]}")
+                                            destination_url = meta_url
+                                            try:
+                                                driver.close()
+                                                driver.switch_to.window(driver.window_handles[0])
+                                            except Exception:
+                                                pass
+                                            return True
+                                    js_match = _re.search(r'window\.location(?:\.href)?\s*=\s*["\']?(https?://[^"\'>\s]+)', body, _re.I)
+                                    if js_match:
+                                        js_url = js_match.group(1)
+                                        if "lnkd.in" not in js_url and "linkedin.com" not in js_url:
+                                            log(f"extracted from JS redirect: {js_url[:100]}")
+                                            destination_url = js_url
+                                            try:
+                                                driver.close()
+                                                driver.switch_to.window(driver.window_handles[0])
+                                            except Exception:
+                                                pass
+                                            return True
+                                    break
+                                except Exception:
+                                    if _attempt < 2:
+                                        log(f"resolve attempt {_attempt+1} failed, retrying...")
+                                        ms(2000)
+                        except Exception:
+                            pass
+                        for cr in reversed(captured_redirects):
+                            loc = cr.get("location", "")
+                            if loc and loc.startswith("http") and not any(x in loc for x in ["lnkd.in", "linkedin.com", "google.com/recaptcha", "about:blank"]):
+                                log(f"destination from network redirect: {loc[:100]}")
+                                destination_url = loc
+                                try:
+                                    driver.close()
+                                    driver.switch_to.window(driver.window_handles[0])
+                                except Exception:
+                                    pass
+                                return True
+                        log(f"stuck on tracking URL {popup_url[:60]} — giving up on popup")
+                        try:
+                            driver.close()
+                            driver.switch_to.window(driver.window_handles[0])
+                        except Exception:
+                            pass
                         break
 
                     # Popup URL is not a redirect — this is the destination

@@ -104,6 +104,8 @@ PROXY_PORT = int(PROXY.split(":")[-1]) if PROXY and ":" in PROXY.split("//")[-1]
 proxy_failures = 0
 proxy_blocked = False
 proxy_punished = False
+proxy_restarts = 0
+MAX_PROXY_RESTARTS = 3
 
 
 class AdaptiveTimeout:
@@ -195,6 +197,45 @@ def report_proxy_failure(reason):
             mark_dead(PROXY_IP, PROXY_PORT)
         except Exception:
             pass
+
+
+def restart_proxy():
+    global driver, PROXY, PROXY_HOST, PROXY_IP, PROXY_PORT, proxy_punished, proxy_restarts, start_time
+    if proxy_restarts >= MAX_PROXY_RESTARTS:
+        log(f"max proxy restarts ({MAX_PROXY_RESTARTS}) reached, giving up")
+        return False
+    proxy_restarts += 1
+    log(f"--- restarting browser with new proxy (attempt {proxy_restarts}/{MAX_PROXY_RESTARTS}) ---")
+    try:
+        driver.quit()
+    except Exception:
+        pass
+    driver = None
+    proxy_punished = False
+    new_proxy = None
+    try:
+        new_proxy = get_proxy()
+    except Exception as e:
+        log(f"failed to get new proxy: {e}")
+    if not new_proxy:
+        log("no new proxy available, continuing without proxy")
+        PROXY = ""
+        PROXY_HOST = ""
+        PROXY_IP = ""
+        PROXY_PORT = 0
+    else:
+        PROXY = f"http://{new_proxy['ip']}:{new_proxy['port']}"
+        PROXY_HOST = new_proxy["ip"]
+        PROXY_IP = new_proxy["ip"]
+        PROXY_PORT = int(new_proxy["port"])
+        log(f"new proxy: {PROXY_IP}:{PROXY_PORT}")
+    start_time = time.time()
+    try:
+        _create_driver()
+    except Exception as e:
+        log(f"failed to create browser: {e}")
+        return False
+    return True
 
 
 def _signal_handler(sig, frame):
@@ -1444,24 +1485,9 @@ def do_get_link():
     return False
 
 
-def debug_shot(label):
-    if not DEBUG:
-        return
-    d = Path(__file__).parent / "screenshots"
-    d.mkdir(exist_ok=True)
-    try:
-        driver.save_screenshot(str(d / f"{label}.png"))
-    except Exception:
-        pass
-
-
-# ══════════════════════════════════════════════════════════════
-#  Main
-# ══════════════════════════════════════════════════════════════
-
-def main():
-    global driver, destination_url, start_time, profile, proxy_blocked
-
+def _create_driver():
+    global driver, profile
+    from profile_generator import generate_profile
     profile = generate_profile(mobile=True, youtube=True)
     log(f"profile: {profile['viewport']['width']}x{profile['viewport']['height']} {profile['locale']} {profile['timezone']} hw={profile['hardwareConcurrency']} mem={profile['deviceMemory']} dpr={profile['deviceScaleFactor']}")
 
@@ -1499,7 +1525,6 @@ def main():
         for arg in extra_args.split():
             options.add_argument(arg)
 
-    # Mobile emulation
     vp = profile["viewport"]
     mobile_emu = {
         "deviceMetrics": {
@@ -1538,7 +1563,6 @@ def main():
             service = Service(executable_path=cm_path)
             driver = webdriver.Chrome(service=service, options=options)
         except Exception:
-            # Last resort: try with any chromedriver even if snap-wrapped
             for cpath in chromedriver_paths:
                 if os.path.exists(cpath):
                     try:
@@ -1557,6 +1581,27 @@ def main():
     except Exception:
         pass
     driver.execute_script(stealth_js)
+
+
+def debug_shot(label):
+    if not DEBUG:
+        return
+    d = Path(__file__).parent / "screenshots"
+    d.mkdir(exist_ok=True)
+    try:
+        driver.save_screenshot(str(d / f"{label}.png"))
+    except Exception:
+        pass
+
+
+# ══════════════════════════════════════════════════════════════
+#  Main
+# ══════════════════════════════════════════════════════════════
+
+def main():
+    global driver, destination_url, start_time, profile, proxy_blocked, PROXY, PROXY_HOST, PROXY_IP, PROXY_PORT
+
+    _create_driver()
 
     storage_dir = Path.home() / ".vplink3.0" / "storage"
     storage_file = storage_dir / "state.json"
@@ -1589,484 +1634,496 @@ def main():
     log(f"starting funnel for KEY={KEY}")
     if DEBUG:
         log("debug mode active")
-    nav_timeout = adpt_nav.get()
-    skip_main_loop = False
 
-    referer = os.environ.get("VPLINK_REFERER", "")
-    if referer:
-        log(f"navigating to YouTube first for referral: {referer[:60]}")
-        try:
-            adpt_load.set_page_load(driver)
-            nav_start = time.time()
-            driver.get(referer)
-            adpt_nav.observe(time.time() - nav_start)
-            human_delay(2000, 4000)
-            log("YouTube loaded, now navigating to vplink.in (browser will set Referer)")
-        except Exception as e:
-            log(f"YouTube navigation failed: {e}, continuing without referral")
-
-    log(f"navigating to vplink.in/{KEY}")
-    debug_shot("01-start")
-
-    adpt_load.set_page_load(driver)
-    nav_start = time.time()
-    try:
-        driver.get(f"https://{BASE_DOMAIN}/{KEY}")
-        adpt_nav.observe(time.time() - nav_start)
-    except Exception as e:
-        log(f"first goto failed: {e}, retrying...")
-        if PROXY and "timeout" in str(e).lower():
-            report_proxy_failure("first-goto-hang")
-            proxy_blocked = True
-            skip_main_loop = True
-        elif PROXY:
-            report_proxy_failure("first-goto-error")
-        time.sleep(2)
-        if not skip_main_loop:
-            try:
-                adpt_load.set_page_load(driver)
-                nav_start = time.time()
-                driver.get(f"https://{BASE_DOMAIN}/{KEY}")
-                adpt_nav.observe(time.time() - nav_start)
-            except Exception as e2:
-                log(f"second goto failed: {e2}")
-                adpt_nav.timeout_occured()
-                if PROXY:
-                    report_proxy_failure("second-goto-error")
-                proxy_blocked = True
-                skip_main_loop = True
-
-    if not skip_main_loop:
-        human_delay(2000, 4000)
-    debug_shot("02-after-nav")
-
-    if not skip_main_loop:
-        log("waiting for auto-redirect...")
-        redirect_start = time.time()
-        redirect_wait = int(adpt_redirect.get())
-        for i in range(redirect_wait):
-            ms(1000)
-            if "vplink.in" not in safe_url():
-                break
-        redirect_elapsed = time.time() - redirect_start
-        if "vplink.in" not in safe_url():
-            adpt_redirect.observe(redirect_elapsed)
-        debug_shot("03-after-redirect")
-
-        for attempt in range(2):
-            url = safe_url()
-            if "vplink.in" not in url or "cdn-cgi" in url:
-                break
-            has_gl = safe_eval("return !!document.getElementById('get-link');")
-            if has_gl:
-                log("page loaded (get-link visible)")
-                break
-            is_cf = safe_eval("""
-                var html = (document.documentElement?.innerHTML || '').substring(0, 2000);
-                return html.indexOf('cf-browser-verification') >= 0 || html.indexOf('challenge-form') >= 0
-                    || html.indexOf('cf-challenge') >= 0 || html.indexOf('_cf_chl_opt') >= 0;
-            """)
-            if is_cf:
-                log("Cloudflare challenge detected")
-            log(f"waiting for page content (attempt {attempt + 1})...")
-            cf_wait = int(adpt_poll.get())
-            loaded = False
-            for i in range(cf_wait):
-                ms(1000)
-                if "vplink.in" not in safe_url():
-                    loaded = True
-                    break
-                if safe_eval("return !!document.getElementById('get-link');"):
-                    loaded = True
-                    break
-            if loaded:
-                break
-            if is_cf:
-                log("Cloudflare not resolved, reloading...")
-                try:
-                    driver.refresh()
-                    time.sleep(4)
-                except Exception:
-                    pass
-            else:
-                break
-
-        if "vplink.in" in safe_url() and "cdn-cgi" not in safe_url():
-            has_gl = safe_eval("return !!document.getElementById('get-link');")
-            if not has_gl:
-                log("stuck on vplink.in — proxy may be blocking JS redirects")
-                proxy_blocked = True
-                if PROXY:
-                    report_proxy_failure("vplink-no-redirect")
-                skip_main_loop = True
-
-    vplink_arrivals = 0
-    intermediate_stuck_count = 0
-    last_base = ""
-    goog_reward_retries = 0
-    ad_hijack_count = 0
-    last_stuck_article = ""
-    max_goog_reward_retries = 3
-    max_url_visits = 4
-    max_ad_hijacks = 5
-    url_visits = {}
-    exhausted_cycles = 0
-
-    for cycle in range(30):
-        if destination_url or skip_main_loop:
+    for proxy_attempt in range(MAX_PROXY_RESTARTS + 1):
+      if proxy_attempt > 0:
+        log(f"--- proxy restart {proxy_attempt}/{MAX_PROXY_RESTARTS} ---")
+        if not restart_proxy():
             break
-        url = safe_url()
-        if not url:
-            ms(2000)
-            continue
-        base = url_base(url)
+        skip_main_loop = False
+        proxy_blocked = False
+      nav_timeout = adpt_nav.get()
+      if proxy_attempt == 0:
+        skip_main_loop = False
 
-        if check_ad_hijack():
-            ad_hijack_count += 1
-            if ad_hijack_count > max_ad_hijacks:
-                log(f"too many ad hijacks ({ad_hijack_count}), proxy likely injecting ads")
-                if PROXY:
-                    report_proxy_failure("too-many-ad-hijacks")
-                proxy_blocked = True
-                break
-            last_base = ""
-            continue
+      referer = os.environ.get("VPLINK_REFERER", "")
+      if referer:
+          log(f"navigating to YouTube first for referral: {referer[:60]}")
+          try:
+              adpt_load.set_page_load(driver)
+              nav_start = time.time()
+              driver.get(referer)
+              adpt_nav.observe(time.time() - nav_start)
+              human_delay(2000, 4000)
+              log("YouTube loaded, now navigating to vplink.in (browser will set Referer)")
+          except Exception as e:
+              log(f"YouTube navigation failed: {e}, continuing without referral")
 
-        url_key = url.split("#")[0]
-        is_intermediate = any(x in url for x in [
-            "learn_more.php", "studieseducates", "studiiessuniversitiess",
-            "universitesstudiiess", "studiessuniversitiess"
-        ])
-        if "vplink.in" not in url and not is_intermediate:
-            url_visits[url_key] = url_visits.get(url_key, 0) + 1
-            if url_visits[url_key] >= max_url_visits:
-                if last_stuck_article == url_key:
-                    log(f"STUCK LOOP: same article visited {url_visits[url_key]} times after force-nav, exiting")
-                    if PROXY:
-                        report_proxy_failure("article-stuck-loop")
-                    proxy_blocked = True
-                    break
-                last_stuck_article = url_key
-                log(f"STUCK: same article visited {url_visits[url_key]} times, force-navigating")
-                last_base = ""
-                try:
-                    adpt_load.set_page_load(driver)
-                    driver.get(f"https://{BASE_DOMAIN}/{KEY}")
-                except Exception:
-                    adpt_load.timeout_occured()
-                human_delay(3000, 5000)
-                continue
+      log(f"navigating to vplink.in/{KEY}")
+      debug_shot("01-start")
 
-        if base == last_base and "#" in url:
-            hash_val = url.split("#")[1]
-            log(f"[cycle {cycle + 1}] hash-only change ({hash_val}), waiting...")
-            if hash_val == "goog_rewarded":
-                handle_goog_rewarded()
-                safe_eval("if (window.location.hash) history.replaceState(null, '', window.location.pathname + window.location.search);")
-                human_delay(500, 1000)
-                remaining = get_countdown()
-                if remaining > 0:
-                    log(f"timer still at {remaining}, waiting for countdown...")
-                    wait_for_countdown("tp", int(adpt_poll.get()))
-                    human_delay(500, 1000)
-                clicked = navigate_learn_more()
-                if not clicked:
-                    clicked = human_click("#cross-snp2") or human_click("#btn7 > button") or human_click("#btn7") or human_click("#gt-link")
-                if clicked:
-                    log("clicked button after #goog_rewarded ad")
-                last_base = url_base(safe_url())
-                continue
-            human_delay(3000, 5000)
-            for _ in range(8):
-                ms(1000)
-                cur = safe_url()
-                if url_base(cur) != base:
-                    log(f"navigated away: {cur[:100]}")
-                    break
-            if url_base(safe_url()) == base:
-                log("still stuck on same page after hash wait, navigating to vplink.in")
-                last_base = ""
-                try:
-                    adpt_load.set_page_load(driver)
-                    driver.get(f"https://{BASE_DOMAIN}/{KEY}")
-                except Exception:
-                    adpt_load.timeout_occured()
-                human_delay(3000, 5000)
-            continue
+      adpt_load.set_page_load(driver)
+      nav_start = time.time()
+      try:
+          driver.get(f"https://{BASE_DOMAIN}/{KEY}")
+          adpt_nav.observe(time.time() - nav_start)
+      except Exception as e:
+          log(f"first goto failed: {e}, retrying...")
+          if PROXY and "timeout" in str(e).lower():
+              report_proxy_failure("first-goto-hang")
+              proxy_blocked = True
+              skip_main_loop = True
+          elif PROXY:
+              report_proxy_failure("first-goto-error")
+          time.sleep(2)
+          if not skip_main_loop:
+              try:
+                  adpt_load.set_page_load(driver)
+                  nav_start = time.time()
+                  driver.get(f"https://{BASE_DOMAIN}/{KEY}")
+                  adpt_nav.observe(time.time() - nav_start)
+              except Exception as e2:
+                  log(f"second goto failed: {e2}")
+                  adpt_nav.timeout_occured()
+                  if PROXY:
+                      report_proxy_failure("second-goto-error")
+                  proxy_blocked = True
+                  skip_main_loop = True
 
-        last_base = base
-        goog_reward_retries = 0
-        log(f"[cycle {cycle + 1}] {url[:110]}")
-        debug_shot(f"cycle-{cycle + 1}")
+      if not skip_main_loop:
+          human_delay(2000, 4000)
+      debug_shot("02-after-nav")
 
-        if is_destination(url):
-            destination_url = url
-            log("on destination URL already!")
-            break
+      if not skip_main_loop:
+          log("waiting for auto-redirect...")
+          redirect_start = time.time()
+          redirect_wait = int(adpt_redirect.get())
+          for i in range(redirect_wait):
+              ms(1000)
+              if "vplink.in" not in safe_url():
+                  break
+          redirect_elapsed = time.time() - redirect_start
+          if "vplink.in" not in safe_url():
+              adpt_redirect.observe(redirect_elapsed)
+          debug_shot("03-after-redirect")
 
-        if "vplink.in" in url and "cdn-cgi" not in url:
-            vplink_arrivals += 1
-            btn_state = safe_eval("""
-                var el = document.getElementById('get-link');
-                var gtLink = document.getElementById('gt-link');
-                if (!el && !gtLink) return 'missing';
-                if (gtLink && getComputedStyle(gtLink).display !== 'none') return 'ready';
-                if (el && el.classList.contains('disabled')) return 'disabled';
-                if (el && el.offsetParent === null) return 'hidden';
-                return 'ready';
-            """)
-            log(f"get-link state: {btn_state}")
-            if btn_state == "ready":
-                if do_get_link():
-                    break
-                log("get-link failed, reloading vplink.in")
-                try:
-                    main_handle = driver.current_window_handle
-                    for h in driver.window_handles:
-                        if h != main_handle:
-                            driver.switch_to.window(h)
-                            driver.close()
-                    driver.switch_to.window(main_handle)
-                    adpt_load.set_page_load(driver)
-                    driver.get(f"https://{BASE_DOMAIN}/{KEY}")
-                except Exception:
-                    adpt_load.timeout_occured()
-                human_delay(3000, 5000)
-                for i in range(15):
-                    ms(1000)
-                    if "vplink.in" not in safe_url():
-                        break
-                continue
-            if btn_state in ("missing", None):
-                if vplink_arrivals >= 5:
-                    log("stuck on vplink.in with no article page — proxy blocking JS redirects")
-                    proxy_blocked = True
-                    if PROXY:
-                        report_proxy_failure("vplink-get-link-missing")
-                    break
-                ms(2000)
-                continue
-            human_delay(1500, 3000)
-            continue
+          for attempt in range(2):
+              url = safe_url()
+              if "vplink.in" not in url or "cdn-cgi" in url:
+                  break
+              has_gl = safe_eval("return !!document.getElementById('get-link');")
+              if has_gl:
+                  log("page loaded (get-link visible)")
+                  break
+              is_cf = safe_eval("""
+                  var html = (document.documentElement?.innerHTML || '').substring(0, 2000);
+                  return html.indexOf('cf-browser-verification') >= 0 || html.indexOf('challenge-form') >= 0
+                      || html.indexOf('cf-challenge') >= 0 || html.indexOf('_cf_chl_opt') >= 0;
+              """)
+              if is_cf:
+                  log("Cloudflare challenge detected")
+              log(f"waiting for page content (attempt {attempt + 1})...")
+              cf_wait = int(adpt_poll.get())
+              loaded = False
+              for i in range(cf_wait):
+                  ms(1000)
+                  if "vplink.in" not in safe_url():
+                      loaded = True
+                      break
+                  if safe_eval("return !!document.getElementById('get-link');"):
+                      loaded = True
+                      break
+              if loaded:
+                  break
+              if is_cf:
+                  log("Cloudflare not resolved, reloading...")
+                  try:
+                      driver.refresh()
+                      time.sleep(4)
+                  except Exception:
+                      pass
+              else:
+                  break
 
-        if url.startswith("chrome-error://"):
-            log("chrome-error, force to vplink.in")
-            if PROXY:
-                report_proxy_failure("chrome-error")
-            try:
-                adpt_load.set_page_load(driver)
-                driver.get(f"https://{BASE_DOMAIN}/{KEY}")
-            except Exception:
-                adpt_load.timeout_occured()
-            human_delay(3000, 5000)
-            continue
+          if "vplink.in" in safe_url() and "cdn-cgi" not in safe_url():
+              has_gl = safe_eval("return !!document.getElementById('get-link');")
+              if not has_gl:
+                  log("stuck on vplink.in — proxy may be blocking JS redirects")
+                  proxy_blocked = True
+                  if PROXY:
+                      report_proxy_failure("vplink-no-redirect")
+                  skip_main_loop = True
 
-        if "#goog_rewarded" in url:
-            goog_reward_retries += 1
-            log(f"#goog_rewarded in main loop (attempt {goog_reward_retries})")
-            if goog_reward_retries > max_goog_reward_retries:
-                log(f"#goog_rewarded stuck after {goog_reward_retries} retries, force-navigating")
-                goog_reward_retries = 0
-                last_base = ""
-                try:
-                    adpt_load.set_page_load(driver)
-                    driver.get(f"https://{BASE_DOMAIN}/{KEY}")
-                except Exception:
-                    adpt_load.timeout_occured()
-                human_delay(3000, 5000)
-                continue
-            rewarded_ok = handle_goog_rewarded()
-            if rewarded_ok:
-                safe_eval("if (window.location.hash) history.replaceState(null, '', window.location.pathname + window.location.search);")
-                human_delay(500, 1000)
-                remaining = get_countdown()
-                if remaining > 0:
-                    log(f"timer at {remaining} after rewarded ad, waiting...")
-                    wait_for_countdown(None, remaining + 10)
-                    human_delay(500, 1000)
-                clicked = navigate_learn_more()
-                if not clicked:
-                    clicked = human_click("#cross-snp2") or human_click("#btn7 > button") or human_click("#btn7") or human_click("#gt-link")
-                if clicked:
-                    log("clicked button after #goog_rewarded")
-            last_base = url_base(safe_url())
-            continue
+      vplink_arrivals = 0
+      intermediate_stuck_count = 0
+      last_base = ""
+      goog_reward_retries = 0
+      ad_hijack_count = 0
+      last_stuck_article = ""
+      max_goog_reward_retries = 3
+      max_url_visits = 4
+      max_ad_hijacks = 5
+      url_visits = {}
+      exhausted_cycles = 0
 
-        if any(x in url for x in ["learn_more.php", "studieseducates", "studiiessuniversitiess", "universitesstudiiess", "studiessuniversitiess"]):
-            log("intermediate redirect page, waiting for auto-redirect...")
-            intermediate_base = url_base(url)
-            redirected = False
-            intermediate_wait = int(adpt_redirect.get())
-            same_url_reloads = 0
+      for cycle in range(30):
+          if destination_url or skip_main_loop:
+              break
+          url = safe_url()
+          if not url:
+              ms(2000)
+              continue
+          base = url_base(url)
 
-            captured_nav_url = None
-            for w in range(intermediate_wait):
-                ms(1000)
-                cur = safe_url()
-                cur_base = url_base(cur)
-                if captured_nav_url:
-                    log(f"captured nav redirect: {captured_nav_url[:100]}")
-                    try:
-                        adpt_load.set_page_load(driver)
-                        driver.get(captured_nav_url)
-                    except Exception:
-                        pass
-                    human_delay(500, 1500)
-                    redirected = True
-                    break
-                intermediate_skip = any(x in cur for x in [
-                    "learn_more.php", "studieseducates", "studiiessuniversitiess",
-                    "universitesstudiiess", "studiessuniversitiess"
-                ])
-                if cur_base != intermediate_base and not intermediate_skip:
-                    log(f"redirected to: {cur[:100]}")
-                    human_delay(500, 1500)
-                    redirected = True
-                    break
-                if w > 0 and w % 5 == 0:
-                    same_url_reloads += 1
-                    if same_url_reloads >= 2:
-                        log(f"intermediate self-reload detected ({same_url_reloads}x), proxy can't execute JS redirect")
-                        break
-                if w == 8 and not redirected:
-                    extracted_url = safe_eval("""
-                        var html = document.documentElement.outerHTML || '';
-                        var m = html.match(/window\\.location(?:\\.href)?\\s*=\\s*['"](\\/[^'"]+)['"]/);
-                        if (m && m[1].indexOf('studiiessuniversitiess') < 0 && m[1].indexOf('learn_more') < 0) return m[1];
-                        m = html.match(/window\\.location\\.replace\\s*\\(\\s*['"](\\/[^'"]+)['"]\\s*\\)/);
-                        if (m && m[1].indexOf('studiiessuniversitiess') < 0 && m[1].indexOf('learn_more') < 0) return m[1];
-                        var meta = document.querySelector('meta[http-equiv="refresh"]');
-                        if (meta) {{
-                            var urlMatch = meta.content.match(/url=(.+)/i);
-                            if (urlMatch) return urlMatch[1].trim();
-                        }}
-                        var links = document.querySelectorAll('a[href]');
-                        for (var i = 0; i < links.length; i++) {{
-                            var href = links[i].href;
-                            if (href && href.indexOf('javascript:') < 0 && href.indexOf('studiiessuniversitiess') < 0
-                                && href.indexOf('universitesstudiiess') < 0 && href.indexOf('learn_more') < 0
-                                && href.indexOf('vplink.in') < 0 && href.startsWith('http')) {{
-                                return href;
-                            }}
-                        }}
-                        return null;
-                    """)
-                    if extracted_url:
-                        log(f"extracted redirect URL: {extracted_url[:100]}")
-                        full_url = extracted_url if extracted_url.startswith("http") else f"https://{urlparse(url).hostname}{extracted_url}"
-                        try:
-                            adpt_load.set_page_load(driver)
-                            driver.get(full_url)
-                        except Exception:
-                            pass
-                        human_delay(1000, 2000)
-                        redirected = True
-                        break
-                if w == 12 and not redirected:
-                    forced_url = safe_eval("""
-                        var scripts = document.querySelectorAll('script:not([src])');
-                        for (var i = 0; i < scripts.length; i++) {{
-                            var t = scripts[i].textContent || '';
-                            var timerMatch = t.match(/setTimeout\\s*\\(\\s*(?:function\\s*\\(\\)\\s*\\{?\\s*)?window\\.location(?:\\.href)?\\s*=\\s*['"]([^'"]+)['"]/);
-                            if (timerMatch && timerMatch[1].indexOf('studiiessuniversitiess') < 0) return timerMatch[1];
-                        }}
-                        return null;
-                    """)
-                    if forced_url:
-                        log(f"forced redirect URL: {forced_url[:100]}")
-                        full_url = forced_url if forced_url.startswith("http") else f"https://{urlparse(url).hostname}{forced_url}"
-                        try:
-                            adpt_load.set_page_load(driver)
-                            driver.get(full_url)
-                        except Exception:
-                            pass
-                        human_delay(1000, 2000)
-                        redirected = True
-                        break
+          if check_ad_hijack():
+              ad_hijack_count += 1
+              if ad_hijack_count > max_ad_hijacks:
+                  log(f"too many ad hijacks ({ad_hijack_count}), proxy likely injecting ads")
+                  if PROXY:
+                      report_proxy_failure("too-many-ad-hijacks")
+                  proxy_blocked = True
+                  break
+              last_base = ""
+              continue
 
-            if not redirected:
-                intermediate_stuck_count += 1
-                log(f"intermediate page not redirecting (stuck #{intermediate_stuck_count})")
-                if intermediate_stuck_count >= 2:
-                    log("intermediate stuck 2x — proxy cannot execute JS redirect, blacklisting")
-                    if PROXY:
-                        report_proxy_failure("intermediate-stuck")
-                    proxy_blocked = True
-                    break
-            else:
-                intermediate_stuck_count = 0
-            last_base = url_base(safe_url())
-            continue
+          url_key = url.split("#")[0]
+          is_intermediate = any(x in url for x in [
+              "learn_more.php", "studieseducates", "studiiessuniversitiess",
+              "universitesstudiiess", "studiessuniversitiess"
+          ])
+          if "vplink.in" not in url and not is_intermediate:
+              url_visits[url_key] = url_visits.get(url_key, 0) + 1
+              if url_visits[url_key] >= max_url_visits:
+                  if last_stuck_article == url_key:
+                      log(f"STUCK LOOP: same article visited {url_visits[url_key]} times after force-nav, exiting")
+                      if PROXY:
+                          report_proxy_failure("article-stuck-loop")
+                      proxy_blocked = True
+                      break
+                  last_stuck_article = url_key
+                  log(f"STUCK: same article visited {url_visits[url_key]} times, force-navigating")
+                  last_base = ""
+                  try:
+                      adpt_load.set_page_load(driver)
+                      driver.get(f"https://{BASE_DOMAIN}/{KEY}")
+                  except Exception:
+                      adpt_load.timeout_occured()
+                  human_delay(3000, 5000)
+                  continue
 
-        navigated = handle_article()
-        if navigated:
-            inter_delay = rand(8000, 22000)
-            log(f"inter-article delay: {inter_delay // 1000}s")
-            ms(inter_delay)
-            exhausted_cycles = 0
-            continue
-        exhausted_cycles += 1
-        log(f"exhausted (x{exhausted_cycles}), force-navigating to vplink.in")
-        if exhausted_cycles >= 2:
-            log("2 consecutive exhausted cycles — breaking to final get-link")
-            break
-        last_base = ""
-        try:
-            adpt_load.set_page_load(driver)
-            driver.get(f"https://{BASE_DOMAIN}/{KEY}")
-        except Exception:
-            adpt_load.timeout_occured()
-        human_delay(2000, 4000)
-        for i in range(int(adpt_poll.get())):
-            ms(1000)
-            if "vplink.in" not in safe_url():
-                break
+          if base == last_base and "#" in url:
+              hash_val = url.split("#")[1]
+              log(f"[cycle {cycle + 1}] hash-only change ({hash_val}), waiting...")
+              if hash_val == "goog_rewarded":
+                  handle_goog_rewarded()
+                  safe_eval("if (window.location.hash) history.replaceState(null, '', window.location.pathname + window.location.search);")
+                  human_delay(500, 1000)
+                  remaining = get_countdown()
+                  if remaining > 0:
+                      log(f"timer still at {remaining}, waiting for countdown...")
+                      wait_for_countdown("tp", int(adpt_poll.get()))
+                      human_delay(500, 1000)
+                  clicked = navigate_learn_more()
+                  if not clicked:
+                      clicked = human_click("#cross-snp2") or human_click("#btn7 > button") or human_click("#btn7") or human_click("#gt-link")
+                  if clicked:
+                      log("clicked button after #goog_rewarded ad")
+                  last_base = url_base(safe_url())
+                  continue
+              human_delay(3000, 5000)
+              for _ in range(8):
+                  ms(1000)
+                  cur = safe_url()
+                  if url_base(cur) != base:
+                      log(f"navigated away: {cur[:100]}")
+                      break
+              if url_base(safe_url()) == base:
+                  log("still stuck on same page after hash wait, navigating to vplink.in")
+                  last_base = ""
+                  try:
+                      adpt_load.set_page_load(driver)
+                      driver.get(f"https://{BASE_DOMAIN}/{KEY}")
+                  except Exception:
+                      adpt_load.timeout_occured()
+                  human_delay(3000, 5000)
+              continue
 
-    if not destination_url and not proxy_blocked:
-        log("running final fallback...")
-        got_dest = False
-        if "vplink.in" in safe_url():
-            got_dest = do_get_link()
-        if not got_dest:
-            vplink_href = safe_eval("""
-                var links = document.querySelectorAll('a[href*="vplink.in"]');
-                for (var i = 0; i < links.length; i++) {{
-                    if (links[i].href && links[i].href.indexOf('cdn-cgi') < 0) return links[i].href;
-                }}
-                return null;
-            """)
-            if vplink_href:
-                log("found vplink link on page")
-                try:
-                    adpt_load.set_page_load(driver)
-                    driver.get(vplink_href)
-                except Exception:
-                    adpt_load.timeout_occured()
-                human_delay(3000, 5000)
-                if "vplink.in" in safe_url():
-                    got_dest = do_get_link()
-        if not got_dest:
-            for a in range(3):
-                log(f"direct attempt {a + 1}")
-                try:
-                    adpt_load.set_page_load(driver)
-                    driver.get(f"https://{BASE_DOMAIN}/{KEY}")
-                except Exception:
-                    adpt_load.timeout_occured()
-                for w in range(int(adpt_poll.get())):
-                    ms(500)
-                    cur = safe_url()
-                    if "vplink.in" in cur:
-                        has_gl = safe_eval("return !!document.getElementById('get-link');")
-                        if has_gl and do_get_link():
-                            got_dest = True
-                            break
-                    else:
-                        break
-                if got_dest:
-                    break
-        if got_dest and not destination_url:
-            destination_url = safe_url()
+          last_base = base
+          goog_reward_retries = 0
+          log(f"[cycle {cycle + 1}] {url[:110]}")
+          debug_shot(f"cycle-{cycle + 1}")
+
+          if is_destination(url):
+              destination_url = url
+              log("on destination URL already!")
+              break
+
+          if "vplink.in" in url and "cdn-cgi" not in url:
+              vplink_arrivals += 1
+              btn_state = safe_eval("""
+                  var el = document.getElementById('get-link');
+                  var gtLink = document.getElementById('gt-link');
+                  if (!el && !gtLink) return 'missing';
+                  if (gtLink && getComputedStyle(gtLink).display !== 'none') return 'ready';
+                  if (el && el.classList.contains('disabled')) return 'disabled';
+                  if (el && el.offsetParent === null) return 'hidden';
+                  return 'ready';
+              """)
+              log(f"get-link state: {btn_state}")
+              if btn_state == "ready":
+                  if do_get_link():
+                      break
+                  log("get-link failed, reloading vplink.in")
+                  try:
+                      main_handle = driver.current_window_handle
+                      for h in driver.window_handles:
+                          if h != main_handle:
+                              driver.switch_to.window(h)
+                              driver.close()
+                      driver.switch_to.window(main_handle)
+                      adpt_load.set_page_load(driver)
+                      driver.get(f"https://{BASE_DOMAIN}/{KEY}")
+                  except Exception:
+                      adpt_load.timeout_occured()
+                  human_delay(3000, 5000)
+                  for i in range(15):
+                      ms(1000)
+                      if "vplink.in" not in safe_url():
+                          break
+                  continue
+              if btn_state in ("missing", None):
+                  if vplink_arrivals >= 5:
+                      log("stuck on vplink.in with no article page — proxy blocking JS redirects")
+                      proxy_blocked = True
+                      if PROXY:
+                          report_proxy_failure("vplink-get-link-missing")
+                      break
+                  ms(2000)
+                  continue
+              human_delay(1500, 3000)
+              continue
+
+          if url.startswith("chrome-error://"):
+              log("chrome-error, force to vplink.in")
+              if PROXY:
+                  report_proxy_failure("chrome-error")
+              try:
+                  adpt_load.set_page_load(driver)
+                  driver.get(f"https://{BASE_DOMAIN}/{KEY}")
+              except Exception:
+                  adpt_load.timeout_occured()
+              human_delay(3000, 5000)
+              continue
+
+          if "#goog_rewarded" in url:
+              goog_reward_retries += 1
+              log(f"#goog_rewarded in main loop (attempt {goog_reward_retries})")
+              if goog_reward_retries > max_goog_reward_retries:
+                  log(f"#goog_rewarded stuck after {goog_reward_retries} retries, force-navigating")
+                  goog_reward_retries = 0
+                  last_base = ""
+                  try:
+                      adpt_load.set_page_load(driver)
+                      driver.get(f"https://{BASE_DOMAIN}/{KEY}")
+                  except Exception:
+                      adpt_load.timeout_occured()
+                  human_delay(3000, 5000)
+                  continue
+              rewarded_ok = handle_goog_rewarded()
+              if rewarded_ok:
+                  safe_eval("if (window.location.hash) history.replaceState(null, '', window.location.pathname + window.location.search);")
+                  human_delay(500, 1000)
+                  remaining = get_countdown()
+                  if remaining > 0:
+                      log(f"timer at {remaining} after rewarded ad, waiting...")
+                      wait_for_countdown(None, remaining + 10)
+                      human_delay(500, 1000)
+                  clicked = navigate_learn_more()
+                  if not clicked:
+                      clicked = human_click("#cross-snp2") or human_click("#btn7 > button") or human_click("#btn7") or human_click("#gt-link")
+                  if clicked:
+                      log("clicked button after #goog_rewarded")
+              last_base = url_base(safe_url())
+              continue
+
+          if any(x in url for x in ["learn_more.php", "studieseducates", "studiiessuniversitiess", "universitesstudiiess", "studiessuniversitiess"]):
+              log("intermediate redirect page, waiting for auto-redirect...")
+              intermediate_base = url_base(url)
+              redirected = False
+              intermediate_wait = int(adpt_redirect.get())
+              same_url_reloads = 0
+
+              captured_nav_url = None
+              for w in range(intermediate_wait):
+                  ms(1000)
+                  cur = safe_url()
+                  cur_base = url_base(cur)
+                  if captured_nav_url:
+                      log(f"captured nav redirect: {captured_nav_url[:100]}")
+                      try:
+                          adpt_load.set_page_load(driver)
+                          driver.get(captured_nav_url)
+                      except Exception:
+                          pass
+                      human_delay(500, 1500)
+                      redirected = True
+                      break
+                  intermediate_skip = any(x in cur for x in [
+                      "learn_more.php", "studieseducates", "studiiessuniversitiess",
+                      "universitesstudiiess", "studiessuniversitiess"
+                  ])
+                  if cur_base != intermediate_base and not intermediate_skip:
+                      log(f"redirected to: {cur[:100]}")
+                      human_delay(500, 1500)
+                      redirected = True
+                      break
+                  if w > 0 and w % 5 == 0:
+                      same_url_reloads += 1
+                      if same_url_reloads >= 2:
+                          log(f"intermediate self-reload detected ({same_url_reloads}x), proxy can't execute JS redirect")
+                          break
+                  if w == 8 and not redirected:
+                      extracted_url = safe_eval("""
+                          var html = document.documentElement.outerHTML || '';
+                          var m = html.match(/window\\.location(?:\\.href)?\\s*=\\s*['"](\\/[^'"]+)['"]/);
+                          if (m && m[1].indexOf('studiiessuniversitiess') < 0 && m[1].indexOf('learn_more') < 0) return m[1];
+                          m = html.match(/window\\.location\\.replace\\s*\\(\\s*['"](\\/[^'"]+)['"]\\s*\\)/);
+                          if (m && m[1].indexOf('studiiessuniversitiess') < 0 && m[1].indexOf('learn_more') < 0) return m[1];
+                          var meta = document.querySelector('meta[http-equiv="refresh"]');
+                          if (meta) {{
+                              var urlMatch = meta.content.match(/url=(.+)/i);
+                              if (urlMatch) return urlMatch[1].trim();
+                          }}
+                          var links = document.querySelectorAll('a[href]');
+                          for (var i = 0; i < links.length; i++) {{
+                              var href = links[i].href;
+                              if (href && href.indexOf('javascript:') < 0 && href.indexOf('studiiessuniversitiess') < 0
+                                  && href.indexOf('universitesstudiiess') < 0 && href.indexOf('learn_more') < 0
+                                  && href.indexOf('vplink.in') < 0 && href.startsWith('http')) {{
+                                  return href;
+                              }}
+                          }}
+                          return null;
+                      """)
+                      if extracted_url:
+                          log(f"extracted redirect URL: {extracted_url[:100]}")
+                          full_url = extracted_url if extracted_url.startswith("http") else f"https://{urlparse(url).hostname}{extracted_url}"
+                          try:
+                              adpt_load.set_page_load(driver)
+                              driver.get(full_url)
+                          except Exception:
+                              pass
+                          human_delay(1000, 2000)
+                          redirected = True
+                          break
+                  if w == 12 and not redirected:
+                      forced_url = safe_eval("""
+                          var scripts = document.querySelectorAll('script:not([src])');
+                          for (var i = 0; i < scripts.length; i++) {{
+                              var t = scripts[i].textContent || '';
+                              var timerMatch = t.match(/setTimeout\\s*\\(\\s*(?:function\\s*\\(\\)\\s*\\{?\\s*)?window\\.location(?:\\.href)?\\s*=\\s*['"]([^'"]+)['"]/);
+                              if (timerMatch && timerMatch[1].indexOf('studiiessuniversitiess') < 0) return timerMatch[1];
+                          }}
+                          return null;
+                      """)
+                      if forced_url:
+                          log(f"forced redirect URL: {forced_url[:100]}")
+                          full_url = forced_url if forced_url.startswith("http") else f"https://{urlparse(url).hostname}{forced_url}"
+                          try:
+                              adpt_load.set_page_load(driver)
+                              driver.get(full_url)
+                          except Exception:
+                              pass
+                          human_delay(1000, 2000)
+                          redirected = True
+                          break
+
+              if not redirected:
+                  intermediate_stuck_count += 1
+                  log(f"intermediate page not redirecting (stuck #{intermediate_stuck_count})")
+                  if intermediate_stuck_count >= 2:
+                      log("intermediate stuck 2x — proxy cannot execute JS redirect, blacklisting")
+                      if PROXY:
+                          report_proxy_failure("intermediate-stuck")
+                      proxy_blocked = True
+                      break
+              else:
+                  intermediate_stuck_count = 0
+              last_base = url_base(safe_url())
+              continue
+
+          navigated = handle_article()
+          if navigated:
+              inter_delay = rand(8000, 22000)
+              log(f"inter-article delay: {inter_delay // 1000}s")
+              ms(inter_delay)
+              exhausted_cycles = 0
+              continue
+          exhausted_cycles += 1
+          log(f"exhausted (x{exhausted_cycles}), force-navigating to vplink.in")
+          if exhausted_cycles >= 2:
+              log("2 consecutive exhausted cycles — breaking to final get-link")
+              break
+          last_base = ""
+          try:
+              adpt_load.set_page_load(driver)
+              driver.get(f"https://{BASE_DOMAIN}/{KEY}")
+          except Exception:
+              adpt_load.timeout_occured()
+          human_delay(2000, 4000)
+          for i in range(int(adpt_poll.get())):
+              ms(1000)
+              if "vplink.in" not in safe_url():
+                  break
+
+      if not destination_url and not proxy_blocked:
+          log("running final fallback...")
+          got_dest = False
+          if "vplink.in" in safe_url():
+              got_dest = do_get_link()
+          if not got_dest:
+              vplink_href = safe_eval("""
+                  var links = document.querySelectorAll('a[href*="vplink.in"]');
+                  for (var i = 0; i < links.length; i++) {{
+                      if (links[i].href && links[i].href.indexOf('cdn-cgi') < 0) return links[i].href;
+                  }}
+                  return null;
+              """)
+              if vplink_href:
+                  log("found vplink link on page")
+                  try:
+                      adpt_load.set_page_load(driver)
+                      driver.get(vplink_href)
+                  except Exception:
+                      adpt_load.timeout_occured()
+                  human_delay(3000, 5000)
+                  if "vplink.in" in safe_url():
+                      got_dest = do_get_link()
+          if not got_dest:
+              for a in range(3):
+                  log(f"direct attempt {a + 1}")
+                  try:
+                      adpt_load.set_page_load(driver)
+                      driver.get(f"https://{BASE_DOMAIN}/{KEY}")
+                  except Exception:
+                      adpt_load.timeout_occured()
+                  for w in range(int(adpt_poll.get())):
+                      ms(500)
+                      cur = safe_url()
+                      if "vplink.in" in cur:
+                          has_gl = safe_eval("return !!document.getElementById('get-link');")
+                          if has_gl and do_get_link():
+                              got_dest = True
+                              break
+                      else:
+                          break
+                  if got_dest:
+                      break
+          if got_dest and not destination_url:
+              destination_url = safe_url()
+
+      if destination_url or not proxy_blocked:
+          break
 
     print("\n" + "=" * 39)
     print("  " + ("DESTINATION URL:" if destination_url else "NO DESTINATION"))

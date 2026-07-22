@@ -338,9 +338,10 @@ def cmd_bulk_deploy(args):
     supabase_url, supabase_key, supabase_secret = _resolve_supabase(args)
     _say(f"Bulk deploying {C}{count}{N} automations as {C}{active}{N}")
     if not _confirm(f"Create {count} repos with random names?"): _say("Cancelled"); return
-    if count > 100:
-        _warn(f"Large batch ({count}) — expect ~30s per repo due to API + git operations.")
-        if not _confirm(f"Continue with {count} repos?"): _say("Cancelled"); return
+    if count > 20:
+        _warn(f"Large batch ({count}) — GitHub may suspend accounts for rapid mass operations.")
+        _warn("Recommended: deploy 10-20 at a time, wait 10+ minutes between batches.")
+        if not _confirm(f"Continue with {count} repos anyway?"): _say("Cancelled"); return
     print()
     _say(f"{C}▸{N} Cloning template (one-time)...")
     with tempfile.TemporaryDirectory(prefix="vplink247-bulk-") as tmpdir:
@@ -359,6 +360,8 @@ def cmd_bulk_deploy(args):
             except Exception as e:
                 _fail(f"  {rname}: {e}")
                 fail += 1
+            if i < count - 1:
+                time.sleep(2)
             if (i + 1) % 10 == 0 or i == count - 1:
                 _say(f"  Progress: {i+1}/{count} ({ok} ok, {fail} failed)")
     print()
@@ -369,14 +372,6 @@ def cmd_bulk_deploy(args):
     print(f"  {G}│{N}  {R}Failed:{N}  {fail:<5} {' ' * 32} {G}│{N}")
     print(f"  {G}╰{'─'*46}╯{N}")
     print()
-    print(f"  {G}╭{'─'*46}╮{N}")
-    print(f"  {G}│{N}  {B}✓ DEPLOYED SUCCESSFULLY{N}{' ' * 24} {G}│{N}")
-    print(f"  {G}├{'─'*46}┤{N}")
-    print(f"  {G}│{N}  Repo:  {C}{repo['html_url']:<39}{N} {G}│{N}")
-    print(f"  {G}│{N}  Name:  {C}{repo_name:<39}{N} {G}│{N}")
-    print(f"  {G}│{N}  Key:   {C}{key:<39}{N} {G}│{N}")
-    print(f"  {G}╰{'─'*46}╯{N}")
-    print(f"\n  Run {C}vplink247 test {repo_name}{N} to verify it works.\n")
 
 def cmd_deploy_list(_args):
     deps = load_deployments()
@@ -394,8 +389,12 @@ def cmd_deploy_remove(args):
     accounts = load_accounts()
     token = accounts.get(info["account"], {}).get("token")
     if token and _confirm(f"Also delete the GitHub repo '{info['account']}/{args.name}'?"):
-        _api(token, "DELETE", f"/repos/{info['account']}/{args.name}")
-        _ok("Repo deleted")
+        try:
+            _api(token, "DELETE", f"/repos/{info['account']}/{args.name}")
+            _ok("Repo deleted")
+        except SystemExit:
+            _warn("Repo may already be deleted or inaccessible")
+        time.sleep(2)
     del deps[args.name]; save_deployments(deps)
     _ok(f"Deployment '{args.name}' removed")
 
@@ -687,15 +686,21 @@ def cmd_status(_args):
     _say(f"{'Deployments:':18} {len(deps)}")
     print()
     if not deps: _warn("No deployments. Use 'vplink247 deploy'"); return
+    stale = []
     for name, info in sorted(deps.items()):
         accounts_data = load_accounts()
         token = accounts_data.get(info["account"], {}).get("token")
         status_str = "?"
         if token:
             try:
+                _api(token, "GET", f"/repos/{info['account']}/{name}")
                 runs = _api(token, "GET", f"/repos/{info['account']}/{name}/actions/runs?per_page=1")
                 for r in runs.get("workflow_runs", []):
                     status_str = r.get("conclusion") or r.get("status", "?")
+            except SystemExit:
+                status_str = f"{R}deleted{N}"
+                stale.append(name)
+                continue
             except Exception:
                 status_str = f"{R}err{N}"
         color = G if status_str == "success" else (Y if status_str in ("in_progress","queued","pending") else R)
@@ -704,6 +709,12 @@ def cmd_status(_args):
         print(f"      {'Status:':12} {color}{status_str}{N}")
         print(f"      {'URL:':12} {info.get('repo_url','')}")
         print()
+    if stale:
+        deps = load_deployments()
+        for name in stale:
+            deps.pop(name, None)
+        save_deployments(deps)
+        _warn(f"Cleaned up {len(stale)} stale deployment(s): {', '.join(stale)}")
 
 
 # ── Menu system ──────────────────────────────────────────

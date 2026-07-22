@@ -1463,9 +1463,18 @@ def do_get_link():
                 if popup_url and "about:blank" not in popup_url and "chrome-error" not in popup_url:
                     if i < 15 or i % 5 == 0:
                         log(f"[get-link {i}s] popup: {popup_url[:100]}")
+                    if is_destination(popup_url):
+                        destination_url = popup_url
+                        log(f"destination (popup match): {popup_url[:100]}")
+                        try:
+                            driver.close()
+                            driver.switch_to.window(driver.window_handles[0])
+                        except Exception:
+                            pass
+                        return True
                     is_redirect = any(x in popup_url for x in [
                         "linkedin.com/redir", "google.com/url", "facebook.com/l.php", "t.co/",
-                        "wistfulseverely.com", "one-vv", "amazingbaba.com", "lnkd.in"
+                        "wistfulseverely.com", "one-vv", "lnkd.in"
                     ])
                     if is_redirect:
                         log(f"redirect/tracking URL detected ({popup_url[:60]}), waiting for final...")
@@ -1481,7 +1490,7 @@ def do_get_link():
                                     popup_url = new_url
                                     if not any(x in popup_url for x in [
                                         "wistfulseverely.com", "one-vv", "linkedin.com/redir",
-                                        "google.com/url", "facebook.com/l.php", "t.co/", "amazingbaba.com", "lnkd.in"
+                                        "google.com/url", "facebook.com/l.php", "t.co/", "lnkd.in"
                                     ]):
                                         redirect_done = True
                                         break

@@ -181,8 +181,7 @@ def safe_eval(script, *args):
         return None
 
 
-async def _not_used():
-    pass
+
 
 
 def report_proxy_failure(reason):
@@ -914,7 +913,7 @@ def handle_ce():
 
     log("waiting for ce-wait1 to become visible (after reload with cookie)...")
     ce_wait_visible = False
-    for w in range(5):
+    for w in range(45):
         ce_wait_visible = safe_eval("""
             var el = document.getElementById('ce-wait1');
             if (!el) return false;
@@ -923,6 +922,15 @@ def handle_ce():
         if ce_wait_visible:
             log(f"ce-wait1 visible after {w+1}s")
             break
+        if w > 0 and w % 5 == 0:
+            safe_eval("""
+                var adContainer = document.getElementById('overcn');
+                if (adContainer) {
+                    var iframe = adContainer.querySelector('iframe');
+                    if (iframe) { iframe.focus(); iframe.click(); }
+                    else adContainer.click();
+                }
+            """)
         if check_ad_hijack():
             return True
         ms(1000)
@@ -1381,7 +1389,6 @@ def do_get_link():
 
         captured_redirects = []
         try:
-            driver.execute_cdp_cmd("Network.enable", {"maxTotalBufferSize": 1048576})
             def _on_response(event):
                 try:
                     url = event.get("params", {}).get("response", {}).get("url", "")
@@ -1727,6 +1734,11 @@ def _create_driver():
 
     driver.set_page_load_timeout(90)
     driver.implicitly_wait(0)
+
+    try:
+        driver.execute_cdp_cmd("Network.enable", {"maxTotalBufferSize": 1048576})
+    except Exception:
+        pass
 
     stealth_js = _build_stealth_js(profile)
     try:
@@ -2103,24 +2115,44 @@ def main():
               log("intermediate redirect page, waiting for auto-redirect...")
               intermediate_base = url_base(url)
               redirected = False
-              intermediate_wait = int(adpt_redirect.get())
+              intermediate_wait = max(int(adpt_redirect.get()), 20)
               same_url_reloads = 0
 
-              captured_nav_url = None
+              _nav_captured = {"url": None}
+              _nav_active = [True]
+              _nav_last_url = [safe_url()]
+              import threading
+              def _nav_poll():
+                  while _nav_active[0]:
+                      try:
+                          cur = driver.current_url
+                          if cur and cur != _nav_last_url[0]:
+                              _nav_last_url[0] = cur
+                              if not any(x in cur for x in [
+                                  "studiiess", "studieseducates", "learn_more", "vplink.in",
+                                  "about:", "chrome-", "cdn-cgi"
+                              ]):
+                                  _nav_captured["url"] = cur
+                      except Exception:
+                          pass
+                      time.sleep(0.3)
+              _nav_thread = threading.Thread(target=_nav_poll, daemon=True)
+              _nav_thread.start()
+
               for w in range(intermediate_wait):
                   ms(1000)
-                  cur = safe_url()
-                  cur_base = url_base(cur)
-                  if captured_nav_url:
-                      log(f"captured nav redirect: {captured_nav_url[:100]}")
+                  if _nav_captured["url"]:
+                      log(f"poll captured nav: {_nav_captured['url'][:100]}")
                       try:
                           adpt_load.set_page_load(driver)
-                          driver.get(captured_nav_url)
+                          driver.get(_nav_captured["url"])
                       except Exception:
                           pass
                       human_delay(500, 1500)
                       redirected = True
                       break
+                  cur = safe_url()
+                  cur_base = url_base(cur)
                   intermediate_skip = any(x in cur for x in [
                       "learn_more.php", "studieseducates", "studiiessuniversitiess",
                       "universitesstudiiess", "studiessuniversitiess"
@@ -2190,6 +2222,8 @@ def main():
                           human_delay(1000, 2000)
                           redirected = True
                           break
+
+              _nav_active[0] = False
 
               if not redirected:
                   intermediate_stuck_count += 1

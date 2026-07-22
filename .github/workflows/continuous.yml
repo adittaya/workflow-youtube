@@ -67,13 +67,42 @@ jobs:
           echo "proxy=$PROXY" >> $GITHUB_OUTPUT
           echo "Got proxy: $PROXY"
 
-      - name: Run automation
+      - name: Run automation (with proxy retry)
         id: automate
         env:
-          VPLINK_PROXY: http://${{ steps.proxy.outputs.proxy }}
           CHROMIUM_PATH: /usr/bin/google-chrome
         run: |
-          python3 automation.py "$VPLINK_KEY" 2>&1 || :
+          MAX_ATTEMPTS=3
+          MIN_RUNTIME=120
+          for attempt in $(seq 1 $MAX_ATTEMPTS); do
+            PROXY="${{ steps.proxy.outputs.proxy }}"
+            if [ -z "$PROXY" ]; then
+              echo "No proxy available, running direct..."
+              unset VPLINK_PROXY
+            else
+              export VPLINK_PROXY="http://$PROXY"
+            fi
+
+            echo "=== Attempt $attempt/$MAX_ATTEMPTS (proxy: $PROXY) ==="
+            START=$(date +%s)
+            python3 automation.py "$VPLINK_KEY" 2>&1 || true
+            END=$(date +%s)
+            ELAPSED=$((END - START))
+
+            echo "Attempt $attempt finished in ${ELAPSED}s"
+            if [ "$ELAPSED" -ge "$MIN_RUNTIME" ]; then
+              echo "Ran for ${ELAPSED}s (>= ${MIN_RUNTIME}s) — proxy worked"
+              break
+            fi
+
+            if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+              echo "Ran only ${ELAPSED}s (< ${MIN_RUNTIME}s) — proxy likely blocked, rotating..."
+              blacklisted="$PROXY"
+              PROXY=$(python3 proxy_rotator.py premium | tail -1)
+              echo "New proxy: $PROXY (blacklisted: $blacklisted)"
+              echo "proxy=$PROXY" >> $GITHUB_OUTPUT
+            fi
+          done
           echo "status=success" >> $GITHUB_OUTPUT
 
       - name: Relay — trigger next run

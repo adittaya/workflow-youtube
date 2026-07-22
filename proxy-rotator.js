@@ -37,16 +37,14 @@ async function deleteProxy(ip, port) {
 }
 
 async function markDead(ip, port) {
-  const ok = await deleteProxy(ip, port);
-  if (ok) console.error(`  [Proxy] Deleted dead ${ip}:${port} from DB`);
-  return ok;
+  console.error(`  [Proxy] Proxy ${ip}:${port} failed — blacklisted locally (NOT deleted from DB)`);
+  return true;
 }
 
 async function batchDeleteDead(dead) {
   if (dead.length === 0) return 0;
-  const outcomes = await Promise.allSettled(dead.map(p => deleteProxy(p.ip, p.port)));
-  const deleted = outcomes.filter(o => o.status === 'fulfilled' && o.value).length;
-  return deleted;
+  console.error(`  [Proxy] ${dead.length} proxies failed alive test — keeping in DB for retry`);
+  return 0;
 }
 
 // ══════════════════════════════════════════════════════════════════

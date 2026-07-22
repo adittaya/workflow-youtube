@@ -201,12 +201,6 @@ def report_proxy_failure(reason):
             log(f"blacklisted {PROXY_IP}:{PROXY_PORT} locally")
         except Exception:
             pass
-        try:
-            ok = mark_dead(PROXY_IP, PROXY_PORT)
-            if ok:
-                log(f"deleted {PROXY_IP}:{PROXY_PORT} from Supabase")
-        except Exception:
-            pass
 
 
 def _signal_handler(sig, frame):

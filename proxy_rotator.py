@@ -107,25 +107,15 @@ def delete_proxy(ip, port):
 
 
 def mark_dead(ip, port):
-    ok = delete_proxy(ip, port)
-    if ok:
-        print(f"  [Proxy] Deleted dead {ip}:{port} from DB", file=sys.stderr)
-    return ok
+    print(f"  [Proxy] Proxy {ip}:{port} failed — blacklisted locally (NOT deleted from DB)", file=sys.stderr)
+    return True
 
 
 def batch_delete_dead(dead_list):
     if not dead_list:
         return 0
-    deleted = 0
-    with ThreadPoolExecutor(max_workers=20) as pool:
-        futures = {pool.submit(delete_proxy, p["ip"], p["port"]): p for p in dead_list}
-        for f in as_completed(futures):
-            try:
-                if f.result():
-                    deleted += 1
-            except Exception:
-                pass
-    return deleted
+    print(f"  [Proxy] {len(dead_list)} proxies failed alive test — keeping in DB for retry", file=sys.stderr)
+    return 0
 
 
 def mark_proxy_used(ip, port):
@@ -370,7 +360,7 @@ def get_proxy(tier="premium"):
         )
         if dead:
             n = batch_delete_dead(dead)
-            print(f"\r  [Engine 1] Deleted {n}/{len(dead)} dead from DB", file=sys.stderr)
+            print(f"\r  [Engine 1] Kept {len(dead)} dead proxies in DB (blacklisted locally)", file=sys.stderr)
 
         all_alive.extend(alive)
         if len(alive) >= 20:

@@ -313,7 +313,7 @@ def _deploy_one(active, token, repo_name, key, supabase_url, supabase_key, supab
     save_deployments(deps)
     _say(f"  {C}▸{N} Triggering first run ...")
     _trigger_workflow(token, active, repo_name, key)
-    _ok("Workflow dispatched")
+    _ok("Workflow dispatched — chain starts now, cron backup every hour")
     return repo_name, repo["html_url"]
 
 def _update_one(active, token, repo_name, key, supabase_url, supabase_key, supabase_secret, template_dir=None):

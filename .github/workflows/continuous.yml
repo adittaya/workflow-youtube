@@ -86,7 +86,7 @@ jobs:
 
             echo "=== Attempt $attempt/$MAX_ATTEMPTS (proxy: $PROXY) ==="
             START=$(date +%s)
-            timeout 420 python3 automation.py "$VPLINK_KEY" 2>&1 || true
+            timeout 460 python3 automation.py "$VPLINK_KEY" 2>&1 || true
             END=$(date +%s)
             ELAPSED=$((END - START))
 

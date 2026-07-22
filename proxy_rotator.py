@@ -283,8 +283,38 @@ def get_proxy(tier="premium"):
         return None
 
     random.shuffle(proxies)
-    picked = proxies[0]
-    print(f"  [Proxy] Selected: {picked['ip']}:{picked['port']}", file=sys.stderr)
+
+    alive = []
+    dead = []
+    with ThreadPoolExecutor(max_workers=50) as pool:
+        futures = {pool.submit(test_proxy_quick, p, 3000): p for p in proxies}
+        for f in as_completed(futures):
+            p = futures[f]
+            try:
+                r = f.result()
+                if r["ok"]:
+                    alive.append({**p, "latency_ms": r["latency_ms"]})
+                else:
+                    dead.append(p)
+            except Exception:
+                dead.append(p)
+
+    if dead:
+        for p in dead:
+            try:
+                from config import add_proxy_blacklist
+                add_proxy_blacklist(p["ip"], p["port"])
+            except Exception:
+                pass
+        print(f"  [Proxy] Blacklisted {len(dead)} dead proxies for 24h", file=sys.stderr)
+
+    if not alive:
+        print("  [Proxy] No alive proxies found", file=sys.stderr)
+        return None
+
+    alive.sort(key=lambda p: p.get("latency_ms", 9999))
+    picked = alive[0]
+    print(f"  [Proxy] Selected: {picked['ip']}:{picked['port']} ({picked.get('latency_ms', '?')}ms) [{len(alive)} alive, {len(dead)} dead]", file=sys.stderr)
     return picked
 
 

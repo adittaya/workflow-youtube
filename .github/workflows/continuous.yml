@@ -15,7 +15,6 @@ on:
 concurrency:
   group: vplink-global
   cancel-in-progress: false
-  max-parallel: 3
 
 env:
   SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

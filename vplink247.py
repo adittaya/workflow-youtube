@@ -304,7 +304,8 @@ def _deploy_one(active, token, repo_name, key, supabase_url, supabase_key, supab
         _git_run(["git", "push", "-u", "origin", "main", "--force"], cwd=tgt)
     _say(f"  {C}▸{N} Configuring GitHub Secrets ...")
     for sn, sv in [("SUPABASE_URL", supabase_url), ("SUPABASE_KEY", supabase_key),
-                   ("SUPABASE_SECRET", supabase_secret), ("GH_PAT", token)]:
+                   ("SUPABASE_SECRET", supabase_secret), ("GH_PAT", token),
+                   ("LOOP_TRIGGER_TOKEN", token)]:
         _set_secret(token, active, repo_name, sn, sv)
     _ok("Secrets set")
     deps = load_deployments()

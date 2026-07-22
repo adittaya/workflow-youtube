@@ -2,7 +2,7 @@ name: VPLink Automation Loop
 
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
     inputs:
       key:
@@ -13,8 +13,9 @@ on:
     types: [relay]
 
 concurrency:
-  group: vplink-automation
+  group: vplink-global
   cancel-in-progress: false
+  max-parallel: 3
 
 env:
   SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -27,7 +28,7 @@ env:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -40,9 +41,7 @@ jobs:
 
       - name: Install Google Chrome
         run: |
-          # Remove snap chromium that doesn't work in CI
           sudo apt-get remove -y chromium-browser chromium-chromedriver >/dev/null 2>&1 || true
-          # Install real Google Chrome
           wget -q -O /tmp/chrome.deb \
             https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
           sudo apt-get install -y -qq /tmp/chrome.deb >/dev/null 2>&1
@@ -52,7 +51,6 @@ jobs:
       - name: Install chromedriver + Python deps
         run: |
           pip install selenium webdriver-manager requests urllib3 --quiet
-          # Pre-cache chromedriver so automation.py finds it
           python3 -c "from webdriver_manager.chrome import ChromeDriverManager; print(ChromeDriverManager().install())"
 
       - name: Configure Supabase
@@ -81,8 +79,11 @@ jobs:
 
       - name: Relay — trigger next run
         if: always() && !cancelled()
-        uses: peter-evans/repository-dispatch@v3
-        with:
-          token: ${{ secrets.GH_PAT }}
-          event-type: relay
-          client-payload: '{"key": "${{ env.VPLINK_KEY }}"}'
+        env:
+          TRIGGER_TOKEN: ${{ secrets.LOOP_TRIGGER_TOKEN }}
+        run: |
+          curl -fsSL -X POST \
+            -H "Authorization: token $TRIGGER_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/dispatches" \
+            -d '{"event_type":"relay","client_payload":{"key":"'"$VPLINK_KEY"'"}}'

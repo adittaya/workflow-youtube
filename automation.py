@@ -22,11 +22,6 @@ except ImportError:
     mark_proxy_used = lambda *a, **kw: False
     get_proxy = None
 
-try:
-    from config import add_proxy_blacklist
-except ImportError:
-    add_proxy_blacklist = lambda *a, **kw: None
-
 from profile_generator import generate_profile
 
 
@@ -197,8 +192,7 @@ def report_proxy_failure(reason):
     if not proxy_punished and PROXY_PORT:
         proxy_punished = True
         try:
-            add_proxy_blacklist(PROXY_IP, PROXY_PORT)
-            log(f"blacklisted {PROXY_IP}:{PROXY_PORT} locally")
+            mark_dead(PROXY_IP, PROXY_PORT)
         except Exception:
             pass
 

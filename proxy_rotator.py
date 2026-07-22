@@ -83,15 +83,11 @@ def supabase_fetch(endpoint, method="GET", timeout=25, data=None):
         raise RuntimeError(f"Supabase request failed: {e}")
 
 
-def fetch_proxies(tier="premium", exclude_minutes=5):
-    from urllib.parse import quote as url_quote
+def fetch_proxies(tier="premium"):
     field = "vplink_ok" if tier == "premium" else "e2_ok"
-    cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=exclude_minutes)).isoformat()
-    encoded_cutoff = url_quote(cutoff, safe="")
     endpoint = (
         f"/proxy_results?select=ip,port,proto,country,latency_ms"
         f"&{field}=eq.true"
-        f"&or=(last_seen.is.null,last_seen.lt.{encoded_cutoff})"
         f"&order=latency_ms.asc&limit=500"
     )
     resp = supabase_fetch(endpoint)
@@ -100,38 +96,18 @@ def fetch_proxies(tier="premium", exclude_minutes=5):
     return resp.json()
 
 
-def delete_proxy(ip, port):
-    endpoint = f"/proxy_results?ip=eq.{req_lib.utils.quote(str(ip), safe='')}&port=eq.{port}"
-    resp = supabase_fetch(endpoint, method="DELETE")
-    return resp.ok
-
-
 def mark_dead(ip, port):
-    print(f"  [Proxy] Proxy {ip}:{port} failed — blacklisted locally (NOT deleted from DB)", file=sys.stderr)
+    from config import add_proxy_blacklist
+    try:
+        add_proxy_blacklist(ip, port)
+    except Exception:
+        pass
+    print(f"  [Proxy] Blacklisted {ip}:{port} for 24h", file=sys.stderr)
     return True
 
 
-def batch_delete_dead(dead_list):
-    if not dead_list:
-        return 0
-    print(f"  [Proxy] {len(dead_list)} proxies failed alive test — keeping in DB for retry", file=sys.stderr)
-    return 0
-
-
 def mark_proxy_used(ip, port):
-    from urllib.parse import quote as url_quote
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    data = {"last_seen": now}
-    endpoint = f"/proxy_results?ip=eq.{url_quote(str(ip), safe='')}&port=eq.{port}"
-    try:
-        resp = supabase_fetch(endpoint, method="PATCH", data=data)
-        ok = resp.ok
-        if ok:
-            print(f"  [Proxy] Marked {ip}:{port} as used", file=sys.stderr)
-        return ok
-    except Exception as e:
-        print(f"  [Proxy] Failed to mark {ip}:{port} as used: {e}", file=sys.stderr)
-        return False
+    pass
 
 
 # ══════════════════════════════════════════════════════════════
@@ -282,34 +258,16 @@ def test_proxy_batch_selenium(proxies, timeout_s=60, concurrency=10):
 # ══════════════════════════════════════════════════════════════
 
 def get_rotation_index(proxies, history):
-    now_ms = int(time.time() * 1000)
-    cutoff = now_ms - 24 * 60 * 60 * 1000
-    recent = {
-        e["ip"] + ":" + str(e["port"])
-        for e in history.get("used", [])
-        if e.get("timestamp", 0) > cutoff
-    }
-    available = [p for p in proxies if f"{p['ip']}:{p['port']}" not in recent]
-    if not available:
-        return None
-    picked = random.choice(available)
-    if "used" not in history:
-        history["used"] = []
-    history["used"].append({"ip": picked["ip"], "port": picked["port"], "timestamp": now_ms})
-    history["used"] = [e for e in history["used"] if e.get("timestamp", 0) > cutoff]
-    config.save_proxy_history(history)
-    return picked
+    return proxies[0] if proxies else None
 
 
 import random
 
 
 def get_proxy(tier="premium"):
-    BATCH_SIZE = 200
-
-    print("  [Engine 1] Fetching proxies from Supabase...", file=sys.stderr)
+    print("  [Proxy] Fetching proxies from Supabase...", file=sys.stderr)
     all_proxies = fetch_proxies(tier)
-    print(f"  [Engine 1] Found {len(all_proxies)} {tier} proxies in DB", file=sys.stderr)
+    print(f"  [Proxy] Found {len(all_proxies)} {tier} proxies in DB", file=sys.stderr)
     if not all_proxies:
         return None
 
@@ -317,117 +275,21 @@ def get_proxy(tier="premium"):
     if blacklist:
         bl_set = set(blacklist)
         proxies = [p for p in all_proxies if f"{p['ip']}:{p['port']}" not in bl_set]
-        print(f"  [Engine 1] Blacklist: {len(blacklist)} excluded, {len(proxies)} remaining", file=sys.stderr)
+        print(f"  [Proxy] Blacklist: {len(blacklist)} excluded, {len(proxies)} remaining", file=sys.stderr)
     else:
         proxies = all_proxies
     if not proxies:
+        print("  [Proxy] All proxies blacklisted locally", file=sys.stderr)
         return None
 
-    history = config.load_proxy_history()
-    shuffled = proxies[:]
-    random.shuffle(shuffled)
-
-    all_alive = []
-    for b_start in range(0, len(shuffled), BATCH_SIZE):
-        batch = shuffled[b_start : b_start + BATCH_SIZE]
-        batch_num = b_start // BATCH_SIZE + 1
-        total_batches = (len(shuffled) + BATCH_SIZE - 1) // BATCH_SIZE
-
-        print(
-            f"  [Engine 1] Batch {batch_num}/{total_batches}: TCP alive test ({len(batch)} proxies, 3s timeout)...",
-            file=sys.stderr,
-        )
-        alive = []
-        dead = []
-        with ThreadPoolExecutor(max_workers=50) as pool:
-            futures = {}
-            for p in batch:
-                futures[pool.submit(test_proxy_quick, p, 3000)] = p
-            for f in as_completed(futures):
-                p = futures[f]
-                try:
-                    r = f.result()
-                    if r["ok"]:
-                        alive.append({**p, "latency_ms": r["latency_ms"]})
-                    else:
-                        dead.append(p)
-                except Exception:
-                    dead.append(p)
-        print(
-            f"  [Engine 1] Alive: {len(alive)}/{len(batch)} ({len(alive)} ok, {len(dead)} dead)\r",
-            end="",
-            file=sys.stderr,
-        )
-        if dead:
-            n = batch_delete_dead(dead)
-            print(f"\r  [Engine 1] Kept {len(dead)} dead proxies in DB (blacklisted locally)", file=sys.stderr)
-
-        all_alive.extend(alive)
-        if len(alive) >= 20:
-            print(f"  [Engine 1] Batch {batch_num}: {len(alive)} alive, enough for rotation pool", file=sys.stderr)
-            break
-
-    print("", file=sys.stderr)
-
-    if not all_alive:
-        print("  [Engine 1] No alive proxies found in any batch", file=sys.stderr)
-        return None
-
-    all_alive.sort(key=lambda p: p.get("latency_ms", 9999))
-    shortlist = all_alive[:20]
-
-    print(f"  [Engine 1] {len(all_alive)} alive, picking from top {len(shortlist)} fastest", file=sys.stderr)
-
-    picked = get_rotation_index(shortlist, history)
-    if picked:
-        print(f"  [Engine 1] Selected: {picked['ip']}:{picked['port']} ({picked.get('latency_ms', '?')}ms)", file=sys.stderr)
-        return picked
-    if shortlist:
-        fallback = shortlist[0]
-        print(f"  [Engine 1] Selected (fallback): {fallback['ip']}:{fallback['port']} ({fallback.get('latency_ms', '?')}ms)", file=sys.stderr)
-        return fallback
-    print("  [Engine 1] All alive proxies already used today", file=sys.stderr)
-    return None
+    random.shuffle(proxies)
+    picked = proxies[0]
+    print(f"  [Proxy] Selected: {picked['ip']}:{picked['port']}", file=sys.stderr)
+    return picked
 
 
 def get_proxy_quick(tier="premium"):
-    proxies = fetch_proxies(tier)
-    if not proxies:
-        return None
-
-    blacklist = config.load_proxy_blacklist()
-    if blacklist:
-        bl_set = set(blacklist)
-        filtered = [p for p in proxies if f"{p['ip']}:{p['port']}" not in bl_set]
-    else:
-        filtered = proxies
-    if not filtered:
-        return None
-
-    random.shuffle(filtered)
-    candidates = filtered[:50]
-
-    alive = []
-    for i in range(0, len(candidates), 25):
-        chunk = candidates[i : i + 25]
-        with ThreadPoolExecutor(max_workers=25) as pool:
-            futures = {pool.submit(test_proxy_quick, p, 3000): p for p in chunk}
-            for f in as_completed(futures):
-                try:
-                    r = f.result()
-                    if r["ok"]:
-                        alive.append({**futures[f], "latency_ms": r["latency_ms"]})
-                except Exception:
-                    pass
-        if len(alive) >= 5:
-            break
-
-    if not alive:
-        return None
-    alive.sort(key=lambda p: p.get("latency_ms", 9999))
-
-    history = config.load_proxy_history()
-    return get_rotation_index(alive[:10], history) or alive[0]
+    return get_proxy(tier)
 
 
 def get_public_ip(timeout_s=10):

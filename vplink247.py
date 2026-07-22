@@ -77,7 +77,20 @@ def _load_json(path):
 
 def _save_json(path, data):
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f: json.dump(data, f, indent=2)
+    fd = None
+    import tempfile as _tf
+    try:
+        fd, tmp = _tf.mkstemp(dir=str(CONFIG_DIR), suffix=".tmp")
+        os.write(fd, json.dumps(data, indent=2).encode("utf-8"))
+        os.close(fd)
+        fd = None
+        os.chmod(tmp, 0o600)
+        os.rename(tmp, str(path))
+    except Exception:
+        if fd is not None:
+            try: os.close(fd)
+            except Exception: pass
+        raise
 
 def load_accounts():    return _load_json(ACCOUNTS_FILE)
 def save_accounts(d):   _save_json(ACCOUNTS_FILE, d)
@@ -398,6 +411,48 @@ def cmd_deploy_remove(args):
     del deps[args.name]; save_deployments(deps)
     _ok(f"Deployment '{args.name}' removed")
 
+def cmd_nuke_all(_args):
+    deps = load_deployments()
+    if not deps: _warn("No deployments to nuke."); return
+    accounts = load_accounts()
+    _header("💣 Nuke All Deployments")
+    _warn(f"This will DELETE {len(deps)} deployment records AND their GitHub repos.")
+    _say(f"Deployments: {', '.join(sorted(deps.keys())[:10])}{(' ... +' + str(len(deps)-10) + ' more') if len(deps) > 10 else ''}")
+    print()
+    if not _confirm(f"DELETE ALL {len(deps)} deployments and repos?"): _say("Cancelled"); return
+    confirm_text = _prompt(f"Type 'nuke' to confirm deletion of {len(deps)} repos")
+    if confirm_text != "nuke": _fail("Confirmation failed"); return
+    print()
+    ok, fail = 0, 0
+    for name, info in sorted(deps.items()):
+        acct_name = info.get("account", "?")
+        token = accounts.get(acct_name, {}).get("token")
+        if token:
+            try:
+                _api(token, "DELETE", f"/repos/{acct_name}/{name}")
+                _ok(f"Deleted {acct_name}/{name}")
+                ok += 1
+            except SystemExit:
+                _warn(f"  {name}: repo already deleted or inaccessible")
+                ok += 1
+            except Exception as e:
+                _fail(f"  {name}: {e}")
+                fail += 1
+            time.sleep(2)
+        else:
+            _warn(f"  {name}: no token for account '{acct_name}', skipping repo delete")
+    save_deployments({})
+    print()
+    _ok(f"Nuke complete: {ok} deleted, {fail} failed")
+
+def cmd_deploy_remove_all(_args):
+    deps = load_deployments()
+    if not deps: _warn("No deployments."); return
+    _say(f"Removing all {len(deps)} deployment records (repos NOT deleted)...")
+    if not _confirm(f"Remove all {len(deps)} deployment records?"): _say("Cancelled"); return
+    save_deployments({})
+    _ok(f"Removed {len(deps)} deployment records")
+
 
 # ── Database Config ──────────────────────────────────────
 
@@ -422,6 +477,36 @@ def cmd_db_show(_args):
     _say(f"URL:    {C}{cfg['supabase_url'] or '(not set)'}{N}")
     _say(f"Key:    {D}{'✓ set' if cfg['supabase_key'] else '✗ not set'}{N}")
     _say(f"Secret: {D}{'✓ set' if cfg['supabase_secret'] else '✗ not set'}{N}")
+
+def cmd_db_premium(_args):
+    cfg = get_db_config()
+    if not cfg["supabase_url"] or not cfg["supabase_key"] or not cfg["supabase_secret"]:
+        _fail("Database not configured. Run 'vplink247 db config' first."); return
+    _header("🗄️  Premium Proxies (live)")
+    try:
+        endpoint = "/rest/v1/proxy_results?select=ip,port,proto,country,vplink_ok&vplink_ok=eq.true&order=latency_ms.asc&limit=500"
+        req = urllib.request.Request(
+            f"{cfg['supabase_url']}/rest/v1/proxy_results?select=ip,port,proto,country,vplink_ok&vplink_ok=eq.true&order=latency_ms.asc&limit=500",
+            headers={
+                "apikey": cfg["supabase_secret"] or cfg["supabase_key"],
+                "Authorization": f"Bearer {cfg['supabase_secret'] or cfg['supabase_key']}",
+                "Prefer": "count=exact",
+            })
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode())
+            count = resp.headers.get("Content-Range", "").split("/")[-1]
+    except Exception as e:
+        _fail(f"Query failed: {e}"); return
+    _say(f"  {B}Premium proxies (vplink_ok=true):{N} {G}{count}{N}")
+    print()
+    if not data:
+        _warn("No premium proxies found."); return
+    _say(f"  {C}{'IP':20} {'Port':8} {'Proto':8} {'Country':10} {'VPLINK':8}{N}")
+    _say(f"  {D}{'─'*20} {'─'*8} {'─'*8} {'─'*10} {'─'*8}{N}")
+    for row in data[:50]:
+        print(f"  {row['ip']:20} {row['port']:8} {row.get('proto','?'):8} {row.get('country','?'):10} {G}{'✓' if row.get('vplink_ok') else '✗'}{N}")
+    if len(data) > 50:
+        _say(f"\n  ... and {len(data) - 50} more")
 
 # ── Stop / Start ─────────────────────────────────────────
 
@@ -687,34 +772,47 @@ def cmd_status(_args):
     print()
     if not deps: _warn("No deployments. Use 'vplink247 deploy'"); return
     stale = []
+    orphans = []
     for name, info in sorted(deps.items()):
-        accounts_data = load_accounts()
-        token = accounts_data.get(info["account"], {}).get("token")
+        acct_name = info.get("account", "?")
+        token = accounts.get(acct_name, {}).get("token")
+        if not token:
+            status_str = f"{R}orphan{N}"
+            orphans.append(name)
+            color = R
+            print(f"  {color}{'●':3}{N} {B}{name}{N}")
+            print(f"      {'Account:':12} {acct_name} {R}(deleted){N}")
+            print(f"      {'Key:':12} {info.get('key','?')}")
+            print()
+            continue
         status_str = "?"
-        if token:
-            try:
-                _api(token, "GET", f"/repos/{info['account']}/{name}")
-                runs = _api(token, "GET", f"/repos/{info['account']}/{name}/actions/runs?per_page=1")
-                for r in runs.get("workflow_runs", []):
-                    status_str = r.get("conclusion") or r.get("status", "?")
-            except SystemExit:
-                status_str = f"{R}deleted{N}"
-                stale.append(name)
-                continue
-            except Exception:
-                status_str = f"{R}err{N}"
+        try:
+            _api(token, "GET", f"/repos/{acct_name}/{name}")
+            runs = _api(token, "GET", f"/repos/{acct_name}/{name}/actions/runs?per_page=1")
+            for r in runs.get("workflow_runs", []):
+                status_str = r.get("conclusion") or r.get("status", "?")
+        except SystemExit:
+            status_str = f"{R}deleted{N}"
+            stale.append(name)
+            continue
+        except Exception:
+            status_str = f"{R}err{N}"
         color = G if status_str == "success" else (Y if status_str in ("in_progress","queued","pending") else R)
         print(f"  {color}{'●':3}{N} {B}{name}{N}")
-        print(f"      {'Account:':12} {info.get('account','?'):15} {'Key:':6} {info.get('key','?')}")
+        print(f"      {'Account:':12} {acct_name:15} {'Key:':6} {info.get('key','?')}")
         print(f"      {'Status:':12} {color}{status_str}{N}")
         print(f"      {'URL:':12} {info.get('repo_url','')}")
         print()
-    if stale:
+    cleaned = stale + orphans
+    if cleaned:
         deps = load_deployments()
-        for name in stale:
+        for name in cleaned:
             deps.pop(name, None)
         save_deployments(deps)
-        _warn(f"Cleaned up {len(stale)} stale deployment(s): {', '.join(stale)}")
+        if stale:
+            _warn(f"Removed {len(stale)} stale deployment(s) (repo deleted): {', '.join(stale)}")
+        if orphans:
+            _warn(f"Removed {len(orphans)} orphan deployment(s) (account deleted): {', '.join(orphans)}")
 
 
 # ── Menu system ──────────────────────────────────────────
@@ -777,7 +875,8 @@ def _menu_deployments():
         choice = _choose(["📋 List deployments", "🚀 Deploy new relay", "📦 Bulk deploy",
                           "📈 Analytics", "🧪 Test deployment", "🔍  Check latest run",
                           "⏹  Stop automation", "▶️  Start automation",
-                          "🗑 Remove deployment", "⚡ Quick deploy (bare-bones)"])
+                          "🗑 Remove deployment", "⚡ Quick deploy (bare-bones)",
+                          "💣 Nuke ALL (delete repos + records)", "🗑 Remove ALL records only"])
         if choice < 0: return
         if choice == 0:
             cmd_deploy_list(None); _pause()
@@ -787,7 +886,7 @@ def _menu_deployments():
         elif choice == 2:
             cmd_bulk_deploy(argparse.Namespace(count=None, key=None,
                             supabase_url=None, supabase_key=None, supabase_secret=None)); _pause()
-        elif choice in (3, 4, 5, 6, 7):
+        elif choice in (3, 4, 5, 6, 7, 8):
             if not deps: _warn("No deployments."); _pause(); continue
             if len(deps) == 1:
                 name = next(iter(deps))
@@ -799,7 +898,7 @@ def _menu_deployments():
             elif choice == 5: cmd_check(argparse.Namespace(name=name)); _pause()
             elif choice == 6: cmd_stop(argparse.Namespace(name=name))
             elif choice == 7: cmd_start(argparse.Namespace(name=name))
-            elif choice == 8: cmd_deploy_remove(argparse.Namespace(name=name))
+            elif choice == 8: cmd_deploy_remove(argparse.Namespace(name=name)); _pause()
         elif choice == 9:
             accts = load_accounts()
             if not accts: _warn("No accounts. Add one first."); _pause(); continue
@@ -807,6 +906,10 @@ def _menu_deployments():
             key = _prompt("VPLink key to automate") or "UbpV2D"
             cmd_deploy(argparse.Namespace(name=name or None, key=key,
                         supabase_url=None, supabase_key=None, supabase_secret=None)); _pause()
+        elif choice == 10:
+            cmd_nuke_all(None); _pause()
+        elif choice == 11:
+            cmd_deploy_remove_all(None); _pause()
 
 def cmd_wizard(_args):
     if not _STDIN_TTY:
@@ -848,29 +951,29 @@ def _run_menu():
         elif choice == 4:    cmd_analytics(argparse.Namespace(name=None, aggregate=True)); _pause()
         elif choice == 5:
             _header("📖 CLI Reference")
-            print(f"    {C}vplink247{N}                   Interactive menu (this)")
-            print(f"    {C}vplink247 setup{N}             Same as above")
-            print(f"    {C}vplink247 account add{N}       Add a GitHub account")
-            print(f"    {C}vplink247 account list{N}      List accounts")
-            print(f"    {C}vplink247 account switch{N}    Switch active account")
-            print(f"    {C}vplink247 login <token>{N}     Login (validates against API)")
-            print(f"    {C}vplink247 account list{N}      List accounts")
-            print(f"    {C}vplink247 account add{N}       Add account with name + token")
-            print(f"    {C}vplink247 account switch{N}    Switch active account")
-            print(f"    {C}vplink247 account remove{N}    Remove an account")
-            print(f"    {C}vplink247 deploy new{N}        Create a new deployment")
-            print(f"    {C}vplink247 deploy bulk{N}       Bulk-deploy N automations")
-            print(f"    {C}vplink247 deploy list{N}       List deployments")
-            print(f"    {C}vplink247 deploy remove{N}     Remove a deployment")
-            print(f"    {C}vplink247 test <name>{N}       Test a deployment (dispatch + monitor)")
-            print(f"    {C}vplink247 check <name>{N}      Check latest run status (no dispatch)")
-            print(f"    {C}vplink247 stop <name>{N}       Stop (disable) automation")
-            print(f"    {C}vplink247 start <name>{N}      Start (enable) automation")
-            print(f"    {C}vplink247 db config{N}         Set Supabase credentials (persistent)")
-            print(f"    {C}vplink247 db show{N}           Show current DB config")
-            print(f"    {C}vplink247 analytics{N}          Aggregate analytics across all deployments")
-            print(f"    {C}vplink247 analytics <name>{N}   Analytics for a single deployment")
-            print(f"    {C}vplink247 status{N}            Show overall status")
+            print(f"    {C}vplink247{N}                    Interactive menu (this)")
+            print(f"    {C}vplink247 setup{N}              Same as above")
+            print(f"    {C}vplink247 login <token>{N}      Login (validates against API)")
+            print(f"    {C}vplink247 account add{N}        Add a GitHub account")
+            print(f"    {C}vplink247 account list{N}       List accounts")
+            print(f"    {C}vplink247 account switch{N}     Switch active account")
+            print(f"    {C}vplink247 account remove{N}     Remove an account")
+            print(f"    {C}vplink247 deploy new{N}         Create a new deployment")
+            print(f"    {C}vplink247 deploy bulk{N}        Bulk-deploy N automations")
+            print(f"    {C}vplink247 deploy list{N}        List deployments")
+            print(f"    {C}vplink247 deploy remove{N}      Remove a deployment")
+            print(f"    {C}vplink247 deploy nuke-all{N}    Delete ALL repos + records")
+            print(f"    {C}vplink247 deploy remove-all{N}  Remove all records (keep repos)")
+            print(f"    {C}vplink247 test <name>{N}        Test a deployment (dispatch + monitor)")
+            print(f"    {C}vplink247 check <name>{N}       Check latest run status (no dispatch)")
+            print(f"    {C}vplink247 stop <name>{N}        Stop (disable) automation")
+            print(f"    {C}vplink247 start <name>{N}       Start (enable) automation")
+            print(f"    {C}vplink247 db config{N}          Set Supabase credentials (persistent)")
+            print(f"    {C}vplink247 db show{N}            Show current DB config")
+            print(f"    {C}vplink247 db premium{N}         Show premium proxies from DB")
+            print(f"    {C}vplink247 analytics{N}           Aggregate analytics across all deployments")
+            print(f"    {C}vplink247 analytics <name>{N}    Analytics for a single deployment")
+            print(f"    {C}vplink247 status{N}             Show overall status")
             print()
             print(f"  {B}Flags:{N}")
             print(f"    account add default {C}--token ghp_xxxxx{N}")
@@ -893,18 +996,25 @@ Examples:
   vplink247                       Interactive management menu
   vplink247 account add           Add a GitHub account
   vplink247 account list          List all accounts
+  vplink247 account switch <name> Switch active account
+  vplink247 account remove <name> Remove an account
+  vplink247 login <token>         Login (validates against API)
   vplink247 deploy new            Deploy automation relay
   vplink247 deploy bulk <N>       Bulk-deploy N automations
   vplink247 deploy list           List deployments
+  vplink247 deploy remove <name>  Remove a deployment
+  vplink247 deploy nuke-all       Delete ALL repos + records
+  vplink247 deploy remove-all     Remove all records (keep repos)
   vplink247 test <name>           Test (dispatch + monitor)
   vplink247 check <name>          Check latest run (no dispatch)
   vplink247 stop <name>           Stop (disable) automation
   vplink247 start <name>          Start (enable) automation
-  vplink247 db config            Set Supabase credentials (persistent)
-  vplink247 db show              Show current DB config
-  vplink247 analytics            Aggregate analytics across all deployments
-  vplink247 analytics <name>     Analytics for a single deployment
-  vplink247 status               Show overall status
+  vplink247 db config             Set Supabase credentials
+  vplink247 db show               Show current DB config
+  vplink247 db premium            Show premium proxies from DB
+  vplink247 analytics             Aggregate analytics
+  vplink247 analytics <name>      Analytics for one deployment
+  vplink247 status                Show overall status
         """
     )
     sub = parser.add_subparsers(dest="command")
@@ -948,6 +1058,10 @@ Examples:
     p = dep_sub.add_parser("remove", help="Remove a deployment")
     p.add_argument("name", help="Deployment name")
     p.set_defaults(func=cmd_deploy_remove)
+    p = dep_sub.add_parser("nuke-all", help="Delete ALL repos and deployment records")
+    p.set_defaults(func=cmd_nuke_all)
+    p = dep_sub.add_parser("remove-all", help="Remove all deployment records (keep repos)")
+    p.set_defaults(func=cmd_deploy_remove_all)
 
     p = sub.add_parser("test", help="Test a deployment")
     p.add_argument("name", help="Deployment name")
@@ -959,6 +1073,8 @@ Examples:
     p.set_defaults(func=cmd_db_configure)
     p = db_sub.add_parser("show", help="Show current database config")
     p.set_defaults(func=cmd_db_show)
+    p = db_sub.add_parser("premium", help="Show premium proxies from Supabase")
+    p.set_defaults(func=cmd_db_premium)
 
     p = sub.add_parser("analytics", aliases=["stats"],
                        help="View analytics per deployment or full account")

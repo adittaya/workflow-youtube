@@ -8,9 +8,9 @@
 ## Current State
 
 - **Last updated:** 2026-07-24
-- **Latest remote commit:** `400f725` (feat: GitHub real-time sync — repos as database)
-- **Local codebase status:** CLEAN — all changes committed and pushed
-- **Git status:** Clean
+- **Latest remote commit:** `d8426c9` (docs: update AGENTS.md with GitHub sync progress)
+- **Local codebase status:** MODIFIED — OpenTUI TUI built, not yet committed
+- **Git status:** New: tui/ directory (React-powered terminal UI)
 
 ## What Has Been Done
 
@@ -130,6 +130,27 @@
 69. **manager/app.py** — Updated `account_detail()`: Calls `_auto_scan_account()` on page load
 70. **manager/app.py** — Updated `unified_status()`: Auto-scans all accounts before showing status
 
+### Code Changes Made (This Session — OpenTUI React TUI)
+
+71. **tui/** — NEW DIRECTORY: Full React-powered terminal UI using OpenTUI (React + Bun + Zig)
+    - `tui/package.json` — Dependencies: @opentui/core, @opentui/react, react
+    - `tui/tsconfig.json` — TypeScript config with JSX/React support
+72. **tui/src/utils/storage.ts** — Data directory management, JSON load/save, timestamp formatting
+73. **tui/src/services/github.ts** — GitHub API service: token validation, repo discovery, workflow management, deployment operations
+74. **tui/src/services/deploy.ts** — Deployment service: account/deploy/settings CRUD, GitHub sync, deploy/remove/nuke operations
+75. **tui/src/hooks/useAppState.ts** — React state management: screen navigation, sync, deploy, remove, nuke, account management
+76. **tui/src/components/Header.tsx** — Top bar with app name, current screen, account/deploy counts
+77. **tui/src/components/Sidebar.tsx** — Navigation sidebar with keyboard shortcuts [1-6], ESC to quit
+78. **tui/src/screens/Dashboard.tsx** — Overview: accounts, deployments, active/error counts, recent deployments list
+79. **tui/src/screens/Deployments.tsx** — Deploy/remove/nuke deployments with keyboard navigation
+80. **tui/src/screens/Accounts.tsx** — Add/switch/remove GitHub accounts with form input
+81. **tui/src/screens/Analytics.tsx** — Status breakdown with bar charts, per-account stats
+82. **tui/src/screens/Settings.tsx** — Supabase configuration (URL, anon key, service key)
+83. **tui/src/screens/Sync.tsx** — GitHub sync with real-time status, "repos as database" concept
+84. **tui/src/components/App.tsx** — Main app component: screen routing, state management
+85. **tui/src/index.tsx** — Entry point: creates OpenTUI renderer, renders App
+86. **tui/src/cli.tsx** — CLI entry point with --help, --version flags
+
 ## Pending / User Requests
 
 - User wants: comprehensive flow engine that handles ANY VPLink-type variation ✅ DONE
@@ -151,6 +172,7 @@
 | `manager/app.py` | MODIFIED | Full deployment CI overhaul: template clone, RELAY_TARGET_REPO, workflow management, deployment verification, token scope validation |
 | `vplink247.py` | MODIFIED | Added RELAY_TARGET_REPO to _deploy_one and _update_one secrets, added cmd_sync(), registered sync subcommand |
 | `github_sync.py` | NEW | GitHub-as-database module: discover_deployments(), get_account_info(), get_deployment_detail(), scan_repos() |
+| `tui/` | NEW | OpenTUI React TUI: Dashboard, Deployments, Accounts, Analytics, Settings, Sync screens |
 | `config.py` | OK | Unchanged |
 | `schema.sql` | OK | Unchanged |
 | `AGENTS.md` | UNTRACKED | Session progress tracker (must update after every change) |
@@ -167,6 +189,7 @@
 - [x] **Behavioral Fingerprinting**: `fingerprint_page()` detects page type by behavior, not IDs
 - [x] **Adaptive Flow**: Any step count, any redirect chain length
 - [x] **GitHub Sync System**: Real-time repo-based database (github_sync.py, cmd_sync, auto-scan)
+- [x] **OpenTUI React TUI**: Full management CLI with React for terminals (Dashboard, Deployments, Accounts, Analytics, Settings, Sync)
 
 ### Medium Priority
 - [x] **Template Detection**: Updated to detect `getlink` template and `stick` step info
@@ -194,3 +217,6 @@
 - Step count is variable (2, 3, 4, N) — automation handles any number
 - Redirect chains are variable (1, 2, 3, 5 hops) — automation follows until article page
 - PageMonitor uses MutationObserver (fires on ANY DOM change) + Network Interceptors (fetch/XHR)
+- OpenTUI TUI built with React + Bun + Zig — runs in `tui/` directory
+- `bun run tui/src/cli.tsx` launches the interactive TUI
+- `bun run tui/src/cli.tsx --help` shows CLI options

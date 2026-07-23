@@ -1453,99 +1453,53 @@ def navigate_learn_more():
 
 def handle_tp():
     log("template: TP (tp-time countdown)")
-    safe_eval("""
-        var container = document.getElementById('block-cont-1');
-        if (container && getComputedStyle(container).display !== 'none') {{
-            var closeDiv = container.querySelector('div');
-            if (closeDiv && closeDiv.textContent.trim() === 'X') closeDiv.click();
-        }}
-    """)
-    countdown_result = wait_for_countdown("tp", 50)
-    if countdown_result == "rewarded":
-        log("popup sent us to #goog_rewarded during countdown")
-        handle_goog_rewarded()
-        safe_eval("if (window.location.hash) history.replaceState(null, '', window.location.pathname + window.location.search);")
-        human_delay(500, 1000)
-        log("force-invoking showNextProcess after rewarded ad...")
-        safe_eval("""
-            var wait1 = document.getElementById('tp-wait1');
-            var wait2 = document.getElementById('tp-wait2');
-            var snp2 = document.getElementById('tp-snp2');
-            if (wait1) wait1.style.display = 'none';
-            if (wait2) wait2.style.display = 'none';
-            if (snp2) snp2.style.display = 'inline-block';
-            if (typeof showNextProcess === 'function') {{ try {{ showNextProcess(); }} catch(e) {{}} }}
+    close_ad_overlay()
+
+    log("waiting for tp-snp2 (Continue) to appear...")
+    for w in range(60):
+        if "#goog_rewarded" in safe_url():
+            log("#goog_rewarded appeared, handling ad...")
+            handle_goog_rewarded()
+            safe_eval("if (window.location.hash) history.replaceState(null, '', window.location.pathname + window.location.search);")
+            human_delay(500, 1000)
+            continue
+
+        visible = safe_eval("""
+            var el = document.getElementById('tp-snp2');
+            if (!el) return false;
+            var style = getComputedStyle(el);
+            return style.display !== 'none' && style.visibility !== 'hidden' && el.offsetParent !== null;
         """)
-        human_delay(1000, 2000)
-        nav_ok = navigate_learn_more()
-        if nav_ok:
-            log("navigated via learn_more.php after rewarded ad")
-        return nav_ok
+        if visible:
+            log(f"tp-snp2 visible after {w}s")
+            a_href = safe_eval("""
+                var snp2 = document.getElementById('tp-snp2');
+                var a = snp2 ? snp2.closest('a') : null;
+                if (a && a.href && a.href.indexOf('learn_more.php') >= 0) {{
+                    window.location.href = a.href;
+                    return a.href;
+                }}
+                return '';
+            """)
+            if a_href:
+                log(f"navigated via tp-snp2 href: {a_href[:80]}")
+                return True
+            human_click("#tp-snp2")
+            log("clicked tp-snp2")
+            human_delay(2000, 4000)
+            return navigate_learn_more()
 
-    if countdown_result == "stuck":
-        log("countdown stuck — forcing button visibility")
-        safe_eval("""
-            var wait1 = document.getElementById('tp-wait1');
-            var wait2 = document.getElementById('tp-wait2');
-            var snp2 = document.getElementById('tp-snp2');
-            if (wait1) wait1.style.display = 'none';
-            if (wait2) wait2.style.display = 'none';
-            if (snp2) snp2.style.display = 'inline-block';
-            if (typeof showNextProcess === 'function') {{ try {{ showNextProcess(); }} catch(e) {{}} }}
-        """)
-        human_delay(1000, 2000)
+        if w % 10 == 0 and w > 0:
+            cd = get_countdown()
+            log(f"[TP wait {w}s] tp-snp2 not visible, countdown={cd}")
+            close_ad_overlay()
+        ms(1000)
 
-    if countdown_result not in ("done", "stuck"):
-        log("TP countdown timeout, trying button anyway")
-
-    safe_eval("""
-        var gcont = document.getElementById('gcont');
-        if (gcont) gcont.style.display = 'none';
-        var btn = document.getElementById('continueBtn');
-        if (btn) {{
-            var overlay = btn.closest('div[style*="position: fixed"]') || btn.parentElement;
-            if (overlay) overlay.style.display = 'none';
-        }}
-        var block = document.getElementById('block-cont-1');
-        if (block) block.style.display = 'none';
-        var snp2 = document.getElementById('tp-snp2');
-        var wait1 = document.getElementById('tp-wait1');
-        var wait2 = document.getElementById('tp-wait2');
-        if (wait1) wait1.style.display = 'none';
-        if (wait2) wait2.style.display = 'none';
-        if (snp2 && getComputedStyle(snp2).display === 'none') {{
-            snp2.style.display = 'inline-block';
-        }}
-        if (typeof showNextProcess === 'function') {{ try {{ showNextProcess(); }} catch(e) {{}} }}
-    """)
-    human_delay(1500, 3000)
-
-    if "#goog_rewarded" in safe_url():
-        log("on #goog_rewarded after countdown, waiting for ad...")
-        handle_goog_rewarded()
-        safe_eval("""
-            if (window.location.hash) history.replaceState(null, '', window.location.pathname + window.location.search);
-            var wait1 = document.getElementById('tp-wait1');
-            var snp2 = document.getElementById('tp-snp2');
-            if (wait1) wait1.style.display = 'none';
-            if (snp2) snp2.style.display = 'block';
-        """)
-        human_delay(500, 1000)
-        return navigate_learn_more()
-
-    for attempt in range(3):
-        nav_result = navigate_learn_more()
-        if nav_result:
-            return True
-        log(f"navigate_learn_more attempt {attempt + 1} failed, retrying...")
-        human_delay(1000, 2000)
-        safe_eval("if (typeof showNextProcess === 'function') {{ try {{ showNextProcess(); }} catch(e) {{}} }}")
-        human_delay(1000, 2000)
-
-    log("all navigate_learn_more attempts failed, trying learn_more.php directly")
-    safe_eval("""
-        window.location.href = 'learn_more.php';
-    """)
+    log("tp-snp2 never appeared, trying learn_more.php fallback")
+    nav = navigate_learn_more()
+    if nav:
+        return True
+    safe_eval("window.location.href = 'learn_more.php';")
     return True
 
 
@@ -1553,37 +1507,10 @@ def handle_ce():
     log("template: CE (ce-time countdown)")
     pre_url = safe_url()
     close_ad_overlay()
-    log("injecting eonudb cookie + iorghupt localStorage to trigger CE timer...")
-    domain = safe_eval("return window.location.hostname;")
-    if domain:
-        try:
-            driver.execute_cdp_cmd("Network.setCookie", {
-                "name": "eonudb",
-                "value": "1",
-                "domain": "." + domain,
-                "path": "/",
-                "secure": True,
-                "httpOnly": False,
-                "maxAge": 86400,
-            })
-        except Exception:
-            try:
-                driver.add_cookie({"name": "eonudb", "value": "1", "path": "/"})
-            except Exception:
-                pass
-    safe_eval("localStorage.setItem('iorghupt', (Date.now() - 15000).toString());")
 
-    log("reloading page to let JS detect cookie...")
-    try:
-        driver.execute_script("window.location.reload();")
-    except Exception:
-        pass
-    time.sleep(2)
-    close_ad_overlay()
-
-    log("waiting for ce-wait1 to become visible (after reload with cookie)...")
+    log("waiting for ce-wait1 to become visible...")
     ce_wait_visible = False
-    for w in range(15):
+    for w in range(20):
         ce_wait_visible = safe_eval("""
             var el = document.getElementById('ce-wait1');
             if (!el) return false;
@@ -1592,15 +1519,6 @@ def handle_ce():
         if ce_wait_visible:
             log(f"ce-wait1 visible after {w+1}s")
             break
-        if w > 0 and w % 5 == 0:
-            safe_eval("""
-                var adContainer = document.getElementById('overcn');
-                if (adContainer) {
-                    var iframe = adContainer.querySelector('iframe');
-                    if (iframe) { iframe.focus(); iframe.click(); }
-                    else adContainer.click();
-                }
-            """)
         if check_ad_hijack():
             return True
         ms(1000)
@@ -1608,32 +1526,21 @@ def handle_ce():
     if not ce_wait_visible:
         log("ce-wait1 never became visible, trying buttons anyway...")
 
-    countdown_result = wait_for_countdown("ce", 30)
+    log("waiting for countdown to finish...")
+    countdown_result = wait_for_countdown("ce", 50)
     if countdown_result == "rewarded":
         log("popup sent us to #goog_rewarded during CE countdown")
         handle_goog_rewarded()
         safe_eval("if (window.location.hash) history.replaceState(null, '', window.location.pathname + window.location.search);")
         human_delay(500, 1000)
-        btn7_vis = safe_eval("""
-            var el = document.querySelector('#btn7 > button');
-            if (!el) return false;
-            return getComputedStyle(el).display !== 'none' && el.offsetParent !== null;
-        """)
-        if btn7_vis:
-            human_click("#btn7 > button")
-            log("clicked btn7 after rewarded ad")
-            return True
-        return True
-    if countdown_result != "done":
-        log("CE countdown timeout, trying buttons anyway")
 
     if check_ad_hijack():
         return True
-
     human_delay(1000, 2000)
 
+    log("waiting for btn6 (Verify) to appear...")
     btn6_visible = False
-    for w in range(8):
+    for w in range(15):
         btn6_visible = safe_eval("""
             var el = document.getElementById('btn6');
             if (!el) return false;
@@ -1650,7 +1557,7 @@ def handle_ce():
         human_click("#btn6")
         log("clicked btn6 (Verify)")
         start_url = safe_url()
-        for w in range(8):
+        for w in range(15):
             ms(1000)
             if safe_url() != start_url:
                 log("btn6 triggered navigation")
@@ -1664,7 +1571,8 @@ def handle_ce():
             if btn7_vis:
                 break
 
-    for w in range(5):
+    log("waiting for btn7 (Continue) to appear...")
+    for w in range(15):
         btn7_vis = safe_eval("""
             var el = document.querySelector('#btn7 > button');
             if (!el) return false;
@@ -1684,37 +1592,26 @@ def handle_ce():
                 return false;
             """)
             if clicked:
-                log("clicked btn7 (Continue) via <a> href")
-                safe_eval("window._ce_btn7_clicked = true;")
+                log("clicked btn7 (Continue)")
                 return True
-            human_click("#btn7 > button")
-            log("clicked btn7 (Continue) via button")
+            human_click("#btn7")
+            log("clicked btn7 (Continue) via fallback")
             safe_eval("window._ce_btn7_clicked = true;")
             return True
         ms(1000)
 
-    human_click("#btn7")
-    log("clicked btn7 fallback")
-    safe_eval("window._ce_btn7_clicked = true;")
-    post_url = safe_url()
-    if post_url != pre_url:
-        return True
-    log("btn7 fallback clicked but URL unchanged, trying learn_more.php")
+    log("btn7 never appeared, trying learn_more.php fallback")
     nav_ok = navigate_learn_more()
     if nav_ok:
         return True
-    return False
+    safe_eval("window.location.href = 'learn_more.php';")
+    return True
 
 
 def handle_link1s():
     log("template: LINK1S (startCountdownBtn)")
-    safe_eval("""
-        var container = document.getElementById('block-cont-1');
-        if (container && getComputedStyle(container).display !== 'none') {{
-            var closeDiv = container.querySelector('div');
-            if (closeDiv && closeDiv.textContent.trim() === 'X') closeDiv.click();
-        }}
-    """)
+    close_ad_overlay()
+
     started = human_click("#startCountdownBtn")
     if started:
         log("clicked startCountdownBtn")
@@ -1741,7 +1638,6 @@ def handle_link1s():
         human_delay(500, 1000)
 
     log("waiting for #cross-snp2 to appear...")
-    clicked = False
     for w in range(60):
         if w % 5 == 0:
             if "#goog_rewarded" in safe_url():
@@ -1759,6 +1655,7 @@ def handle_link1s():
             return style.display !== 'none' && style.visibility !== 'hidden' && el.getClientRects().length > 0;
         """)
         if visible:
+            log(f"cross-snp2 visible after {w}s")
             a_href = safe_eval("""
                 var a = document.querySelector('#cross-snp2');
                 if (!a) return '';
@@ -1775,58 +1672,30 @@ def handle_link1s():
                 log(f"navigated via cross-snp2 href: {a_href[:80]}")
             else:
                 log("clicked #cross-snp2")
-            clicked = True
-            break
+            return True
 
         if w % 10 == 0:
             cd = get_countdown()
             log(f"[LINK1S wait {w}s] cross-snp2 not visible, countdown={cd}")
         ms(1000)
 
-    if not clicked:
-        log("cross-snp2 not visible, forcing button visibility...")
-        safe_eval("""
-            var gcont = document.getElementById('gcont');
-            if (gcont) gcont.style.display = 'none';
-            var block = document.getElementById('block-cont-1');
-            if (block) block.style.display = 'none';
-            var snp2 = document.getElementById('cross-snp2');
-            if (snp2) snp2.style.display = 'block';
-            var a = snp2 ? snp2.closest('a') : null;
-            if (a) a.style.display = 'block';
-        """)
-        human_delay(1000, 2000)
-        nav_done = safe_eval("""
-            var el = document.getElementById('cross-snp2');
-            if (!el) return false;
-            var a = el.closest('a');
-            if (a && a.href && a.href.indexOf('learn_more.php') >= 0) {{
-                window.location.href = a.href;
+    log("cross-snp2 never appeared, trying learn_more.php fallback")
+    fallback = safe_eval("""
+        var links = document.querySelectorAll('a');
+        for (var i = 0; i < links.length; i++) {{
+            var a = links[i];
+            if (a.href && a.href.indexOf('learn_more.php') >= 0 && a.offsetParent !== null) {{
+                a.click();
                 return true;
             }}
-            el.click();
-            return true;
-        """)
-        if nav_done:
-            log("clicked #cross-snp2 after force-show")
-            clicked = True
-
-    if not clicked:
-        fallback = safe_eval("""
-            var links = document.querySelectorAll('a');
-            for (var i = 0; i < links.length; i++) {{
-                var a = links[i];
-                if (a.href && a.href.indexOf('learn_more.php') >= 0 && a.offsetParent !== null) {{
-                    a.click();
-                    return true;
-                }}
-            }}
-            return false;
-        """)
-        if fallback:
-            log("clicked learn_more.php fallback link")
-
-    return clicked or False
+        }}
+        return false;
+    """)
+    if fallback:
+        log("clicked learn_more.php fallback link")
+        return True
+    safe_eval("window.location.href = 'learn_more.php';")
+    return True
 
 
 def handle_unknown():
@@ -2155,12 +2024,8 @@ def handle_article():
         log(f"behavioral fingerprint: type={fp.get('page_type')}, countdown={fp.get('has_countdown')}, verify={fp.get('has_verify_btn')}, continue={fp.get('has_continue_btn')}, getlink={fp.get('has_getlink')}")
 
     countdown = get_countdown()
-    timer_done = countdown <= 1 and countdown != -2
-    if timer_done:
-        log(f"timer already at {countdown} (finished), skipping read")
-    else:
-        read_secs = max(countdown + 5, 35) if countdown > 0 else rand(35, 55)
-        human_read(min(read_secs, 65))
+    read_secs = max(countdown + 5, 35) if countdown > 0 else rand(35, 55)
+    human_read(min(read_secs, 65))
 
     navigated = False
     ce_btn7_clicked = False
@@ -2627,7 +2492,6 @@ def main():
           redirect_elapsed = time.time() - redirect_start
           if "vplink.in" not in safe_url():
               adpt_redirect.observe(redirect_elapsed)
-              _inject_timer_cookies()
               monitor.install(driver)
           debug_shot("03-after-redirect")
 

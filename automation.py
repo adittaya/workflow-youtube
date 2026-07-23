@@ -107,6 +107,62 @@ proxy_punished = False
 proxy_restarts = 0
 MAX_PROXY_RESTARTS = 3
 
+TRAFFIC_SOURCE = os.environ.get("VPLINK_TRAFFIC_SOURCE", "youtube").lower()
+TRAFFIC_REFERRERS = {
+    "youtube": "https://www.youtube.com/",
+    "google": "https://www.google.com/",
+    "facebook": "https://www.facebook.com/",
+    "twitter": "https://x.com/",
+    "direct": "",
+}
+TRAFFIC_UTM = {
+    "youtube": {"utm_source": "youtube", "utm_medium": "referral", "utm_campaign": "link_in_description"},
+    "google": {"utm_source": "google", "utm_medium": "organic", "utm_campaign": "search"},
+    "facebook": {"utm_source": "facebook", "utm_medium": "social", "utm_campaign": "post"},
+    "twitter": {"utm_source": "twitter", "utm_medium": "social", "utm_campaign": "tweet"},
+    "direct": {},
+}
+
+
+def _inject_traffic_source():
+    if TRAFFIC_SOURCE not in TRAFFIC_REFERRERS:
+        return
+    referrer = TRAFFIC_REFERRERS[TRAFFIC_SOURCE]
+    if not referrer:
+        return
+    try:
+        driver.execute_cdp_cmd("Network.setExtraHTTPHeaders", {
+            "headers": {"Referer": referrer}
+        })
+        log(f"traffic source: {TRAFFIC_SOURCE} referrer={referrer}")
+    except Exception:
+        pass
+    referrer_js = f"""
+    Object.defineProperty(document, 'referrer', {{
+        get: function() {{ return '{referrer}'; }}
+    }});
+    """
+    try:
+        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": referrer_js})
+    except Exception:
+        pass
+
+
+def _add_utm_to_url(url):
+    if TRAFFIC_SOURCE not in TRAFFIC_UTM or not TRAFFIC_UTM[TRAFFIC_SOURCE]:
+        return url
+    if not url or not url.startswith("http"):
+        return url
+    from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query)
+    utm = TRAFFIC_UTM[TRAFFIC_SOURCE]
+    for k, v in utm.items():
+        if k not in params:
+            params[k] = [v]
+    new_query = urlencode({k: v[0] for k, v in params.items()})
+    return urlunparse(parsed._replace(query=new_query))
+
 
 class AdaptiveTimeout:
     __slots__ = ('name', 'value', 'default', 'min_val', 'max_val', 'safety')
@@ -1783,6 +1839,8 @@ def _create_driver():
     except Exception:
         pass
 
+    _inject_traffic_source()
+
     stealth_js = _build_stealth_js(profile)
     try:
         driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": stealth_js})
@@ -2352,8 +2410,9 @@ def main():
     print("\n" + "=" * 39)
     print("  " + ("DESTINATION URL:" if destination_url else "NO DESTINATION"))
     if destination_url:
-        print("  " + destination_url)
-        (Path(__file__).parent / "destination_url.txt").write_text(destination_url, "utf-8")
+        final_url = _add_utm_to_url(destination_url)
+        print("  " + final_url)
+        (Path(__file__).parent / "destination_url.txt").write_text(final_url, "utf-8")
         if PROXY_IP and PROXY_PORT:
             mark_proxy_used(PROXY_IP, PROXY_PORT)
     ms(2000)

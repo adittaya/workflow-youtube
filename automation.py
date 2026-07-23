@@ -531,7 +531,29 @@ DEST_PATTERNS = [
     "capecutapk.com", "amazingbaba.com", "ti.com", "1xbet", "whotop.cc",
 ]
 
+ARTICLE_PATH_PATTERNS = [
+    "/studyscholorships/", "/universitiesstudy/", "/studieseducates/",
+    "/studiiessuniversitiess/", "/universitesstudiiess/", "/studiessuniversitiess/",
+]
+
+INTERMEDIATE_PATTERNS = [
+    "learn_more.php", "studieseducates", "studiiessuniversitiess",
+    "universitesstudiiess", "studiessuniversitiess"
+]
+
 AD_DOMAINS = ["golaso.org", "doubleclick.net", "googlesyndication.com", "googleadservices.com"]
+
+
+def is_article_page(url):
+    if not url or not url.startswith("http"):
+        return False
+    return any(p in url for p in ARTICLE_PATH_PATTERNS)
+
+
+def is_intermediate_page(url):
+    if not url:
+        return False
+    return any(x in url for x in INTERMEDIATE_PATTERNS)
 
 
 def is_destination(url):
@@ -539,7 +561,19 @@ def is_destination(url):
         return False
     if "chrome-error" in url or "about:blank" in url:
         return False
-    return any(p in url for p in DEST_PATTERNS)
+    if any(p in url for p in DEST_PATTERNS):
+        return True
+    if is_article_page(url) or is_intermediate_page(url):
+        return False
+    if any(d in url for d in AD_DOMAINS):
+        return False
+    if "vplink.in" in url:
+        return False
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    if parsed.hostname and "." in parsed.hostname:
+        return True
+    return False
 
 
 def is_ad_domain(url):
@@ -1961,10 +1995,7 @@ def main():
               continue
 
           url_key = url.split("#")[0]
-          is_intermediate = any(x in url for x in [
-              "learn_more.php", "studieseducates", "studiiessuniversitiess",
-              "universitesstudiiess", "studiessuniversitiess"
-          ])
+          is_intermediate = is_intermediate_page(url)
           if "vplink.in" not in url and not is_intermediate:
               url_visits[url_key] = url_visits.get(url_key, 0) + 1
               if url_visits[url_key] >= max_url_visits:
@@ -2120,7 +2151,7 @@ def main():
               last_base = url_base(safe_url())
               continue
 
-          if any(x in url for x in ["learn_more.php", "studieseducates", "studiiessuniversitiess", "universitesstudiiess", "studiessuniversitiess"]):
+          if is_intermediate_page(url):
               log("intermediate redirect page, waiting for auto-redirect...")
               intermediate_base = url_base(url)
               redirected = False
@@ -2162,10 +2193,7 @@ def main():
                       break
                   cur = safe_url()
                   cur_base = url_base(cur)
-                  intermediate_skip = any(x in cur for x in [
-                      "learn_more.php", "studieseducates", "studiiessuniversitiess",
-                      "universitesstudiiess", "studiessuniversitiess"
-                  ])
+                  intermediate_skip = is_intermediate_page(cur)
                   if cur_base != intermediate_base and not intermediate_skip:
                       log(f"redirected to: {cur[:100]}")
                       human_delay(500, 1500)

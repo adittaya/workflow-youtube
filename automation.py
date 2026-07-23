@@ -598,24 +598,7 @@ def click_text(txt):
 #  Destination / Ad detection
 # ══════════════════════════════════════════════════════════════
 
-DEST_PATTERNS = [
-    "12indiaplay.com", "vv53243", "casino", "one-vv",
-    "apkmirror.com", "play.google.com", "download", ".apk",
-    "capecutapk.com", "amazingbaba.com", "ti.com", "1xbet", "whotop.cc",
-]
-
-ARTICLE_PATH_PATTERNS = [
-    "/studyscholorships/", "/universitiesstudy/", "/studieseducates/",
-    "/studiiessuniversitiess/", "/universitesstudiiess/", "/studiessuniversitiess/",
-]
-
-INTERMEDIATE_PATTERNS = [
-    "learn_more.php", "studieseducates", "studiiessuniversitiess",
-    "universitesstudiiess", "studiessuniversitiess", "educationsuniversitiss",
-    "studyuniversitiess", "studyeducates", "educatestudies"
-]
-
-AD_DOMAINS = ["golaso.org", "doubleclick.net", "googlesyndication.com", "googleadservices.com"]
+SKIP_NAV_URLS = ["vplink.in", "learn_more", "about:", "chrome-", "cdn-cgi", "gstatic.com", "cloudflareinsights", "googleadservices", "googlesyndication", "doubleclick"]
 
 
 def has_countdown_template():
@@ -633,8 +616,6 @@ def has_countdown_template():
 def is_article_page(url):
     if not url or not url.startswith("http"):
         return False
-    if any(p in url for p in ARTICLE_PATH_PATTERNS):
-        return True
     if "vplink.in" in url or "learn_more.php" in url:
         return False
     return has_countdown_template()
@@ -643,7 +624,9 @@ def is_article_page(url):
 def is_intermediate_page(url):
     if not url:
         return False
-    return any(x in url for x in INTERMEDIATE_PATTERNS)
+    if "learn_more.php" in url:
+        return True
+    return False
 
 
 def is_destination(url):
@@ -651,11 +634,7 @@ def is_destination(url):
         return False
     if "chrome-error" in url or "about:blank" in url:
         return False
-    if any(p in url for p in DEST_PATTERNS):
-        return True
     if is_article_page(url) or is_intermediate_page(url):
-        return False
-    if any(d in url for d in AD_DOMAINS):
         return False
     if "vplink.in" in url:
         return False
@@ -667,9 +646,7 @@ def is_destination(url):
 
 
 def is_ad_domain(url):
-    if not url or not url.startswith("http"):
-        return False
-    return any(d in url for d in AD_DOMAINS)
+    return False
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1412,7 +1389,7 @@ def handle_article():
                     pass
                 human_delay(2000, 4000)
                 return True
-            if any(x in cur for x in ["learn_more.php", "studiiess", "studieseducates"]):
+            if is_intermediate_page(cur) or "learn_more" in cur:
                 log(f"on intermediate page: {cur[:80]}")
                 return True
         if ce_btn7_clicked:
@@ -2131,11 +2108,7 @@ def main():
                           cur = driver.current_url
                           if cur and cur != _nav_last_url[0]:
                               _nav_last_url[0] = cur
-                              if not any(x in cur for x in [
-                                  "studiiess", "studieseducates", "learn_more", "vplink.in",
-                                  "about:", "chrome-", "cdn-cgi", "educationsuniversitiss",
-                                  "studyuniversitiess", "studyeducates", "educatestudies"
-                              ]):
+                              if not any(x in cur for x in SKIP_NAV_URLS):
                                   _nav_captured["url"] = cur
                       except Exception:
                           pass
@@ -2172,9 +2145,9 @@ def main():
                       extracted_url = safe_eval("""
                           var html = document.documentElement.outerHTML || '';
                           var m = html.match(/window\\.location(?:\\.href)?\\s*=\\s*['"](\\/[^'"]+)['"]/);
-                          if (m && m[1].indexOf('studiiessuniversitiess') < 0 && m[1].indexOf('learn_more') < 0 && m[1].indexOf('educationsuniversitiss') < 0) return m[1];
+                          if (m && m[1].indexOf('learn_more') < 0) return m[1];
                           m = html.match(/window\\.location\\.replace\\s*\\(\\s*['"](\\/[^'"]+)['"]\\s*\\)/);
-                          if (m && m[1].indexOf('studiiessuniversitiess') < 0 && m[1].indexOf('learn_more') < 0 && m[1].indexOf('educationsuniversitiss') < 0) return m[1];
+                          if (m && m[1].indexOf('learn_more') < 0) return m[1];
                           m = html.match(/window\\.location(?:\\.href)?\\s*=\\s*['"](https?:\\/\\/[^'"]+)['"]/);
                           if (m && m[1].indexOf('learn_more') < 0 && m[1].indexOf('vplink.in') < 0) return m[1];
                           var meta = document.querySelector('meta[http-equiv="refresh"]');
@@ -2185,8 +2158,7 @@ def main():
                           var links = document.querySelectorAll('a[href]');
                           for (var i = 0; i < links.length; i++) {{
                               var href = links[i].href;
-                              if (href && href.indexOf('javascript:') < 0 && href.indexOf('studiiessuniversitiess') < 0
-                                  && href.indexOf('universitesstudiiess') < 0 && href.indexOf('learn_more') < 0
+                              if (href && href.indexOf('javascript:') < 0 && href.indexOf('learn_more') < 0
                                   && href.indexOf('vplink.in') < 0 && href.startsWith('http')) {{
                                   return href;
                               }}
@@ -2210,7 +2182,7 @@ def main():
                           for (var i = 0; i < scripts.length; i++) {{
                               var t = scripts[i].textContent || '';
                               var timerMatch = t.match(/setTimeout\\s*\\(\\s*(?:function\\s*\\(\\)\\s*\\{?\\s*)?window\\.location(?:\\.href)?\\s*=\\s*['"]([^'"]+)['"]/);
-                              if (timerMatch && timerMatch[1].indexOf('studiiessuniversitiess') < 0) return timerMatch[1];
+                               if (timerMatch && timerMatch[1].indexOf('learn_more') < 0 && timerMatch[1].indexOf('vplink.in') < 0) return timerMatch[1];
                           }}
                           return null;
                       """)

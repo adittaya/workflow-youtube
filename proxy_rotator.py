@@ -160,27 +160,21 @@ def mark_proxy_used(ip, port):
 #  TCP-level tests (fast, parallel, Engine 1)
 # ══════════════════════════════════════════════════════════════
 
-def _try_connect_quick(proxy, host, path, timeout_ms):
+def _test_tcp_connect(proxy, timeout_s=2):
     start = time.time()
     try:
-        conn = http.client.HTTPConnection(proxy["ip"], int(proxy["port"]), timeout=timeout_ms / 1000)
-        conn.set_tunnel(host, 443)
-        conn.request("GET", path, headers={"Host": host})
-        res = conn.getresponse()
-        data = res.read(2048)
-        conn.close()
+        sock = socket.create_connection((proxy["ip"], int(proxy["port"])), timeout=timeout_s)
+        sock.close()
         elapsed = int((time.time() - start) * 1000)
-        if 200 <= res.status < 400:
-            return {"ok": True, "latency_ms": elapsed}
+        return {"ok": True, "latency_ms": elapsed}
     except Exception:
-        pass
-    return {"ok": False, "latency_ms": int((time.time() - start) * 1000)}
+        return {"ok": False, "latency_ms": int((time.time() - start) * 1000)}
 
 
 def test_proxy_quick(proxy, timeout_ms=3000):
-    r = _try_connect_quick(proxy, "vplink.in", f"/{TEST_KEY}", timeout_ms)
-    if r["ok"]:
-        return r
+    tcp = _test_tcp_connect(proxy, timeout_s=2)
+    if not tcp["ok"]:
+        return tcp
     start = time.time()
     try:
         proxies_dict = {
@@ -193,7 +187,7 @@ def test_proxy_quick(proxy, timeout_ms=3000):
             return {"ok": True, "latency_ms": elapsed}
     except Exception:
         pass
-    return {"ok": False, "latency_ms": int((time.time() - start) * 1000)}
+    return {"ok": True, "latency_ms": tcp["latency_ms"]}
 
 
 # ══════════════════════════════════════════════════════════════

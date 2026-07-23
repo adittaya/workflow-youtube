@@ -69,7 +69,7 @@ jobs:
 
       - name: Run automation (with proxy retry)
         id: automate
-    timeout-minutes: 15
+        timeout-minutes: 15
         env:
           CHROMIUM_PATH: /usr/bin/google-chrome
         run: |

@@ -701,42 +701,8 @@ def report_proxy_failure(reason):
 
 
 def restart_proxy():
-    global driver, PROXY, PROXY_HOST, PROXY_IP, PROXY_PORT, proxy_punished, proxy_restarts, start_time
-    if proxy_restarts >= MAX_PROXY_RESTARTS:
-        log(f"max proxy restarts ({MAX_PROXY_RESTARTS}) reached, giving up")
-        return False
-    proxy_restarts += 1
-    log(f"--- restarting browser with new proxy (attempt {proxy_restarts}/{MAX_PROXY_RESTARTS}) ---")
-    try:
-        driver.quit()
-    except Exception:
-        pass
-    driver = None
-    proxy_punished = False
-    new_proxy = None
-    try:
-        new_proxy = get_proxy()
-    except Exception as e:
-        log(f"failed to get new proxy: {e}")
-    if not new_proxy:
-        log("no new proxy available, continuing without proxy")
-        PROXY = ""
-        PROXY_HOST = ""
-        PROXY_IP = ""
-        PROXY_PORT = 0
-    else:
-        PROXY = f"http://{new_proxy['ip']}:{new_proxy['port']}"
-        PROXY_HOST = new_proxy["ip"]
-        PROXY_IP = new_proxy["ip"]
-        PROXY_PORT = int(new_proxy["port"])
-        log(f"new proxy: {PROXY_IP}:{PROXY_PORT}")
-    start_time = time.time()
-    try:
-        _create_driver()
-    except Exception as e:
-        log(f"failed to create browser: {e}")
-        return False
-    return True
+    log("proxy restart disabled — using same IP for entire session")
+    return False
 
 
 def _signal_handler(sig, frame):

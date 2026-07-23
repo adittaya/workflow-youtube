@@ -1466,86 +1466,111 @@ def do_get_link():
 
         ms(500)
 
-        dest_url = safe_eval("""
-            var gt = document.getElementById('gt-link');
-            if (gt && gt.href && gt.href.indexOf('http') === 0) return gt.href;
-            var el = document.getElementById('get-link');
-            if (el && el.href && el.href.indexOf('http') === 0 && el.href.indexOf('void') < 0) return el.href;
-            return '';
-        """) or ""
-        log(f"destination URL from page: {dest_url[:100] if dest_url else 'empty'}")
+        human_delay(800, 2000)
+        human_mouse_move("#get-link")
+        human_delay(300, 700)
 
-        if not dest_url or dest_url.startswith("javascript:"):
-            log("no valid destination URL found")
-            return False
-
-        log(f"opening destination in new tab: {dest_url[:100]}")
+        log("clicking #get-link to open new tab...")
         pre_handles = set(driver.window_handles)
 
-        try:
-            driver.execute_script(f"window.open('{dest_url}', '_blank')")
-        except Exception:
-            driver.execute_script("arguments[0]", dest_url)
-            try:
-                driver.execute_script("window.open(arguments[0], '_blank')", dest_url)
-            except Exception as e:
-                log(f"window.open failed: {e}")
-
+        human_click("#get-link")
         ms(2000)
 
         new_tab = None
-        for _ in range(10):
+        for _ in range(15):
             ms(1000)
             cur_handles = set(driver.window_handles)
             diff = cur_handles - pre_handles
             if diff:
                 new_tab = diff.pop()
-                log("new tab opened")
+                log("new tab opened from #get-link click")
                 break
 
         if not new_tab:
-            log("no new tab opened, using href as destination")
-            destination_url = dest_url
-            return True
+            log("no new tab opened, trying gt-link click...")
+            gt_clicked = safe_eval("""
+                var gt = document.getElementById('gt-link');
+                if (gt && gt.href && gt.href.indexOf('http') === 0) {
+                    gt.click();
+                    return true;
+                }
+                return false;
+            """)
+            if gt_clicked:
+                ms(2000)
+                for _ in range(10):
+                    ms(1000)
+                    cur_handles = set(driver.window_handles)
+                    diff = cur_handles - pre_handles
+                    if diff:
+                        new_tab = diff.pop()
+                        log("new tab opened from gt-link click")
+                        break
 
-        driver.switch_to.window(new_tab)
-        log("switched to new tab, waiting 10s for page to load...")
-        ms(10000)
+        if new_tab:
+            driver.switch_to.window(new_tab)
+            log("switched to new tab, waiting for redirects...")
+            ms(3000)
 
-        final_url = safe_url()
-        if final_url and final_url not in ("about:blank", "") and "chrome-error" not in final_url:
-            log(f"destination from new tab: {final_url[:120]}")
-            destination_url = final_url
+            final_url = ""
+            for attempt in range(20):
+                try:
+                    cur = driver.current_url
+                    if cur and "about:blank" not in cur and "chrome-error" not in cur:
+                        if cur != final_url:
+                            final_url = cur
+                            log(f"[tab {attempt}] {final_url[:120]}")
+                        is_tracking = any(x in cur for x in [
+                            "lnkd.in", "linkedin.com", "google.com/url",
+                            "facebook.com/l.php", "t.co/"
+                        ])
+                        if not is_tracking and final_url and attempt >= 2:
+                            break
+                except Exception:
+                    break
+                ms(1000)
+
+            if final_url and "about:blank" not in final_url and "chrome-error" not in final_url:
+                if is_destination(final_url):
+                    log(f"destination from new tab: {final_url[:120]}")
+                    destination_url = final_url
+                    try:
+                        driver.close()
+                        driver.switch_to.window(driver.window_handles[0])
+                    except Exception:
+                        pass
+                    return True
+
             try:
                 driver.close()
                 driver.switch_to.window(driver.window_handles[0])
             except Exception:
                 pass
+
+        get_link_href = safe_eval("""
+            var el = document.getElementById('get-link');
+            return el ? el.href : '';
+        """) or ""
+        if get_link_href.startswith("http") and "void" not in get_link_href:
+            log(f"destination (get-link href fallback): {get_link_href[:100]}")
+            destination_url = get_link_href
             return True
 
-        log("new tab URL empty/blank after 10s, checking for redirects...")
-        for attempt in range(5):
-            ms(1000)
-            final_url = safe_url()
-            if final_url and final_url not in ("about:blank", "") and "chrome-error" not in final_url:
-                log(f"destination from redirect: {final_url[:120]}")
-                destination_url = final_url
-                try:
-                    driver.close()
-                    driver.switch_to.window(driver.window_handles[0])
-                except Exception:
-                    pass
-                return True
+        gt_href = safe_eval("var gt = document.getElementById('gt-link'); return gt ? gt.href : '';") or ""
+        if gt_href.startswith("http"):
+            log(f"destination (gt-link fallback): {gt_href[:100]}")
+            destination_url = gt_href
+            return True
 
         try:
-            driver.close()
             driver.switch_to.window(driver.window_handles[0])
         except Exception:
             pass
-
-        log(f"destination (href fallback): {dest_url[:100]}")
-        destination_url = dest_url
-        return True
+        m_url = safe_url()
+        if m_url and is_destination(m_url):
+            log(f"destination (main page): {m_url[:100]}")
+            destination_url = m_url
+            return True
 
     except Exception as error:
         log(f"get-link handler failed: {str(error) or 'unknown error'}")

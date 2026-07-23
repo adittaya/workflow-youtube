@@ -116,36 +116,69 @@ jobs:
           done
           echo "status=success" >> $GITHUB_OUTPUT
 
+          # Capture destination URL from automation output
+          DEST_URL=""
+          if [ -f destination_url.txt ]; then
+            DEST_URL=$(cat destination_url.txt | tr -d '[:space:]')
+          fi
+          if [ -n "$DEST_URL" ]; then
+            echo "destination=$DEST_URL" >> $GITHUB_OUTPUT
+            echo "Destination: $DEST_URL"
+          else
+            echo "destination=" >> $GITHUB_OUTPUT
+            echo "No destination captured"
+          fi
+
       - name: Relay — trigger next run
         if: success() || failure()
         env:
           TRIGGER_TOKEN: ${{ secrets.LOOP_TRIGGER_TOKEN }}
         run: |
-          if [ -z "$TRIGGER_TOKEN" ]; then
-            echo "::warning::LOOP_TRIGGER_TOKEN not set — relay cannot fire"
-            exit 0
-          fi
           if [ -z "$RELAY_TARGET_REPO" ]; then
             echo "::warning::RELAY_TARGET_REPO not set and github.repository empty — relay cannot fire"
             exit 0
           fi
-          for attempt in 1 2 3; do
-            echo "Relay attempt $attempt..."
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-              -H "Authorization: token $TRIGGER_TOKEN" \
-              -H "Accept: application/vnd.github.v3+json" \
-              "https://api.github.com/repos/${RELAY_TARGET_REPO}/dispatches" \
-              -d '{"event_type":"relay","client_payload":{"key":"'"$VPLINK_KEY"'"}}')
-            echo "HTTP $HTTP_CODE"
-            if [ "$HTTP_CODE" = "204" ]; then
-              echo "Relay dispatched successfully"
-              exit 0
+
+          PAYLOAD='{"event_type":"relay","client_payload":{"key":"'"$VPLINK_KEY"'"}}'
+
+          # Try LOOP_TRIGGER_TOKEN first, then fall back to GITHUB_TOKEN
+          for TOKEN_VAR in TRIGGER_TOKEN GITHUB_TOKEN; do
+            TOKEN="${!TOKEN_VAR}"
+            if [ -z "$TOKEN" ]; then
+              echo "$TOKEN_VAR is empty — skipping"
+              continue
             fi
-            if [ "$HTTP_CODE" = "404" ] || [ "$HTTP_CODE" = "403" ]; then
-              echo "::warning::Relay failed with HTTP $HTTP_CODE — token may lack workflow scope or repo not found"
-              exit 1
-            fi
-            sleep 5
+            echo "Trying relay with $TOKEN_VAR..."
+            for attempt in 1 2 3; do
+              HTTP_CODE=$(curl -s -o /tmp/relay_resp.txt -w "%{http_code}" -X POST \
+                -H "Authorization: token $TOKEN" \
+                -H "Accept: application/vnd.github.v3+json" \
+                "https://api.github.com/repos/${RELAY_TARGET_REPO}/dispatches" \
+                -d "$PAYLOAD")
+              echo "  Attempt $attempt: HTTP $HTTP_CODE"
+              if [ "$HTTP_CODE" = "204" ]; then
+                echo "Relay dispatched successfully via $TOKEN_VAR"
+                exit 0
+              fi
+              if [ "$HTTP_CODE" = "403" ] || [ "$HTTP_CODE" = "404" ]; then
+                BODY=$(cat /tmp/relay_resp.txt 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('message',''))" 2>/dev/null || echo "")
+                echo "  $TOKEN_VAR rejected: $BODY"
+                break
+              fi
+              sleep 3
+            done
           done
-          echo "::warning::Relay failed after 3 attempts"
+          echo "::warning::Relay failed — both LOOP_TRIGGER_TOKEN and GITHUB_TOKEN failed. Check token scopes (need 'repo' scope for repository_dispatch)"
           exit 1
+
+      - name: Summary
+        if: always()
+        run: |
+          DEST="${{ steps.automate.outputs.destination }}"
+          if [ -n "$DEST" ]; then
+            echo "## VPLink Result" >> $GITHUB_STEP_SUMMARY
+            echo "Destination: $DEST" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## VPLink Result" >> $GITHUB_STEP_SUMMARY
+            echo "No destination captured" >> $GITHUB_STEP_SUMMARY
+          fi

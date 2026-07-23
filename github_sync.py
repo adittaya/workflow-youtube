@@ -13,10 +13,12 @@ The GitHub repos ARE the database:
   - Repo description    → metadata
 """
 
+import io
 import json
 import re
 import sys
 import time
+import zipfile
 import requests
 
 GITHUB_API = "https://api.github.com"
@@ -157,14 +159,18 @@ def _extract_destinations_from_run(token, owner, repo, run_id):
         if not resp.ok:
             return []
         destinations = []
-        for line in resp.text.split("\n"):
-            if "DESTINATION URL:" in line or "DESTINATION_URL:" in line:
-                parts = line.split()
-                for p in parts:
-                    if p.startswith("http") and len(p) > 10:
-                        if p not in destinations:
-                            destinations.append(p)
-                        break
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+            for name in zf.namelist():
+                if name.endswith(".txt"):
+                    text = zf.read(name).decode(errors="replace")
+                    for line in text.split("\n"):
+                        low = line.lower()
+                        if "destination" in low and ("http" in line or "no destination" in low):
+                            for part in line.split():
+                                if part.startswith("http") and len(part) > 10:
+                                    if part not in destinations:
+                                        destinations.append(part)
+                                    break
     except Exception:
         return []
     return destinations

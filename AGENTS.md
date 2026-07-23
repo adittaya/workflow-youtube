@@ -9,8 +9,8 @@
 
 - **Last updated:** 2026-07-24
 - **Latest remote commit:** `5e60804` (feat: one-line full environment setup)
-- **Local codebase status:** CLEAN — all changes committed and pushed
-- **Git status:** Clean
+- **Local codebase status:** MODIFIED — uncommitted changes in continuous.yml and AGENTS.md
+- **Git status:** 1 file modified (continuous.yml), 1 file modified (AGENTS.md)
 
 ## What Has Been Done
 
@@ -151,6 +151,23 @@
 85. **tui/src/index.tsx** — Entry point: creates OpenTUI renderer, renders App
 86. **tui/src/cli.tsx** — CLI entry point with --help, --version flags
 
+### Code Changes Made (This Session — Workflow Destination Capture Fix)
+
+87. **continuous.yml** — Added destination URL capture: reads `destination_url.txt` after automation, writes to `$GITHUB_OUTPUT` as `destination` output
+88. **continuous.yml** — Relay step: Added `GITHUB_TOKEN` fallback when `LOOP_TRIGGER_TOKEN` fails (tries both tokens)
+89. **continuous.yml** — Relay step: Added response body parsing for better error messages on 403/404
+90. **continuous.yml** — Added `Summary` step: writes destination URL to `$GITHUB_STEP_SUMMARY` for visible workflow result
+91. **manager/app.py** — Fixed `fetch_deployment_status()`: was parsing zip archive as text (mojibake). Now uses `zipfile.ZipFile(io.BytesIO(...))` to properly extract logs. Added `"Destination:"` pattern match alongside `"DESTINATION URL:"`
+92. **github_sync.py** — Fixed `_extract_destinations_from_run()`: same zip-as-text bug. Now properly unzips logs. Added `"Destination:"` pattern match
+
+### Code Changes Made (This Session — Automation.py Fixes)
+
+93. **automation.py** — Removed `_inject_timer_cookies()`: dead code (never called), violated core principle "Follow the page, don't fight it"
+94. **automation.py** — Fixed `bezier_move()`: was queueing all moves in one ActionChains then performing instantly. Now does per-step perform() so mouse actually moves gradually along the bezier curve
+95. **automation.py** — Fixed `is_ad_domain()`: was returning `False` always (ad hijack detection completely disabled). Now checks against 14 known ad domains (googleadservices, doubleclick, propellerads, etc.)
+96. **automation.py** — Fixed `wait_for_countdown()`: was returning `False` (boolean) on timeout, now returns `"timeout"` string for consistency with other return values ("done", "rewarded", "stuck")
+97. **automation.py** — Fixed fragile `cycle` variable: initialized `cycle = -1` before loop, replaced `dir()` check with `cycle >= 0` check
+
 ## Pending / User Requests
 
 - User wants: comprehensive flow engine that handles ANY VPLink-type variation ✅ DONE
@@ -166,12 +183,12 @@
 
 | File | Status | Changes Made |
 |------|--------|-------------|
-| `automation.py` | MODIFIED | Major overhaul: PageMonitor, fingerprint_page, handle_generic, adaptive flow, timer cookies, fast-path destination extraction |
+| `automation.py` | MODIFIED | Removed _inject_timer_cookies, fixed bezier_move gradual mouse, fixed is_ad_domain 14 domains, fixed wait_for_countdown return, fixed cycle init |
 | `proxy_rotator.py` | MODIFIED | Pagination added to `fetch_proxies()`, `_fetch_state_keys()` helper, blacklist/used paginated |
-| `.github/workflows/continuous.yml` | MODIFIED | `RELAY_TARGET_REPO` env var, relay dispatch fix, per-repo concurrency, pip --break-system-packages, key validation, relay health checks |
+| `.github/workflows/continuous.yml` | MODIFIED | `RELAY_TARGET_REPO` env var, relay dispatch fix, per-repo concurrency, pip --break-system-packages, key validation, relay health checks, destination capture, GITHUB_TOKEN fallback, workflow summary |
 | `manager/app.py` | MODIFIED | Full deployment CI overhaul: template clone, RELAY_TARGET_REPO, workflow management, deployment verification, token scope validation |
 | `vplink247.py` | MODIFIED | Added RELAY_TARGET_REPO to _deploy_one and _update_one secrets, added cmd_sync(), registered sync subcommand |
-| `github_sync.py` | NEW | GitHub-as-database module: discover_deployments(), get_account_info(), get_deployment_detail(), scan_repos() |
+| `github_sync.py` | MODIFIED | Fixed zip-as-text bug in `_extract_destinations_from_run()`, added "Destination:" pattern |
 | `tui/` | NEW | OpenTUI React TUI: Dashboard, Deployments, Accounts, Analytics, Settings, Sync screens |
 | `config.py` | OK | Unchanged |
 | `schema.sql` | OK | Unchanged |

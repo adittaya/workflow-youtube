@@ -126,33 +126,6 @@ TRAFFIC_UTM = {
 }
 
 
-def _inject_timer_cookies():
-    """Inject adcacg/adcadg cookie to force 15s timers instead of 24s."""
-    try:
-        domain = safe_eval("return window.location.hostname;")
-        if not domain:
-            return
-        for cookie_name in ("adcadg", "adcacg"):
-            try:
-                driver.execute_cdp_cmd("Network.setCookie", {
-                    "name": cookie_name,
-                    "value": "1",
-                    "domain": "." + domain,
-                    "path": "/",
-                    "secure": True,
-                    "httpOnly": False,
-                    "maxAge": 86400,
-                })
-            except Exception:
-                try:
-                    driver.add_cookie({"name": cookie_name, "value": "1", "path": "/"})
-                except Exception:
-                    pass
-        log(f"injected timer cookies on {domain}")
-    except Exception:
-        pass
-
-
 def _inject_traffic_source():
     if TRAFFIC_SOURCE not in TRAFFIC_REFERRERS:
         return
@@ -847,20 +820,22 @@ def bezier_move(from_x, from_y, to_x, to_y):
     cp1y = from_y + (to_y - from_y) * 0.3 + (random.random() - 0.5) * 80
     cp2x = from_x + (to_x - from_x) * 0.7 + (random.random() - 0.5) * 60
     cp2y = from_y + (to_y - from_y) * 0.7 + (random.random() - 0.5) * 60
-    actions = ActionChains(driver)
-    for i in range(steps + 1):
-        t = i / steps
-        t2 = t * t
-        t3 = t2 * t
-        mt = 1 - t
-        mt2 = mt * mt
-        mt3 = mt2 * mt
-        x = mt3 * from_x + 3 * mt2 * t * cp1x + 3 * mt * t2 * cp2x + t3 * to_x
-        y = mt3 * from_y + 3 * mt2 * t * cp1y + 3 * mt * t2 * cp2y + t3 * to_y
-        actions.move_by_offset(int(x - from_x), int(y - from_y)) if i > 0 else None
-        ms(rand(5, 20))
+    prev_x, prev_y = from_x, from_y
     try:
-        actions.perform()
+        for i in range(1, steps + 1):
+            t = i / steps
+            t2 = t * t
+            t3 = t2 * t
+            mt = 1 - t
+            mt2 = mt * mt
+            mt3 = mt2 * mt
+            x = mt3 * from_x + 3 * mt2 * t * cp1x + 3 * mt * t2 * cp2x + t3 * to_x
+            y = mt3 * from_y + 3 * mt2 * t * cp1y + 3 * mt * t2 * cp2y + t3 * to_y
+            dx, dy = int(x - prev_x), int(y - prev_y)
+            if dx or dy:
+                ActionChains(driver).move_by_offset(dx, dy).perform()
+            prev_x, prev_y = x, y
+            ms(rand(5, 20))
     except Exception:
         pass
 
@@ -910,8 +885,7 @@ def human_read(duration_sec=45):
             mx = rand(100, vp_w - 100)
             my = rand(100, vp_h - 100)
             try:
-                ActionChains(driver).move_by_offset(mx - vp_w // 2, my - vp_h // 2).perform()
-                ActionChains(driver).move_by_offset(-(mx - vp_w // 2), -(my - vp_h // 2)).perform()
+                ActionChains(driver).move_by_offset(mx - vp_w // 2, my - vp_h // 2).pause(random.uniform(0.1, 0.3)).move_by_offset(-(mx - vp_w // 2), -(my - vp_h // 2)).perform()
             except Exception:
                 break
 
@@ -1046,6 +1020,22 @@ def is_destination(url):
 
 
 def is_ad_domain(url):
+    if not url:
+        return False
+    AD_DOMAINS = [
+        "googleadservices.com", "googlesyndication.com", "doubleclick.net",
+        "googleads.com", "adskeeper.com", "propellerads.com", "monetag.com",
+        "adsterra.com", "hilltopads.com", "exoclick.com", "trafficjunky.com",
+        "adnxs.com", "taboola.com", "outbrain.com", "mgid.com",
+    ]
+    from urllib.parse import urlparse
+    try:
+        host = urlparse(url).hostname or ""
+    except Exception:
+        return False
+    for d in AD_DOMAINS:
+        if host == d or host.endswith("." + d):
+            return True
     return False
 
 
@@ -1403,7 +1393,7 @@ def wait_for_countdown(template, max_wait_sec=50):
         if i % 10 == 0:
             human_scroll()
         ms(500)
-    return False
+    return "timeout"
 
 
 def check_ad_hijack():
@@ -2562,6 +2552,7 @@ def main():
       last_action_was_learn_more = False
       total_steps_seen = 0
       last_step_info = ""
+      cycle = -1
 
       for cycle in range(30):
           if destination_url or skip_main_loop:
@@ -2997,7 +2988,7 @@ def main():
         _revisit_with_referrer(final_url)
         if PROXY_IP and PROXY_PORT:
             mark_proxy_used(PROXY_IP, PROXY_PORT)
-    log(f"funnel stats: learn_more navigations={learn_more_count}, vplink arrivals={vplink_arrivals}, cycles={cycle + 1 if 'cycle' in dir() else 0}, elapsed={elapsed:.0f}s/{AUTOMATION_HARD_TIMEOUT}s")
+    log(f"funnel stats: learn_more navigations={learn_more_count}, vplink arrivals={vplink_arrivals}, cycles={cycle + 1 if cycle >= 0 else 0}, elapsed={elapsed:.0f}s/{AUTOMATION_HARD_TIMEOUT}s")
     ms(2000)
     try:
         driver.quit()

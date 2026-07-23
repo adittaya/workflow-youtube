@@ -65,14 +65,8 @@ def _detect_chrome_binary() -> str:
 SUPABASE_REST = "/rest/v1"
 TEST_KEY = "gbd1b"
 TEST_URL = f"https://vplink.in/{TEST_KEY}"
-STATE_ENDPOINT = "/api_usage"
-
-
-def _get_subnet(ip):
-    parts = ip.split(".")
-    if len(parts) == 4:
-        return f"{parts[0]}.{parts[1]}.{parts[2]}.0/24"
-    return None
+STATE_TABLE = "/proxy_state"
+STATE_TTL_HOURS = 24
 
 
 def supabase_fetch(endpoint, method="GET", timeout=25, data=None):
@@ -104,146 +98,62 @@ def fetch_proxies(tier="premium"):
     return resp.json()
 
 
-def _record_state(ip, port, state, reason=""):
-    now_iso = datetime.datetime.utcnow().isoformat() + "Z"
-    subnet = _get_subnet(ip) or ""
-    data = {
-        "endpoint": "_proxy_state",
-        "method": state,
-        "ip": f"{ip}:{port}",
-        "user_agent": subnet,
-        "status": 200 if state == "used" else 503,
-        "latency_ms": 0,
-        "tier": reason[:100] if reason else "",
-        "created_at": now_iso,
-    }
+def _fetch_blacklisted_keys():
     try:
-        supabase_fetch(
-            STATE_ENDPOINT,
-            method="POST",
-            data=data,
+        endpoint = (
+            f"{STATE_TABLE}?select=ip,port"
+            f"&state=eq.dead"
+            f"&expires_at=gt.{datetime.datetime.utcnow().isoformat()}Z"
+            f"&limit=1000"
         )
-    except Exception:
-        pass
-
-
-def _record_subnet_dead(ip, reason=""):
-    subnet = _get_subnet(ip)
-    if not subnet:
-        return
-    now_iso = datetime.datetime.utcnow().isoformat() + "Z"
-    data = {
-        "endpoint": "_proxy_state",
-        "method": "dead_subnet",
-        "ip": subnet,
-        "user_agent": "",
-        "status": 503,
-        "latency_ms": 0,
-        "tier": reason[:100] if reason else "",
-        "created_at": now_iso,
-    }
-    try:
-        supabase_fetch(
-            STATE_ENDPOINT,
-            method="POST",
-            data=data,
-        )
-    except Exception:
-        pass
-
-
-def _fetch_state_set(state, hours):
-    cutoff = datetime.datetime.utcnow() - datetime.timedelta(hours=hours)
-    cutoff_iso = cutoff.isoformat() + "Z"
-    endpoint = (
-        f"{STATE_ENDPOINT}"
-        f"?select=ip,method,created_at"
-        f"&endpoint=eq._proxy_state"
-        f"&method=eq.{state}"
-        f"&created_at=gt.{cutoff_iso}"
-        f"&order=created_at.desc&limit=1000"
-    )
-    try:
         resp = supabase_fetch(endpoint)
         if resp.ok:
-            return resp.json()
+            return {f"{e['ip']}:{e['port']}" for e in resp.json()}
     except Exception:
         pass
-    return []
+    return set()
 
 
-def _fetch_subnet_dead_set(hours):
-    cutoff = datetime.datetime.utcnow() - datetime.timedelta(hours=hours)
-    cutoff_iso = cutoff.isoformat() + "Z"
-    endpoint = (
-        f"{STATE_ENDPOINT}"
-        f"?select=ip,created_at"
-        f"&endpoint=eq._proxy_state"
-        f"&method=eq.dead_subnet"
-        f"&created_at=gt.{cutoff_iso}"
-        f"&order=created_at.desc&limit=500"
-    )
+def _fetch_used_keys():
     try:
+        endpoint = (
+            f"{STATE_TABLE}?select=ip,port"
+            f"&state=eq.used"
+            f"&expires_at=gt.{datetime.datetime.utcnow().isoformat()}Z"
+            f"&limit=1000"
+        )
         resp = supabase_fetch(endpoint)
         if resp.ok:
-            return resp.json()
+            return {f"{e['ip']}:{e['port']}" for e in resp.json()}
     except Exception:
         pass
-    return []
-
-
-def _ip_in_subnet(ip, subnet_cidr):
-    try:
-        parts = subnet_cidr.replace("/24", "").split(".")
-        ip_parts = ip.split(".")
-        return parts[:3] == ip_parts[:3]
-    except Exception:
-        return False
-
-
-def _get_blacklist_sets():
-    dead_entries = _fetch_state_set("dead", 24)
-    dead_keys = set()
-    for e in dead_entries:
-        dead_keys.add(e["ip"])
-
-    subnet_entries = _fetch_subnet_dead_set(24)
-    dead_subnets = set()
-    for e in subnet_entries:
-        dead_subnets.add(e["ip"])
-
-    used_entries = _fetch_state_set("used", 1)
-    used_keys = set()
-    for e in used_entries:
-        used_keys.add(e["ip"])
-
-    try:
-        local_bl = config.load_proxy_blacklist()
-        for k in local_bl:
-            dead_keys.add(k)
-    except Exception:
-        pass
-
-    return dead_keys, dead_subnets, used_keys
+    return set()
 
 
 def mark_dead(ip, port, reason=""):
-    key = f"{ip}:{port}"
-    _record_state(ip, port, "dead", reason)
-    _record_subnet_dead(ip, reason)
+    expires = (datetime.datetime.utcnow() + datetime.timedelta(hours=STATE_TTL_HOURS)).isoformat() + "Z"
+    data = {"ip": ip, "port": int(port), "state": "dead", "expires_at": expires}
+    try:
+        supabase_fetch(STATE_TABLE, method="POST", data=data)
+    except Exception:
+        pass
     try:
         from config import add_proxy_blacklist
         add_proxy_blacklist(ip, port)
     except Exception:
         pass
-    subnet = _get_subnet(ip) or "?"
-    print(f"  [Proxy] Blacklisted {key} + subnet {subnet} for 24h ({reason})", file=sys.stderr)
+    print(f"  [Proxy] Blacklisted {ip}:{port} for 24h ({reason})", file=sys.stderr)
     return True
 
 
 def mark_proxy_used(ip, port):
-    _record_state(ip, port, "used")
-    print(f"  [Proxy] Marked {ip}:{port} as used (skip 1h)", file=sys.stderr)
+    expires = (datetime.datetime.utcnow() + datetime.timedelta(hours=STATE_TTL_HOURS)).isoformat() + "Z"
+    data = {"ip": ip, "port": int(port), "state": "used", "expires_at": expires}
+    try:
+        supabase_fetch(STATE_TABLE, method="POST", data=data)
+    except Exception:
+        pass
+    print(f"  [Proxy] Marked {ip}:{port} as used (skip 24h)", file=sys.stderr)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -408,31 +318,16 @@ def get_proxy(tier="premium"):
         return None
 
     print("  [Proxy] Checking shared blacklist (Supabase)...", file=sys.stderr)
-    dead_keys, dead_subnets, used_keys = _get_blacklist_sets()
-    print(f"  [Proxy] Shared state: {len(dead_keys)} dead, {len(dead_subnets)} dead subnets, {len(used_keys)} recently used", file=sys.stderr)
+    dead_keys = _fetch_blacklisted_keys()
+    used_keys = _fetch_used_keys()
+    skip_keys = dead_keys | used_keys
+    print(f"  [Proxy] Shared state: {len(dead_keys)} dead, {len(used_keys)} used (24h)", file=sys.stderr)
 
-    filtered = []
-    skipped_dead = 0
-    skipped_used = 0
-    skipped_subnet = 0
-    for p in all_proxies:
-        key = f"{p['ip']}:{p['port']}"
-        if key in dead_keys:
-            skipped_dead += 1
-            continue
-        if key in used_keys:
-            skipped_used += 1
-            continue
-        subnet = _get_subnet(p["ip"])
-        if subnet and subnet in dead_subnets:
-            skipped_subnet += 1
-            continue
-        filtered.append(p)
-
-    print(f"  [Proxy] Filtered: {len(filtered)} remaining (skipped {skipped_dead} dead, {skipped_used} used, {skipped_subnet} dead-subnet)", file=sys.stderr)
+    filtered = [p for p in all_proxies if f"{p['ip']}:{p['port']}" not in skip_keys]
+    print(f"  [Proxy] Filtered: {len(filtered)} remaining (skipped {len(all_proxies) - len(filtered)})", file=sys.stderr)
 
     if not filtered:
-        print("  [Proxy] All proxies excluded by shared blacklist, trying local fallback...", file=sys.stderr)
+        print("  [Proxy] All proxies excluded, trying all...", file=sys.stderr)
         filtered = all_proxies
 
     random.shuffle(filtered)

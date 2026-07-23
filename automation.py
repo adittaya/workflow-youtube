@@ -75,6 +75,7 @@ def _detect_chrome_binary() -> str:
 # ── Globals ──
 BASE_DOMAIN = "vplink.in"
 KEY = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("VPLINK_KEY", "")
+_current_key = KEY
 if not KEY:
     print("Usage: python3 automation.py <key_or_url>", file=sys.stderr)
     sys.exit(1)
@@ -629,6 +630,8 @@ def is_intermediate_page(url):
     return False
 
 
+_current_key = ""
+
 def is_destination(url):
     if not url or not url.startswith("http"):
         return False
@@ -637,6 +640,8 @@ def is_destination(url):
     if is_article_page(url) or is_intermediate_page(url):
         return False
     if "vplink.in" in url:
+        return False
+    if _current_key and _current_key in url:
         return False
     from urllib.parse import urlparse
     parsed = urlparse(url)

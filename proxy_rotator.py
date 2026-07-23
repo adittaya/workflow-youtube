@@ -143,19 +143,25 @@ def _fetch_used_keys():
 
 
 def mark_dead(ip, port, reason=""):
+    try:
+        supabase_fetch(
+            f"/proxy_results?ip=eq.{ip}&port=eq.{port}",
+            method="DELETE"
+        )
+    except Exception:
+        pass
+    print(f"  [Proxy] DELETED {ip}:{port} from DB ({reason})", file=sys.stderr)
+    return True
+
+
+def mark_proxy_used(ip, port):
     expires = (datetime.datetime.utcnow() + datetime.timedelta(hours=STATE_TTL_HOURS)).isoformat() + "Z"
-    data = {"ip": ip, "port": int(port), "state": "dead", "expires_at": expires}
+    data = {"ip": ip, "port": int(port), "state": "used", "expires_at": expires}
     try:
         supabase_fetch(STATE_TABLE, method="POST", data=data)
     except Exception:
         pass
-    try:
-        from config import add_proxy_blacklist
-        add_proxy_blacklist(ip, port)
-    except Exception:
-        pass
-    print(f"  [Proxy] Blacklisted {ip}:{port} for 24h ({reason})", file=sys.stderr)
-    return True
+    print(f"  [Proxy] Marked {ip}:{port} as used (skip 24h)", file=sys.stderr)
 
 
 def mark_proxy_used(ip, port):
@@ -323,13 +329,11 @@ def get_proxy(tier="premium"):
     if not all_proxies:
         return None
 
-    print("  [Proxy] Checking shared blacklist (Supabase)...", file=sys.stderr)
-    dead_keys = _fetch_blacklisted_keys()
+    print("  [Proxy] Checking used state (Supabase)...", file=sys.stderr)
     used_keys = _fetch_used_keys()
-    skip_keys = dead_keys | used_keys
-    print(f"  [Proxy] Shared state: {len(dead_keys)} dead, {len(used_keys)} used (24h)", file=sys.stderr)
+    print(f"  [Proxy] {len(used_keys)} used (24h)", file=sys.stderr)
 
-    filtered = [p for p in all_proxies if f"{p['ip']}:{p['port']}" not in skip_keys]
+    filtered = [p for p in all_proxies if f"{p['ip']}:{p['port']}" not in used_keys]
     print(f"  [Proxy] Filtered: {len(filtered)} remaining (skipped {len(all_proxies) - len(filtered)})", file=sys.stderr)
 
     if not filtered:
@@ -356,7 +360,7 @@ def get_proxy(tier="premium"):
     if dead:
         for p in dead:
             mark_dead(p["ip"], p["port"], "tcp_dead")
-        print(f"  [Proxy] Blacklisted {len(dead)} dead proxies for 24h", file=sys.stderr)
+        print(f"  [Proxy] Deleted {len(dead)} dead proxies from DB", file=sys.stderr)
 
     if not alive:
         print("  [Proxy] No alive proxies found", file=sys.stderr)
@@ -364,7 +368,7 @@ def get_proxy(tier="premium"):
 
     alive.sort(key=lambda p: p.get("latency_ms", 9999))
     picked = alive[0]
-    print(f"  [Proxy] Selected: {picked['ip']}:{picked['port']} ({picked.get('latency_ms', '?')}ms) [{len(alive)} alive, {len(dead)} dead]", file=sys.stderr)
+    print(f"  [Proxy] Selected: {picked['ip']}:{picked['port']} ({picked.get('latency_ms', '?')}ms) [{len(alive)} alive, {len(dead)} deleted]", file=sys.stderr)
     return picked
 
 

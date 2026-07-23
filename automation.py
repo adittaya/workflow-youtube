@@ -1022,7 +1022,7 @@ def handle_ce():
 
     log("waiting for ce-wait1 to become visible (after reload with cookie)...")
     ce_wait_visible = False
-    for w in range(45):
+    for w in range(15):
         ce_wait_visible = safe_eval("""
             var el = document.getElementById('ce-wait1');
             if (!el) return false;
@@ -1047,7 +1047,7 @@ def handle_ce():
     if not ce_wait_visible:
         log("ce-wait1 never became visible, trying buttons anyway...")
 
-    countdown_result = wait_for_countdown("ce", 60)
+    countdown_result = wait_for_countdown("ce", 30)
     if countdown_result == "rewarded":
         log("popup sent us to #goog_rewarded during CE countdown")
         handle_goog_rewarded()
@@ -1072,7 +1072,7 @@ def handle_ce():
     human_delay(1000, 2000)
 
     btn6_visible = False
-    for w in range(15):
+    for w in range(8):
         btn6_visible = safe_eval("""
             var el = document.getElementById('btn6');
             if (!el) return false;
@@ -1103,7 +1103,7 @@ def handle_ce():
             if btn7_vis:
                 break
 
-    for w in range(10):
+    for w in range(5):
         btn7_vis = safe_eval("""
             var el = document.querySelector('#btn7 > button');
             if (!el) return false;

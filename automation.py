@@ -1458,47 +1458,14 @@ def do_get_link():
         except Exception:
             return False
 
-        log("get-link page loaded, scanning for destination...")
+        log("get-link page loaded, waiting for countdown...")
 
         get_link_href = safe_eval("""
             var el = document.getElementById('get-link');
             return el ? el.href : '';
         """) or ""
         if get_link_href.startswith("http") and "void" not in get_link_href:
-            log(f"get-link href (early): {get_link_href[:100]}")
-            if is_destination(get_link_href):
-                log(f"destination from get-link href (early): {get_link_href[:100]}")
-                destination_url = get_link_href
-                return True
-
-        gt_href = safe_eval("""
-            var gt = document.getElementById('gt-link');
-            return gt ? gt.href : '';
-        """) or ""
-        if gt_href.startswith("http") and is_destination(gt_href):
-            log(f"destination from gt-link href: {gt_href[:100]}")
-            destination_url = gt_href
-            return True
-
-        captured_xhr = {"body": ""}
-        try:
-            def _on_links_go(event):
-                try:
-                    url = event.get("params", {}).get("response", {}).get("url", "")
-                    if url and "/links/go" in url:
-                        resp_id = event.get("params", {}).get("response", {}).get("requestId")
-                        if resp_id:
-                            try:
-                                body = driver.execute_cdp_cmd("Network.getResponseBody", {"requestId": resp_id})
-                                captured_xhr["body"] = body.get("body", "")
-                                log(f"[xhr] /links/go response captured ({len(captured_xhr['body'])} bytes)")
-                            except Exception:
-                                pass
-                except Exception:
-                    pass
-            driver.add_cdp_listener("Network.responseReceived", _on_links_go)
-        except Exception:
-            pass
+            log(f"get-link href: {get_link_href[:100]}")
 
         t0 = time.time()
         try:
@@ -1526,97 +1493,16 @@ def do_get_link():
             var el = document.getElementById('get-link');
             return el ? el.href : '';
         """) or ""
-        if get_link_href.startswith("http") and "void" not in get_link_href:
-            if is_destination(get_link_href):
-                log(f"destination from get-link (after countdown): {get_link_href[:100]}")
-                destination_url = get_link_href
-                return True
-            log(f"get-link href after countdown: {get_link_href[:100]}")
-
-        gt_href_after = safe_eval("var gt = document.getElementById('gt-link'); return gt ? gt.href : '';") or ""
-        if gt_href_after.startswith("http") and is_destination(gt_href_after):
-            log(f"destination from gt-link (after wait): {gt_href_after[:100]}")
-            destination_url = gt_href_after
-            return True
-
-        if captured_xhr["body"]:
-            try:
-                xhr_data = json.loads(captured_xhr["body"])
-                for key in ("url", "destination", "link", "go_to", "redirect"):
-                    val = xhr_data.get(key, "")
-                    if val and val.startswith("http") and is_destination(val):
-                        log(f"destination from /links/go response ({key}): {val[:100]}")
-                        destination_url = val
-                        return True
-                for val in xhr_data.values():
-                    if isinstance(val, str) and val.startswith("http") and is_destination(val):
-                        log(f"destination from /links/go response: {val[:100]}")
-                        destination_url = val
-                        return True
-            except Exception as e:
-                log(f"failed to parse /links/go response: {e}")
-
-        import re as _re
-        pre_scan_dest = None
-        scan_text = safe_eval("""
-            var result = '';
-            document.querySelectorAll('a[href]').forEach(function(a){
-                var h = a.href;
-                if (h.indexOf('http') === 0 && h.indexOf('void') < 0) result += h + '\\n';
-            });
-            var scripts = Array.from(document.querySelectorAll('script')).map(function(s){return s.textContent||''}).join('\\n');
-            result += '\\n---SCRIPTS---\\n' + scripts.substring(0, 5000);
-            return result;
-        """) or ""
-        for m in _re.finditer(r'https?://[^\s"\'<>]+', scan_text):
-            u = m.group(0).rstrip('.,;:)"\'')
-            if any(x in u for x in ["lnkd.in", "linkedin.com", "gstatic.com", "cloudflare", "facebook.com", "twitter.com", "cloudflareinsights", "vplink.in"]):
-                continue
-            if is_destination(u):
-                pre_scan_dest = u
-                break
-        if pre_scan_dest:
-            log(f"destination found in page scan: {pre_scan_dest[:100]}")
-            destination_url = pre_scan_dest
-            return True
-
-        if get_link_href.startswith("http") and "void" not in get_link_href:
-            log(f"destination (get-link fallback): {get_link_href[:100]}")
-            destination_url = get_link_href
-            return True
+        log(f"get-link href after countdown: {get_link_href[:100] if get_link_href else 'empty'}")
 
         human_delay(800, 2000)
         human_mouse_move("#get-link")
         human_delay(300, 700)
 
-        log("clicking Get Link")
+        log("clicking #get-link to open new tab...")
         pre_handles = set(driver.window_handles)
 
-        captured_redirects = []
-        try:
-            def _on_response(event):
-                try:
-                    url = event.get("params", {}).get("response", {}).get("url", "")
-                    loc = ""
-                    for h in event.get("params", {}).get("response", {}).get("headers", {}):
-                        if h.lower() == "location":
-                            loc = event["params"]["response"]["headers"][h]
-                            break
-                    if url and ("linkedin.com" in url or "lnkd.in" in url or "amazingbaba" in url or "capecutapk" in url):
-                        captured_redirects.append({"url": url, "location": loc})
-                        if loc:
-                            log(f"[network] {url[:60]} -> {loc[:80]}")
-                except Exception:
-                    pass
-            try:
-                driver.add_cdp_listener("Network.responseReceived", _on_response)
-            except Exception:
-                pass
-        except Exception:
-            pass
-
         human_click("#get-link")
-        log("clicked #get-link, waiting for popup...")
         ms(2000)
 
         new_tab = None
@@ -1626,212 +1512,133 @@ def do_get_link():
             diff = cur_handles - pre_handles
             if diff:
                 new_tab = diff.pop()
-                log("new tab/popup opened")
+                log("new tab opened from #get-link click")
                 break
+
+        if not new_tab:
+            log("no new tab opened, trying gt-link click...")
+            gt_clicked = safe_eval("""
+                var gt = document.getElementById('gt-link');
+                if (gt && gt.href && gt.href.indexOf('http') === 0) {
+                    gt.click();
+                    return true;
+                }
+                return false;
+            """)
+            if gt_clicked:
+                ms(2000)
+                for _ in range(15):
+                    ms(1000)
+                    cur_handles = set(driver.window_handles)
+                    diff = cur_handles - pre_handles
+                    if diff:
+                        new_tab = diff.pop()
+                        log("new tab opened from gt-link click")
+                        break
 
         if new_tab:
             driver.switch_to.window(new_tab)
-            ms(3000)
-            try:
-                tab_url = driver.current_url
-                log(f"popup URL: {tab_url[:120]}")
+            log("switched to new tab, waiting 5s for redirects...")
+            ms(5000)
+
+            final_url = ""
+            for attempt in range(15):
+                try:
+                    cur = driver.current_url
+                    if cur and "about:blank" not in cur and "chrome-error" not in cur:
+                        if cur != final_url:
+                            final_url = cur
+                            log(f"[tab {attempt}] {final_url[:120]}")
+                        if not any(x in cur for x in [
+                            "lnkd.in", "linkedin.com/redir", "google.com/url",
+                            "facebook.com/l.php", "t.co/", "wistfulseverely.com"
+                        ]):
+                            break
+                except Exception:
+                    break
+                ms(1000)
+
+            if final_url and "about:blank" not in final_url and "chrome-error" not in final_url:
                 from urllib.parse import urlparse, parse_qs
-                u = urlparse(tab_url)
+                u = urlparse(final_url)
                 for val in parse_qs(u.query).values():
                     if val:
                         import base64
                         try:
                             decoded = base64.b64decode(val[0]).decode("utf-8", errors="ignore")
                             if decoded.startswith("http"):
-                                log(f"decoded destination from base64 param: {decoded}")
+                                log(f"decoded destination from base64: {decoded}")
                                 destination_url = decoded
-                                driver.close()
-                                driver.switch_to.window(driver.window_handles[0])
-                                return True
-                        except Exception:
-                            pass
-                if is_destination(tab_url):
-                    log(f"destination from popup: {tab_url[:100]}")
-                    destination_url = tab_url
-                    try:
-                        driver.close()
-                        driver.switch_to.window(driver.window_handles[0])
-                    except Exception:
-                        pass
-                    return True
-            except Exception:
-                pass
-
-        max_dest_wait = int(adpt_getlink.get() * 1.5)
-        stable_url = ""
-        stable_count = 0
-
-        for i in range(max_dest_wait):
-            ms(1000)
-            popup_url = ""
-            if new_tab:
-                try:
-                    driver.switch_to.window(new_tab)
-                    time.sleep(0.5)
-                    popup_url = driver.current_url
-                except Exception:
-                    new_tab = None
-                if popup_url and "about:blank" not in popup_url and "chrome-error" not in popup_url:
-                    if i < 10 or i % 5 == 0:
-                        log(f"[get-link {i}s] popup: {popup_url[:100]}")
-                    if is_destination(popup_url):
-                        destination_url = popup_url
-                        log(f"destination (popup match): {popup_url[:100]}")
-                        try:
-                            driver.close()
-                            driver.switch_to.window(driver.window_handles[0])
-                        except Exception:
-                            pass
-                        return True
-                    is_redirect = any(x in popup_url for x in [
-                        "linkedin.com/redir", "google.com/url", "facebook.com/l.php", "t.co/",
-                        "wistfulseverely.com", "one-vv", "lnkd.in"
-                    ])
-                    if is_redirect:
-                        log(f"redirect/tracking URL detected ({popup_url[:60]}), waiting for final...")
-                        redirect_done = False
-                        for r in range(int(adpt_getlink.get())):
-                            ms(1000)
-                            try:
-                                new_url = driver.current_url
-                                if new_url and "about:blank" not in new_url:
-                                    if new_url != popup_url:
-                                        log(f"[redirect {r}s] {new_url[:100]}")
-                                    popup_url = new_url
-                                    if not any(x in popup_url for x in [
-                                        "wistfulseverely.com", "one-vv", "linkedin.com/redir",
-                                        "google.com/url", "facebook.com/l.php", "t.co/", "lnkd.in"
-                                    ]):
-                                        redirect_done = True
-                                        break
-                                    if ("lnkd.in" in popup_url or "linkedin.com" in popup_url) and r >= 8:
-                                        try:
-                                            import urllib.request as _urllib_req
-                                            req = _urllib_req.Request(popup_url, headers={
-                                                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                                            })
-                                            resp = _urllib_req.urlopen(req, timeout=15)
-                                            final_url = resp.geturl()
-                                            if final_url and final_url != popup_url and "lnkd.in" not in final_url:
-                                                log(f"resolved via HTTP: {final_url[:100]}")
-                                                destination_url = final_url
-                                                try:
-                                                    driver.close()
-                                                    driver.switch_to.window(driver.window_handles[0])
-                                                except Exception:
-                                                    pass
-                                                return True
-                                        except Exception:
-                                            pass
-                                        break
-                            except Exception:
-                                break
-                        if redirect_done:
-                            destination_url = popup_url
-                            log(f"destination (popup): {popup_url[:100]}")
-                            return True
-                        try:
-                            import urllib.request
-                            import re as _re2
-                            for _attempt in range(3):
-                                try:
-                                    req = urllib.request.Request(popup_url, headers={
-                                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                                    })
-                                    resp = urllib.request.urlopen(req, timeout=15)
-                                    final_url = resp.geturl()
-                                    if final_url and final_url != popup_url:
-                                        if not any(x in final_url for x in ["lnkd.in", "linkedin.com"]):
-                                            log(f"resolved via HTTP redirect: {final_url[:100]}")
-                                            destination_url = final_url
-                                            try:
-                                                driver.close()
-                                                driver.switch_to.window(driver.window_handles[0])
-                                            except Exception:
-                                                pass
-                                            return True
-                                    body = resp.read(50000).decode("utf-8", errors="ignore")
-                                    for pattern in [
-                                        r'window\.location(?:\.href)?\s*=\s*["\']?(https?://[^"\'>\s]+)',
-                                        r'<meta[^>]+http-equiv=["\']?refresh["\']?[^>]+content=["\']?\d+;\s*url=([^\s"\']+)',
-                                    ]:
-                                        match = _re2.search(pattern, body, _re2.I)
-                                        if match:
-                                            js_url = match.group(1)
-                                            if not any(x in js_url for x in ["lnkd.in", "linkedin.com"]):
-                                                log(f"extracted from page: {js_url[:100]}")
-                                                destination_url = js_url
-                                                try:
-                                                    driver.close()
-                                                    driver.switch_to.window(driver.window_handles[0])
-                                                except Exception:
-                                                    pass
-                                                return True
-                                    break
-                                except Exception:
-                                    if _attempt < 2:
-                                        ms(2000)
-                        except Exception:
-                            pass
-                        for cr in reversed(captured_redirects):
-                            loc = cr.get("location", "")
-                            if loc and loc.startswith("http") and not any(x in loc for x in ["lnkd.in", "linkedin.com", "google.com/recaptcha", "about:blank"]):
-                                log(f"destination from network redirect: {loc[:100]}")
-                                destination_url = loc
                                 try:
                                     driver.close()
                                     driver.switch_to.window(driver.window_handles[0])
                                 except Exception:
                                     pass
                                 return True
-                        log(f"stuck on tracking URL — giving up on popup")
+                        except Exception:
+                            pass
+
+                if is_destination(final_url):
+                    log(f"destination from new tab: {final_url[:100]}")
+                    destination_url = final_url
+                    try:
+                        driver.close()
+                        driver.switch_to.window(driver.window_handles[0])
+                    except Exception:
+                        pass
+                    return True
+
+                log(f"new tab URL not destination, trying HTTP resolve: {final_url[:100]}")
+                try:
+                    import urllib.request
+                    req = urllib.request.Request(final_url, headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                    })
+                    resp = urllib.request.urlopen(req, timeout=15)
+                    resolved = resp.geturl()
+                    if resolved and resolved != final_url and is_destination(resolved):
+                        log(f"resolved destination: {resolved[:100]}")
+                        destination_url = resolved
                         try:
                             driver.close()
                             driver.switch_to.window(driver.window_handles[0])
                         except Exception:
                             pass
-                        break
-
-                    destination_url = popup_url
-                    log(f"destination (popup): {popup_url[:100]}")
-                    return True
+                        return True
+                except Exception:
+                    pass
 
             try:
+                driver.close()
                 driver.switch_to.window(driver.window_handles[0])
             except Exception:
                 pass
-            m_url = safe_url()
-            if not m_url or "about:blank" in m_url or "chrome-error" in m_url:
-                continue
-            if m_url == stable_url:
-                stable_count += 1
-                is_tracker = "wistfulseverely.com" in m_url or "one-vv" in m_url
-                if stable_count >= 3 and is_destination(m_url) and not is_tracker:
-                    destination_url = m_url
-                    log(f"destination (stable): {m_url[:100]}")
-                    return True
-            else:
-                stable_url = m_url
-                stable_count = 1
 
-        all_links = safe_eval("""
-            var result = [];
-            document.querySelectorAll('a[href]').forEach(function(a){
-                var h = a.href;
-                if (h.indexOf('http') === 0 && h.indexOf('void') < 0 && h.indexOf('vplink.in') < 0) result.push(h);
-            });
-            return result;
-        """) or []
-        for href in all_links:
-            if is_destination(href):
-                destination_url = href
-                log(f"destination (link scan): {href[:100]}")
-                return True
+        if get_link_href.startswith("http") and "void" not in get_link_href and is_destination(get_link_href):
+            log(f"destination (get-link href fallback): {get_link_href[:100]}")
+            destination_url = get_link_href
+            return True
+
+        if get_link_href.startswith("http") and "void" not in get_link_href:
+            log(f"destination (get-link href, unverified): {get_link_href[:100]}")
+            destination_url = get_link_href
+            return True
+
+        gt_href = safe_eval("var gt = document.getElementById('gt-link'); return gt ? gt.href : '';") or ""
+        if gt_href.startswith("http"):
+            log(f"destination (gt-link fallback): {gt_href[:100]}")
+            destination_url = gt_href
+            return True
+
+        try:
+            driver.switch_to.window(driver.window_handles[0])
+        except Exception:
+            pass
+        m_url = safe_url()
+        if m_url and is_destination(m_url):
+            log(f"destination (main page): {m_url[:100]}")
+            destination_url = m_url
+            return True
 
     except Exception as error:
         log(f"get-link handler failed: {str(error) or 'unknown error'}")

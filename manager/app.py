@@ -770,10 +770,64 @@ def account_detail(aid):
                       (aid, session["user_id"])).fetchone()
     if not acct:
         abort(404)
+
+    try:
+        _auto_scan_account(aid, acct, db)
+    except Exception:
+        pass
+
     repos = db.execute(
         "SELECT * FROM deployments WHERE github_account_id=? AND user_id=? ORDER BY created_at DESC",
         (aid, session["user_id"])).fetchall()
     return render_template("manager/account_detail.html", acct=acct, repos=repos)
+
+
+def _auto_scan_account(aid, acct, db):
+    try:
+        all_repos = []
+        page = 1
+        while True:
+            data = gh_api("GET",
+                          f"https://api.github.com/user/repos?per_page=100&page={page}&type=all",
+                          acct["token"])
+            if not data:
+                break
+            all_repos.extend(data)
+            if len(data) < 100:
+                break
+            page += 1
+
+        existing = {r["repo_name"] for r in db.execute(
+            "SELECT repo_name FROM deployments WHERE github_account_id=?", (aid,)).fetchall()}
+
+        for r in all_repos:
+            name = r["name"]
+            if not name.startswith("vplink-"):
+                continue
+            if name in existing:
+                dep = db.execute(
+                    "SELECT id FROM deployments WHERE repo_name=? AND github_account_id=?",
+                    (name, aid)).fetchone()
+                if dep:
+                    runs = gh_api("GET",
+                                  f"https://api.github.com/repos/{acct['username']}/{name}/actions/runs?per_page=1",
+                                  acct["token"])
+                    for run in runs.get("workflow_runs", []):
+                        conclusion = run.get("conclusion") or run.get("status", "unknown")
+                        db.execute(
+                            "UPDATE deployments SET status=?, last_run_at=CURRENT_TIMESTAMP, "
+                            "repo_url=?, is_public=? WHERE id=?",
+                            (conclusion, r["html_url"], 0 if r["private"] else 1, dep["id"]))
+                existing.add(name)
+            else:
+                db.execute(
+                    "INSERT INTO deployments (user_id, github_account_id, repo_name, owner, "
+                    "vplink_key, status, repo_url, is_public) VALUES (?,?,?,?,?,'imported',?,?)",
+                    (session["user_id"], aid, name, acct["username"], name,
+                     r["html_url"], 0 if r["private"] else 1))
+        db.commit()
+    except Exception:
+        pass
 
 
 @app.route("/accounts/<int:aid>/scan", methods=["POST"])
@@ -884,6 +938,16 @@ def unified_status():
     db = get_db()
     accounts = db.execute("SELECT * FROM github_accounts WHERE user_id=?",
                           (session["user_id"],)).fetchall()
+
+    for acct in accounts:
+        try:
+            _auto_scan_account(acct["id"], acct, db)
+        except Exception:
+            pass
+
+    accounts = db.execute("SELECT * FROM github_accounts WHERE user_id=?",
+                          (session["user_id"],)).fetchall()
+
     summary = {"total_accounts": len(accounts), "total_deployments": 0,
                "active": 0, "error": 0, "stopped": 0, "imported": 0,
                "total_views": 0, "total_destinations": 0}

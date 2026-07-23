@@ -8,9 +8,9 @@
 ## Current State
 
 - **Last updated:** 2026-07-24
-- **Latest remote commit:** `61e9d92` (docs: add AUTOMATION_GUIDE.md)
-- **Local codebase status:** MODIFIED — deployment CI fixes not yet committed
-- **Git status:** Modified: manager/app.py, vplink247.py, .github/workflows/continuous.yml
+- **Latest remote commit:** `4e4566e` (fix: deployment CI overhaul — 11 fixes for cross-account automation)
+- **Local codebase status:** MODIFIED — GitHub sync system not yet committed
+- **Git status:** Modified: manager/app.py, vplink247.py; New: github_sync.py
 
 ## What Has Been Done
 
@@ -116,6 +116,20 @@
 62. **continuous.yml** — Relay step: Added HTTP 403/404 detection with specific error message about token scope
 63. **continuous.yml** — Relay step: Added `exit 1` on relay failure for GitHub Actions error reporting
 
+### Code Changes Made (This Session — GitHub Real-Time Sync)
+
+64. **github_sync.py** — NEW FILE: GitHub-as-database module
+    - `discover_deployments(token)`: Scans all `vplink-*` repos via GitHub API
+    - `get_account_info(token)`: Gets username + repo count
+    - `get_deployment_detail(owner, repo, token)`: Full deployment detail with workflow runs
+    - `scan_repos(owner, token)`: Paginated repo scan
+65. **vplink247.py** — Added `cmd_sync()`: CLI command that scans all accounts, merges with local cache, auto-imports new repos
+66. **vplink247.py** — Registered `sync` subcommand in argparse CLI parser
+67. **vplink247.py** — Added `🔄  Sync from GitHub (real-time)` as first option in deployment menu
+68. **manager/app.py** — Added `_auto_scan_account()`: Scans GitHub repos, auto-imports missing deployments, updates status of existing ones
+69. **manager/app.py** — Updated `account_detail()`: Calls `_auto_scan_account()` on page load
+70. **manager/app.py** — Updated `unified_status()`: Auto-scans all accounts before showing status
+
 ## Pending / User Requests
 
 - User wants: comprehensive flow engine that handles ANY VPLink-type variation ✅ DONE
@@ -125,6 +139,7 @@
 - User wants: adaptive redirect chains (not fixed 1-2 hops) ✅ DONE
 - User wants: real-time MutationObserver + Network Interceptors ✅ DONE
 - User wants: deployment CI fix — automation works on personal but not other accounts ✅ DONE
+- User wants: real-time GitHub-based sync system (repos = database) ✅ DONE
 
 ## Key Files Reference
 
@@ -134,7 +149,8 @@
 | `proxy_rotator.py` | MODIFIED | Pagination added to `fetch_proxies()`, `_fetch_state_keys()` helper, blacklist/used paginated |
 | `.github/workflows/continuous.yml` | MODIFIED | `RELAY_TARGET_REPO` env var, relay dispatch fix, per-repo concurrency, pip --break-system-packages, key validation, relay health checks |
 | `manager/app.py` | MODIFIED | Full deployment CI overhaul: template clone, RELAY_TARGET_REPO, workflow management, deployment verification, token scope validation |
-| `vplink247.py` | MODIFIED | Added RELAY_TARGET_REPO to _deploy_one and _update_one secrets |
+| `vplink247.py` | MODIFIED | Added RELAY_TARGET_REPO to _deploy_one and _update_one secrets, added cmd_sync(), registered sync subcommand |
+| `github_sync.py` | NEW | GitHub-as-database module: discover_deployments(), get_account_info(), get_deployment_detail(), scan_repos() |
 | `config.py` | OK | Unchanged |
 | `schema.sql` | OK | Unchanged |
 | `AGENTS.md` | UNTRACKED | Session progress tracker (must update after every change) |
@@ -150,7 +166,7 @@
 - [x] **PageMonitor**: MutationObserver + Network Interceptors for real-time detection
 - [x] **Behavioral Fingerprinting**: `fingerprint_page()` detects page type by behavior, not IDs
 - [x] **Adaptive Flow**: Any step count, any redirect chain length
-- [ ] **Commit & Push**: Need to commit this session's changes
+- [x] **GitHub Sync System**: Real-time repo-based database (github_sync.py, cmd_sync, auto-scan)
 
 ### Medium Priority
 - [x] **Template Detection**: Updated to detect `getlink` template and `stick` step info

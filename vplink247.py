@@ -7,6 +7,11 @@ One-command management: accounts, deployment, testing, and monitoring.
 import os, sys, json, time, random, string, shutil, tempfile, subprocess, base64, urllib.request, urllib.error, argparse
 from pathlib import Path
 
+try:
+    import github_sync
+except ImportError:
+    github_sync = None
+
 # ── ANSI helpers ──────────────────────────────────────────
 C = "\033[36m"; G = "\033[32m"; Y = "\033[33m"; R = "\033[31m"
 B = "\033[1m"; M = "\033[35m"; N = "\033[0m"; D = "\033[2m"
@@ -476,6 +481,78 @@ def cmd_deploy_list(_args):
     for name, info in sorted(deps.items()):
         created = time.strftime("%Y-%m-%d %H:%M", time.localtime(info.get("created_at", 0)))
         _say(f"  {name:25} {info.get('account','?'):20} {info.get('key','?'):15} {created:20}")
+
+def cmd_sync(_args):
+    if not github_sync:
+        _fail("github_sync.py not found. Ensure it's in the same directory."); return
+    accounts = load_accounts()
+    if not accounts:
+        _fail("No accounts. Add one first: vplink247 account add"); return
+
+    _header("Syncing from GitHub")
+    local_deps = load_deployments()
+    merged = dict(local_deps)
+    total_found = 0
+    total_new = 0
+    total_updated = 0
+
+    for acct_name, acct_info in accounts.items():
+        token = acct_info.get("token", "")
+        if not token:
+            continue
+        _say(f"\n  {C}▸{N} Scanning {B}{acct_name}{N} ...")
+        try:
+            live_deps = github_sync.discover_deployments(token)
+        except Exception as e:
+            _warn(f"  Failed to scan {acct_name}: {e}")
+            continue
+
+        total_found += len(live_deps)
+        for dep in live_deps:
+            repo_name = dep["repo_name"]
+            if repo_name in merged:
+                merged[repo_name]["status"] = dep["status"]
+                merged[repo_name]["conclusion"] = dep.get("conclusion")
+                merged[repo_name]["last_run_at"] = dep.get("last_run_at")
+                merged[repo_name]["destinations"] = dep.get("destinations", [])
+                merged[repo_name]["workflow_state"] = dep.get("workflow_state", "unknown")
+                merged[repo_name]["runs"] = dep.get("runs", [])
+                merged[repo_name]["repo_url"] = dep.get("repo_url", "")
+                total_updated += 1
+            else:
+                merged[repo_name] = {
+                    "account": acct_name,
+                    "key": dep.get("vplink_key", "UbpV2D"),
+                    "repo_url": dep.get("repo_url", ""),
+                    "created_at": time.time(),
+                    "status": dep.get("status", "unknown"),
+                    "conclusion": dep.get("conclusion"),
+                    "last_run_at": dep.get("last_run_at"),
+                    "destinations": dep.get("destinations", []),
+                    "workflow_state": dep.get("workflow_state", "unknown"),
+                    "runs": dep.get("runs", []),
+                }
+                total_new += 1
+
+        for repo_name in list(merged.keys()):
+            if merged[repo_name].get("account") == acct_name:
+                found_on_github = any(d["repo_name"] == repo_name for d in live_deps)
+                if not found_on_github:
+                    _warn(f"  {repo_name}: not found on GitHub (may be deleted)")
+
+    save_deployments(merged)
+    print()
+    _ok(f"Sync complete: {total_found} repos on GitHub, {total_new} new, {total_updated} updated")
+    _ok(f"Local deployments: {len(merged)}")
+
+    if merged:
+        print()
+        _say(f"  {C}{'Name':25} {'Account':20} {'Status':15} {'Key':15}{N}")
+        _say(f"  {D}{'─'*25} {'─'*20} {'─'*15} {'─'*15}{N}")
+        for name, info in sorted(merged.items()):
+            status = info.get("conclusion") or info.get("status", "?")
+            color = G if status == "success" else (Y if status in ("in_progress", "queued", "pending") else R)
+            _say(f"  {name:25} {info.get('account','?'):20} {color}{status}{N} {info.get('key','?'):15}")
 
 def cmd_deploy_remove(args):
     deps = load_deployments()
@@ -954,7 +1031,7 @@ def _menu_deployments():
                 print(f"  {C}■{N} {B}{name}{N}  ({C}{key}{N})  →  {D}{info.get('account','?')}{N}")
             _dash
         print()
-        choice = _choose(["📋 List deployments", "🚀 Deploy new relay", "📦 Bulk deploy",
+        choice = _choose(["🔄  Sync from GitHub (real-time)", "📋 List deployments", "🚀 Deploy new relay", "📦 Bulk deploy",
                           "📈 Analytics", "🧪 Test deployment", "🔍  Check latest run",
                           "⏹  Stop automation", "▶️  Start automation",
                           "🗑 Remove deployment", "⚡ Quick deploy (bare-bones)",
@@ -962,39 +1039,41 @@ def _menu_deployments():
                           "💣 Nuke ALL (delete repos + records)", "🗑 Remove ALL records only"])
         if choice < 0: return
         if choice == 0:
-            cmd_deploy_list(None); _pause()
+            cmd_sync(None); _pause()
         elif choice == 1:
+            cmd_deploy_list(None); _pause()
+        elif choice == 2:
             cmd_deploy(argparse.Namespace(name=None, key=None,
                         supabase_url=None, supabase_key=None, supabase_secret=None)); _pause()
-        elif choice == 2:
+        elif choice == 3:
             cmd_bulk_deploy(argparse.Namespace(count=None, key=None,
                             supabase_url=None, supabase_key=None, supabase_secret=None)); _pause()
-        elif choice in (3, 4, 5, 6, 7, 8):
+        elif choice in (4, 5, 6, 7, 8, 9):
             if not deps: _warn("No deployments."); _pause(); continue
             if len(deps) == 1:
                 name = next(iter(deps))
             else:
                 _say(f"\n  Deployments: {', '.join(sorted(deps.keys()))}")
                 name = _prompt("Deployment name")
-            if choice == 3: cmd_analytics(argparse.Namespace(name=name, aggregate=False)); _pause()
-            elif choice == 4: cmd_test(argparse.Namespace(name=name))
-            elif choice == 5: cmd_check(argparse.Namespace(name=name)); _pause()
-            elif choice == 6: cmd_stop(argparse.Namespace(name=name))
-            elif choice == 7: cmd_start(argparse.Namespace(name=name))
-            elif choice == 8: cmd_deploy_remove(argparse.Namespace(name=name)); _pause()
-        elif choice == 9:
+            if choice == 4: cmd_analytics(argparse.Namespace(name=name, aggregate=False)); _pause()
+            elif choice == 5: cmd_test(argparse.Namespace(name=name))
+            elif choice == 6: cmd_check(argparse.Namespace(name=name)); _pause()
+            elif choice == 7: cmd_stop(argparse.Namespace(name=name))
+            elif choice == 8: cmd_start(argparse.Namespace(name=name))
+            elif choice == 9: cmd_deploy_remove(argparse.Namespace(name=name)); _pause()
+        elif choice == 10:
             accts = load_accounts()
             if not accts: _warn("No accounts. Add one first."); _pause(); continue
             name = _prompt("Repo name (enter for random)")
             key = _prompt("VPLink key to automate") or "UbpV2D"
             cmd_deploy(argparse.Namespace(name=name or None, key=key,
                         supabase_url=None, supabase_key=None, supabase_secret=None)); _pause()
-        elif choice == 10:
+        elif choice == 11:
             cmd_deploy_update(argparse.Namespace(name=None,
                         supabase_url=None, supabase_key=None, supabase_secret=None)); _pause()
-        elif choice == 11:
-            cmd_nuke_all(None); _pause()
         elif choice == 12:
+            cmd_nuke_all(None); _pause()
+        elif choice == 13:
             cmd_deploy_remove_all(None); _pause()
 
 def cmd_wizard(_args):
@@ -1086,6 +1165,7 @@ Examples:
   vplink247 account switch <name> Switch active account
   vplink247 account remove <name> Remove an account
   vplink247 login <token>         Login (validates against API)
+  vplink247 sync                  Sync all deployments from GitHub (real-time)
   vplink247 deploy new            Deploy automation relay
   vplink247 deploy bulk <N>       Bulk-deploy N automations
   vplink247 deploy list           List deployments
@@ -1156,6 +1236,9 @@ Examples:
     p.add_argument("--supabase-key", help="Supabase anon key")
     p.add_argument("--supabase-secret", help="Supabase service key")
     p.set_defaults(func=cmd_deploy_update)
+
+    p = sub.add_parser("sync", help="Sync deployments from GitHub (real-time scan)")
+    p.set_defaults(func=cmd_sync)
 
     p = sub.add_parser("test", help="Test a deployment")
     p.add_argument("name", help="Deployment name")

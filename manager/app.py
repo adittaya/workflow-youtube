@@ -21,13 +21,15 @@ import nacl.secret
 import nacl.utils
 import nacl.encoding
 from flask import (
-    Flask, abort, jsonify, redirect, render_template, request, session, url_for,
+    Flask, abort, flash, jsonify, redirect, render_template, request, session, url_for,
 )
 
 DB_PATH = Path(__file__).parent / "manager.db"
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
 REPO_ROOT = Path(__file__).parent.parent
+TEMPLATE_REPO_NAME = "workflow-vplink"
+REPO_OWNER = "adittaya"
 
 app = Flask(__name__, template_folder=str(TEMPLATE_DIR), static_folder=str(STATIC_DIR))
 app.secret_key = os.environ.get("MANAGER_SECRET") or secrets.token_hex(32)
@@ -212,57 +214,60 @@ def create_repo_and_deploy(deployment_id):
     is_public = bool(dep.get("is_public"))
     try:
         gh_api("POST", "https://api.github.com/user/repos", token, json={
-            "name": repo, "private": not is_public, "auto_init": False,
+            "name": repo, "private": not is_public, "auto_init": True,
             "description": f"VPLink automation deployment {repo}",
         })
-    except RuntimeError as e:
+    except RuntimeError:
         db.execute("UPDATE deployments SET status='error', updated_at=CURRENT_TIMESTAMP WHERE id=?", (deployment_id,))
         db.commit()
         return
 
     tmpdir = tempfile.mkdtemp(prefix="vplink_deploy_")
     try:
-        repo_url = f"https://x-access-token:{token}@github.com/{owner}/{repo}.git"
-        subprocess.run(["git", "clone", repo_url, tmpdir], capture_output=True, text=True, timeout=60)
+        tgt = Path(tmpdir) / repo
+        subprocess.run(
+            ["git", "clone", "--depth=1", f"https://github.com/{REPO_OWNER}/{TEMPLATE_REPO_NAME}.git", str(tgt)],
+            capture_output=True, text=True, timeout=60, check=True)
+        subprocess.run(["rm", "-rf", str(tgt / ".git")], check=True)
 
-        for fname in ["automation.py", "proxy_rotator.py", "config.py",
-                       "profile_generator.py", "requirements.txt"]:
-            src = REPO_ROOT / fname
-            if src.exists():
-                subprocess.run(["cp", str(src), tmpdir], check=True)
-
-        gh_dir = Path(tmpdir) / ".github" / "workflows"
-        gh_dir.mkdir(parents=True, exist_ok=True)
-        wf_src = REPO_ROOT / ".github" / "workflows" / "continuous.yml"
-        if wf_src.exists():
-            subprocess.run(["cp", str(wf_src), str(gh_dir / "continuous.yml")], check=True)
-
-        subprocess.run(["git", "add", "-A"], cwd=tmpdir, capture_output=True, check=True)
-        subprocess.run(["git", "commit", "-m", "Initial deployment"], cwd=tmpdir,
-                       capture_output=True, check=False)
-        subprocess.run(["git", "push", "-u", "origin", "main"], cwd=tmpdir,
+        subprocess.run(["git", "init", "-b", "main"], cwd=str(tgt), capture_output=True, check=True)
+        subprocess.run(["git", "add", "-A"], cwd=str(tgt), capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "Initial deployment"], cwd=str(tgt),
+                       capture_output=True, check=True)
+        authed_url = f"https://x-access-token:{token}@github.com/{owner}/{repo}.git"
+        subprocess.run(["git", "remote", "add", "origin", authed_url], cwd=str(tgt),
+                       capture_output=True, check=True)
+        subprocess.run(["git", "push", "-u", "origin", "main", "--force"], cwd=str(tgt),
                        capture_output=True, check=True)
 
+        relay_target = f"{owner}/{repo}"
         secrets_map = {
             "SUPABASE_URL": os.environ.get("SUPABASE_URL", ""),
             "SUPABASE_KEY": os.environ.get("SUPABASE_KEY", ""),
             "SUPABASE_SECRET": os.environ.get("SUPABASE_SECRET", ""),
             "GH_PAT": token,
             "LOOP_TRIGGER_TOKEN": token,
+            "RELAY_TARGET_REPO": relay_target,
         }
         for sname, sval in secrets_map.items():
             if sval:
                 set_repo_secret(owner, repo, sname, sval, token)
 
-        # Trigger workflow
+        ensure_workflow_enabled(owner, repo, token)
+
         gh_api("POST", f"https://api.github.com/repos/{owner}/{repo}/actions/workflows/continuous.yml/dispatches",
                token, json={"ref": "main", "inputs": {"key": key}})
 
-        db.execute(
-            "UPDATE deployments SET status='active', repo_url=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (f"https://github.com/{owner}/{repo}", deployment_id))
+        if not verify_deployment_run(owner, repo, token):
+            db.execute(
+                "UPDATE deployments SET status='warning', repo_url=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (f"https://github.com/{owner}/{repo}", deployment_id))
+        else:
+            db.execute(
+                "UPDATE deployments SET status='active', repo_url=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (f"https://github.com/{owner}/{repo}", deployment_id))
         db.commit()
-    except Exception as e:
+    except Exception:
         db.execute("UPDATE deployments SET status='error', updated_at=CURRENT_TIMESTAMP WHERE id=?", (deployment_id,))
         db.commit()
     finally:
@@ -285,6 +290,69 @@ def set_repo_secret(owner, repo, name, value, token):
 
     gh_api("PUT", f"https://api.github.com/repos/{owner}/{repo}/actions/secrets/{name}",
            token, json={"encrypted_value": encrypted_value, "key_id": key_id})
+
+
+def get_workflow_state(owner, repo, token):
+    try:
+        wfs = gh_api("GET", f"https://api.github.com/repos/{owner}/{repo}/actions/workflows", token)
+        for wf in wfs.get("workflows", []):
+            if wf["path"].endswith("continuous.yml"):
+                return wf["id"], wf["state"]
+    except Exception:
+        pass
+    return None, None
+
+
+def ensure_workflow_enabled(owner, repo, token):
+    wid, state = get_workflow_state(owner, repo, token)
+    if not wid:
+        return False
+    if state == "active":
+        return True
+    try:
+        gh_api("PUT", f"https://api.github.com/repos/{owner}/{repo}/actions/workflows/{wid}/enable", token)
+        return True
+    except Exception:
+        return False
+
+
+def verify_deployment_run(owner, repo, token, timeout_s=30):
+    import time as _time
+    deadline = _time.time() + timeout_s
+    while _time.time() < deadline:
+        try:
+            runs = gh_api("GET",
+                          f"https://api.github.com/repos/{owner}/{repo}/actions/runs?per_page=1&status=in_progress",
+                          token)
+            for run in runs.get("workflow_runs", []):
+                if run["status"] == "in_progress":
+                    return True
+        except Exception:
+            pass
+        _time.sleep(3)
+    return False
+
+
+def validate_token_scopes(token):
+    issues = []
+    try:
+        resp = requests.get("https://api.github.com/user", headers=gh_headers(token))
+        scopes_header = resp.headers.get("X-OAuth-Scopes", "")
+        if scopes_header:
+            scopes = [s.strip() for s in scopes_header.split(",")]
+            if "repo" not in scopes and not any(s.startswith("repo:") for s in scopes):
+                issues.append("Missing 'repo' scope — cannot create/push repos")
+            if "workflow" not in scopes:
+                issues.append("Missing 'workflow' scope — cannot trigger workflows")
+        else:
+            resp2 = requests.put("https://api.github.com/user", headers=gh_headers(token))
+            if resp2.status_code == 200:
+                scopes2 = resp2.headers.get("X-OAuth-Scopes", "")
+                if "workflow" not in scopes2:
+                    issues.append("Missing 'workflow' scope — cannot trigger workflows")
+    except Exception:
+        pass
+    return issues
 
 
 def fetch_deployment_status(dep, token):
@@ -492,9 +560,7 @@ def deploy_restart(dep_id):
     if not dep:
         abort(404)
     try:
-        gh_api("PUT",
-               f"https://api.github.com/repos/{dep['owner']}/{dep['repo_name']}/actions/workflows/continuous.yml/enable",
-               dep["token"])
+        ensure_workflow_enabled(dep["owner"], dep["repo_name"], dep["token"])
         gh_api("POST",
                f"https://api.github.com/repos/{dep['owner']}/{dep['repo_name']}/actions/workflows/continuous.yml/dispatches",
                dep["token"], json={"ref": "main", "inputs": {"key": dep["vplink_key"]}})
@@ -548,11 +614,17 @@ def accounts_new():
         username = user_data["login"]
         email = user_data.get("email", "")
     except Exception:
-        return redirect(url_for("accounts", error="Invalid token"))
+        flash("Invalid token — could not verify with GitHub", "danger")
+        return redirect(url_for("accounts"))
     db = get_db()
     db.execute("INSERT INTO github_accounts (user_id, name, token, username, email) VALUES (?,?,?,?,?)",
                (session["user_id"], name, token, username, email))
     db.commit()
+    token_issues = validate_token_scopes(token)
+    if token_issues:
+        flash("Account added, but token may be missing scopes: " + "; ".join(token_issues), "warning")
+    else:
+        flash(f"Account '{username}' added successfully", "success")
     return redirect(url_for("accounts"))
 
 

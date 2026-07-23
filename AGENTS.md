@@ -8,9 +8,9 @@
 ## Current State
 
 - **Last updated:** 2026-07-24
-- **Latest remote commit:** `5300d7c` (fix: tighten CE template timeouts)
-- **Local codebase status:** MODIFIED — major changes in automation.py
-- **Git status:** Modified `automation.py`, untracked `AGENTS.md`
+- **Latest remote commit:** `61e9d92` (docs: add AUTOMATION_GUIDE.md)
+- **Local codebase status:** MODIFIED — deployment CI fixes not yet committed
+- **Git status:** Modified: manager/app.py, vplink247.py, .github/workflows/continuous.yml
 
 ## What Has Been Done
 
@@ -83,6 +83,39 @@
 - No pushes made
 - No tests written
 
+### Code Changes Made (This Session — Post-Test Cleanup)
+
+37. **AGENTS.md** — Updated to reflect commit status and live test results
+38. **proxy_rotator.py** — Removed hardcoded article domain checks (`studiiessuniversitiess`, `universitesstudiiess`, etc.) from proxy test; now only checks `learn_more.php` — domain-agnostic
+39. **proxy-rotator.js** — Same fix: removed hardcoded domain checks from proxy test
+40. **discover.js** — Same fix: removed hardcoded domain checks from intermediate page detection
+41. **automation.py** — Disabled `restart_proxy()` mid-session rotation; one IP per session, workflow handles retries
+
+### Code Changes Made (This Session — Deployment CI Overhaul — 11 fixes)
+
+42. **manager/app.py** — Added `TEMPLATE_REPO_NAME` and `REPO_OWNER` constants for template repo reference
+43. **manager/app.py** — `create_repo_and_deploy()`: Changed `auto_init: False` → `True` (matches vplink247.py)
+44. **manager/app.py** — `create_repo_and_deploy()`: Replaced 5-file selective copy with full template clone from `adittaya/workflow-vplink` (matches vplink247.py approach)
+45. **manager/app.py** — `create_repo_and_deploy()`: Added `git init -b main` + `--force` push (matches vplink247.py)
+46. **manager/app.py** — `create_repo_and_deploy()`: Added `RELAY_TARGET_REPO` to secrets_map (was missing — relay couldn't fire on deployed accounts)
+47. **manager/app.py** — `create_repo_and_deploy()`: Added `ensure_workflow_enabled()` call before dispatch
+48. **manager/app.py** — `create_repo_and_deploy()`: Added `verify_deployment_run()` after dispatch — polls 30s for workflow to start, sets status='warning' if not found
+49. **manager/app.py** — Added `get_workflow_state()` — queries GitHub API for workflow ID and state
+50. **manager/app.py** — Added `ensure_workflow_enabled()` — enables workflow if disabled/inactive
+51. **manager/app.py** — Added `verify_deployment_run()` — polls workflow runs for in_progress status
+52. **manager/app.py** — Added `validate_token_scopes()` — checks X-OAuth-Scopes for repo+workflow scopes
+53. **manager/app.py** — `accounts_new()`: Added flash message with token scope validation results
+54. **manager/app.py** — `deploy_restart()`: Replaced direct `PUT /enable` with `ensure_workflow_enabled()`
+55. **manager/app.py** — Added `flash` import from Flask
+56. **vplink247.py** — `_deploy_one()`: Added `RELAY_TARGET_REPO` to secrets (was missing)
+57. **vplink247.py** — `_update_one()`: Added `RELAY_TARGET_REPO` to secrets (was missing)
+58. **continuous.yml** — Changed concurrency group from `vplink-global` → `vplink-${{ github.repository }}` (per-repo, no cross-repo blocking)
+59. **continuous.yml** — Added `Validate key` step — fails fast if VPLINK_KEY is empty
+60. **continuous.yml** — Added `--break-system-packages` to pip install with fallback for older runners
+61. **continuous.yml** — Relay step: Added early-exit checks for missing TRIGGER_TOKEN and RELAY_TARGET_REPO
+62. **continuous.yml** — Relay step: Added HTTP 403/404 detection with specific error message about token scope
+63. **continuous.yml** — Relay step: Added `exit 1` on relay failure for GitHub Actions error reporting
+
 ## Pending / User Requests
 
 - User wants: comprehensive flow engine that handles ANY VPLink-type variation ✅ DONE
@@ -91,6 +124,7 @@
 - User wants: adaptive step count (not fixed 3/3) ✅ DONE
 - User wants: adaptive redirect chains (not fixed 1-2 hops) ✅ DONE
 - User wants: real-time MutationObserver + Network Interceptors ✅ DONE
+- User wants: deployment CI fix — automation works on personal but not other accounts ✅ DONE
 
 ## Key Files Reference
 
@@ -98,9 +132,9 @@
 |------|--------|-------------|
 | `automation.py` | MODIFIED | Major overhaul: PageMonitor, fingerprint_page, handle_generic, adaptive flow, timer cookies, fast-path destination extraction |
 | `proxy_rotator.py` | MODIFIED | Pagination added to `fetch_proxies()`, `_fetch_state_keys()` helper, blacklist/used paginated |
-| `.github/workflows/continuous.yml` | MODIFIED | `RELAY_TARGET_REPO` env var, relay dispatch fix |
-| `manager/app.py` | MODIFIED | Added `LOOP_TRIGGER_TOKEN` to deploy secrets |
-| `vplink247.py` | OK | Already sets `LOOP_TRIGGER_TOKEN` correctly |
+| `.github/workflows/continuous.yml` | MODIFIED | `RELAY_TARGET_REPO` env var, relay dispatch fix, per-repo concurrency, pip --break-system-packages, key validation, relay health checks |
+| `manager/app.py` | MODIFIED | Full deployment CI overhaul: template clone, RELAY_TARGET_REPO, workflow management, deployment verification, token scope validation |
+| `vplink247.py` | MODIFIED | Added RELAY_TARGET_REPO to _deploy_one and _update_one secrets |
 | `config.py` | OK | Unchanged |
 | `schema.sql` | OK | Unchanged |
 | `AGENTS.md` | UNTRACKED | Session progress tracker (must update after every change) |

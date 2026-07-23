@@ -303,9 +303,10 @@ def _deploy_one(active, token, repo_name, key, supabase_url, supabase_key, supab
         _git_run(["git", "remote", "add", "origin", authed], cwd=tgt)
         _git_run(["git", "push", "-u", "origin", "main", "--force"], cwd=tgt)
     _say(f"  {C}▸{N} Configuring GitHub Secrets ...")
+    relay_target = f"{active}/{repo_name}"
     for sn, sv in [("SUPABASE_URL", supabase_url), ("SUPABASE_KEY", supabase_key),
                    ("SUPABASE_SECRET", supabase_secret), ("GH_PAT", token),
-                   ("LOOP_TRIGGER_TOKEN", token)]:
+                   ("LOOP_TRIGGER_TOKEN", token), ("RELAY_TARGET_REPO", relay_target)]:
         _set_secret(token, active, repo_name, sn, sv)
     _ok("Secrets set")
     deps = load_deployments()
@@ -348,9 +349,10 @@ def _update_one(active, token, repo_name, key, supabase_url, supabase_key, supab
         _git_run(["git", "commit", "-m", "update by vplink247"], cwd=tgt)
         _git_run(["git", "push", "origin", "main", "--force"], cwd=tgt)
     _say(f"  {C}▸{N} Configuring GitHub Secrets ...")
+    relay_target = f"{active}/{repo_name}"
     for sn, sv in [("SUPABASE_URL", supabase_url), ("SUPABASE_KEY", supabase_key),
                    ("SUPABASE_SECRET", supabase_secret), ("GH_PAT", token),
-                   ("LOOP_TRIGGER_TOKEN", token)]:
+                   ("LOOP_TRIGGER_TOKEN", token), ("RELAY_TARGET_REPO", relay_target)]:
         _set_secret(token, active, repo_name, sn, sv)
     _ok("Secrets set")
     deps = load_deployments()

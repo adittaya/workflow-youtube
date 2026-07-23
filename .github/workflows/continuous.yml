@@ -13,7 +13,7 @@ on:
     types: [relay]
 
 concurrency:
-  group: vplink-global
+  group: vplink-${{ github.repository }}
   cancel-in-progress: false
 
 env:
@@ -33,6 +33,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Validate key
+        run: |
+          if [ -z "$VPLINK_KEY" ]; then
+            echo "::error::VPLINK_KEY is empty — cannot continue"
+            exit 1
+          fi
+          echo "VPLINK_KEY=$VPLINK_KEY"
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -50,7 +58,8 @@ jobs:
 
       - name: Install chromedriver + Python deps
         run: |
-          pip install selenium webdriver-manager requests urllib3 --quiet
+          pip install --break-system-packages -q selenium webdriver-manager requests urllib3 2>/dev/null \
+            || pip install -q selenium webdriver-manager requests urllib3
           python3 -c "from webdriver_manager.chrome import ChromeDriverManager; print(ChromeDriverManager().install())"
 
       - name: Configure Supabase
@@ -112,6 +121,14 @@ jobs:
         env:
           TRIGGER_TOKEN: ${{ secrets.LOOP_TRIGGER_TOKEN }}
         run: |
+          if [ -z "$TRIGGER_TOKEN" ]; then
+            echo "::warning::LOOP_TRIGGER_TOKEN not set — relay cannot fire"
+            exit 0
+          fi
+          if [ -z "$RELAY_TARGET_REPO" ]; then
+            echo "::warning::RELAY_TARGET_REPO not set and github.repository empty — relay cannot fire"
+            exit 0
+          fi
           for attempt in 1 2 3; do
             echo "Relay attempt $attempt..."
             HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
@@ -122,7 +139,13 @@ jobs:
             echo "HTTP $HTTP_CODE"
             if [ "$HTTP_CODE" = "204" ]; then
               echo "Relay dispatched successfully"
-              break
+              exit 0
+            fi
+            if [ "$HTTP_CODE" = "404" ] || [ "$HTTP_CODE" = "403" ]; then
+              echo "::warning::Relay failed with HTTP $HTTP_CODE — token may lack workflow scope or repo not found"
+              exit 1
             fi
             sleep 5
           done
+          echo "::warning::Relay failed after 3 attempts"
+          exit 1

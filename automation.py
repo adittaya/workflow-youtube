@@ -1510,11 +1510,15 @@ def handle_tp():
         if (block) block.style.display = 'none';
         var snp2 = document.getElementById('tp-snp2');
         var wait1 = document.getElementById('tp-wait1');
+        var wait2 = document.getElementById('tp-wait2');
+        if (wait1) wait1.style.display = 'none';
+        if (wait2) wait2.style.display = 'none';
         if (snp2 && getComputedStyle(snp2).display === 'none') {{
-            if (wait1) wait1.style.display = 'none';
-            snp2.style.display = 'block';
+            snp2.style.display = 'inline-block';
         }}
+        if (typeof showNextProcess === 'function') {{ try {{ showNextProcess(); }} catch(e) {{}} }}
     """)
+    human_delay(1500, 3000)
 
     if "#goog_rewarded" in safe_url():
         log("on #goog_rewarded after countdown, waiting for ad...")
@@ -1529,8 +1533,20 @@ def handle_tp():
         human_delay(500, 1000)
         return navigate_learn_more()
 
-    human_delay(1000, 2000)
-    return navigate_learn_more()
+    for attempt in range(3):
+        nav_result = navigate_learn_more()
+        if nav_result:
+            return True
+        log(f"navigate_learn_more attempt {attempt + 1} failed, retrying...")
+        human_delay(1000, 2000)
+        safe_eval("if (typeof showNextProcess === 'function') {{ try {{ showNextProcess(); }} catch(e) {{}} }}")
+        human_delay(1000, 2000)
+
+    log("all navigate_learn_more attempts failed, trying learn_more.php directly")
+    safe_eval("""
+        window.location.href = 'learn_more.php';
+    """)
+    return True
 
 
 def handle_ce():

@@ -185,12 +185,14 @@ def _revisit_with_referrer(url):
 class AdaptiveTimeout:
     __slots__ = ('name', 'value', 'default', 'min_val', 'max_val', 'safety')
 
-    def __init__(self, name, default, safety=3, min_ratio=0.25, max_ratio=10):
+    def __init__(self, name, default, safety=3, min_ratio=0.25, max_ratio=10, hard_max=None):
         self.name = name
         self.value = float(default)
         self.default = float(default)
         self.min_val = float(default * min_ratio)
         self.max_val = float(default * max_ratio)
+        if hard_max is not None:
+            self.max_val = min(self.max_val, float(hard_max))
         self.safety = float(safety)
 
     def get(self):
@@ -211,11 +213,11 @@ class AdaptiveTimeout:
         self.value = self.default
 
 
-adpt_nav = AdaptiveTimeout('nav', 60, safety=2)
+adpt_nav = AdaptiveTimeout('nav', 40, safety=2)
 adpt_load = AdaptiveTimeout('load', 30, safety=2)
-adpt_redirect = AdaptiveTimeout('redirect', 25, safety=3)
+adpt_redirect = AdaptiveTimeout('redirect', 25, safety=3, hard_max=30)
 adpt_poll = AdaptiveTimeout('poll', 30, safety=3)
-adpt_getlink = AdaptiveTimeout('getlink', 50, safety=2)
+adpt_getlink = AdaptiveTimeout('getlink', 40, safety=2)
 
 
 def log(msg):
@@ -1507,48 +1509,12 @@ def do_get_link():
             return True
 
         driver.switch_to.window(new_tab)
-        log("tracking new tab redirects (up to 30s)...")
-        ms(5000)
+        log("switched to new tab, waiting 10s for page to load...")
+        ms(10000)
 
-        final_url = ""
-        for attempt in range(30):
-            try:
-                cur = driver.current_url
-                if cur and "about:blank" not in cur and "chrome-error" not in cur:
-                    if cur != final_url:
-                        final_url = cur
-                        log(f"[tab {attempt}] {final_url[:120]}")
-                    is_tracking = any(x in cur for x in [
-                        "lnkd.in", "linkedin.com", "google.com/url",
-                        "facebook.com/l.php", "t.co/"
-                    ])
-                    if not is_tracking and final_url and attempt >= 2:
-                        break
-            except Exception:
-                break
-            ms(1000)
-
-        if final_url and "about:blank" not in final_url and "chrome-error" not in final_url:
-            from urllib.parse import urlparse, parse_qs
-            u = urlparse(final_url)
-            for val in parse_qs(u.query).values():
-                if val:
-                    import base64
-                    try:
-                        decoded = base64.b64decode(val[0]).decode("utf-8", errors="ignore")
-                        if decoded.startswith("http"):
-                            log(f"decoded destination from base64: {decoded}")
-                            destination_url = decoded
-                            try:
-                                driver.close()
-                                driver.switch_to.window(driver.window_handles[0])
-                            except Exception:
-                                pass
-                            return True
-                    except Exception:
-                        pass
-
-            log(f"destination from new tab: {final_url[:100]}")
+        final_url = safe_url()
+        if final_url and final_url not in ("about:blank", "") and "chrome-error" not in final_url:
+            log(f"destination from new tab: {final_url[:120]}")
             destination_url = final_url
             try:
                 driver.close()
@@ -1556,6 +1522,20 @@ def do_get_link():
             except Exception:
                 pass
             return True
+
+        log("new tab URL empty/blank after 10s, checking for redirects...")
+        for attempt in range(5):
+            ms(1000)
+            final_url = safe_url()
+            if final_url and final_url not in ("about:blank", "") and "chrome-error" not in final_url:
+                log(f"destination from redirect: {final_url[:120]}")
+                destination_url = final_url
+                try:
+                    driver.close()
+                    driver.switch_to.window(driver.window_handles[0])
+                except Exception:
+                    pass
+                return True
 
         try:
             driver.close()

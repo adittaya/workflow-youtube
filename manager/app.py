@@ -248,6 +248,7 @@ def create_repo_and_deploy(deployment_id):
             "SUPABASE_KEY": os.environ.get("SUPABASE_KEY", ""),
             "SUPABASE_SECRET": os.environ.get("SUPABASE_SECRET", ""),
             "GH_PAT": token,
+            "LOOP_TRIGGER_TOKEN": token,
         }
         for sname, sval in secrets_map.items():
             if sval:

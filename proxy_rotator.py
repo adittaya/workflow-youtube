@@ -85,49 +85,61 @@ def supabase_fetch(endpoint, method="GET", timeout=25, data=None):
         raise RuntimeError(f"Supabase request failed: {e}")
 
 
-def fetch_proxies(tier="premium"):
+def fetch_proxies(tier="premium", batch_size=500, max_batches=20):
+    """Fetch all proxies from Supabase with pagination. Returns unlimited proxies in batches of batch_size."""
     field = "vplink_ok" if tier == "premium" else "e2_ok"
-    endpoint = (
-        f"/proxy_results?select=ip,port,proto,country,latency_ms"
-        f"&{field}=eq.true"
-        f"&order=latency_ms.asc&limit=500"
-    )
-    resp = supabase_fetch(endpoint)
-    if not resp.ok:
-        raise RuntimeError(f"Supabase failed: {resp.status_code}")
-    return resp.json()
+    all_proxies = []
+    for batch in range(max_batches):
+        offset = batch * batch_size
+        endpoint = (
+            f"/proxy_results?select=ip,port,proto,country,latency_ms"
+            f"&{field}=eq.true"
+            f"&order=latency_ms.asc"
+            f"&limit={batch_size}&offset={offset}"
+        )
+        resp = supabase_fetch(endpoint)
+        if not resp.ok:
+            raise RuntimeError(f"Supabase failed: {resp.status_code}")
+        batch_data = resp.json()
+        if not batch_data:
+            break
+        all_proxies.extend(batch_data)
+        if len(batch_data) < batch_size:
+            break
+    return all_proxies
+
+
+def _fetch_state_keys(state, batch_size=1000, max_batches=10):
+    """Fetch all state keys (dead/used) with pagination."""
+    keys = set()
+    for batch in range(max_batches):
+        offset = batch * batch_size
+        endpoint = (
+            f"{STATE_TABLE}?select=ip,port"
+            f"&state=eq.{state}"
+            f"&expires_at=gt.{datetime.datetime.utcnow().isoformat()}Z"
+            f"&limit={batch_size}&offset={offset}"
+        )
+        try:
+            resp = supabase_fetch(endpoint)
+            if resp.ok:
+                data = resp.json()
+                if not data:
+                    break
+                keys.update({f"{e['ip']}:{e['port']}" for e in data})
+                if len(data) < batch_size:
+                    break
+        except Exception:
+            break
+    return keys
 
 
 def _fetch_blacklisted_keys():
-    try:
-        endpoint = (
-            f"{STATE_TABLE}?select=ip,port"
-            f"&state=eq.dead"
-            f"&expires_at=gt.{datetime.datetime.utcnow().isoformat()}Z"
-            f"&limit=1000"
-        )
-        resp = supabase_fetch(endpoint)
-        if resp.ok:
-            return {f"{e['ip']}:{e['port']}" for e in resp.json()}
-    except Exception:
-        pass
-    return set()
+    return _fetch_state_keys("dead")
 
 
 def _fetch_used_keys():
-    try:
-        endpoint = (
-            f"{STATE_TABLE}?select=ip,port"
-            f"&state=eq.used"
-            f"&expires_at=gt.{datetime.datetime.utcnow().isoformat()}Z"
-            f"&limit=1000"
-        )
-        resp = supabase_fetch(endpoint)
-        if resp.ok:
-            return {f"{e['ip']}:{e['port']}" for e in resp.json()}
-    except Exception:
-        pass
-    return set()
+    return _fetch_state_keys("used")
 
 
 def mark_dead(ip, port, reason=""):
@@ -305,9 +317,9 @@ import random
 
 
 def get_proxy(tier="premium"):
-    print("  [Proxy] Fetching proxies from Supabase...", file=sys.stderr)
-    all_proxies = fetch_proxies(tier)
-    print(f"  [Proxy] Found {len(all_proxies)} {tier} proxies in DB", file=sys.stderr)
+    print("  [Proxy] Fetching proxies from Supabase (unlimited, batched)...", file=sys.stderr)
+    all_proxies = fetch_proxies(tier, batch_size=500, max_batches=20)
+    print(f"  [Proxy] Found {len(all_proxies)} {tier} proxies in DB (paginated)", file=sys.stderr)
     if not all_proxies:
         return None
 

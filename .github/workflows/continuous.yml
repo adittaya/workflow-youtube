@@ -23,6 +23,7 @@ env:
   VPLINK_HEADLESS: '1'
   VPLINK_NONINTERACTIVE: '1'
   VPLINK_KEY: ${{ github.event.inputs.key || github.event.client_payload.key || 'UbpV2D' }}
+  RELAY_TARGET_REPO: ${{ secrets.RELAY_TARGET_REPO || github.repository }}
 
 jobs:
   run:
@@ -116,7 +117,7 @@ jobs:
             HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
               -H "Authorization: token $TRIGGER_TOKEN" \
               -H "Accept: application/vnd.github.v3+json" \
-              "https://api.github.com/repos/${{ github.repository }}/dispatches" \
+              "https://api.github.com/repos/${RELAY_TARGET_REPO}/dispatches" \
               -d '{"event_type":"relay","client_payload":{"key":"'"$VPLINK_KEY"'"}}')
             echo "HTTP $HTTP_CODE"
             if [ "$HTTP_CODE" = "204" ]; then

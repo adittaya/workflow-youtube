@@ -27,7 +27,7 @@ env:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -69,7 +69,7 @@ jobs:
 
       - name: Run automation (with proxy retry)
         id: automate
-        timeout-minutes: 15
+        timeout-minutes: 10
         env:
           CHROMIUM_PATH: /usr/bin/google-chrome
         run: |
@@ -107,7 +107,7 @@ jobs:
           echo "status=success" >> $GITHUB_OUTPUT
 
       - name: Relay — trigger next run
-        if: always() && !cancelled()
+        if: success() || failure()
         env:
           TRIGGER_TOKEN: ${{ secrets.LOOP_TRIGGER_TOKEN }}
         run: |
@@ -121,28 +121,6 @@ jobs:
             echo "HTTP $HTTP_CODE"
             if [ "$HTTP_CODE" = "204" ]; then
               echo "Relay dispatched successfully"
-              break
-            fi
-            sleep 5
-          done
-
-      - name: Backup relay — schedule 10min fallback
-        if: always() && !cancelled()
-        env:
-          TRIGGER_TOKEN: ${{ secrets.LOOP_TRIGGER_TOKEN }}
-        run: |
-          echo "Waiting 10 minutes before backup relay..."
-          sleep 600
-          echo "Firing backup relay..."
-          for attempt in 1 2 3; do
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-              -H "Authorization: token $TRIGGER_TOKEN" \
-              -H "Accept: application/vnd.github.v3+json" \
-              "https://api.github.com/repos/${{ github.repository }}/dispatches" \
-              -d '{"event_type":"relay","client_payload":{"key":"'"$VPLINK_KEY"'"}}')
-            echo "Backup relay HTTP $HTTP_CODE"
-            if [ "$HTTP_CODE" = "204" ]; then
-              echo "Backup relay dispatched"
               break
             fi
             sleep 5

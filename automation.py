@@ -193,7 +193,7 @@ def report_proxy_failure(reason):
     if not proxy_punished and PROXY_PORT:
         proxy_punished = True
         try:
-            mark_dead(PROXY_IP, PROXY_PORT)
+            mark_dead(PROXY_IP, PROXY_PORT, reason)
         except Exception:
             pass
 

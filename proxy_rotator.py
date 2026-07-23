@@ -65,6 +65,14 @@ def _detect_chrome_binary() -> str:
 SUPABASE_REST = "/rest/v1"
 TEST_KEY = "gbd1b"
 TEST_URL = f"https://vplink.in/{TEST_KEY}"
+STATE_ENDPOINT = "/api_usage"
+
+
+def _get_subnet(ip):
+    parts = ip.split(".")
+    if len(parts) == 4:
+        return f"{parts[0]}.{parts[1]}.{parts[2]}.0/24"
+    return None
 
 
 def supabase_fetch(endpoint, method="GET", timeout=25, data=None):
@@ -96,18 +104,146 @@ def fetch_proxies(tier="premium"):
     return resp.json()
 
 
-def mark_dead(ip, port):
-    from config import add_proxy_blacklist
+def _record_state(ip, port, state, reason=""):
+    now_iso = datetime.datetime.utcnow().isoformat() + "Z"
+    subnet = _get_subnet(ip) or ""
+    data = {
+        "endpoint": "_proxy_state",
+        "method": state,
+        "ip": f"{ip}:{port}",
+        "user_agent": subnet,
+        "status": 200 if state == "used" else 503,
+        "latency_ms": 0,
+        "tier": reason[:100] if reason else "",
+        "created_at": now_iso,
+    }
     try:
+        supabase_fetch(
+            STATE_ENDPOINT,
+            method="POST",
+            data=data,
+        )
+    except Exception:
+        pass
+
+
+def _record_subnet_dead(ip, reason=""):
+    subnet = _get_subnet(ip)
+    if not subnet:
+        return
+    now_iso = datetime.datetime.utcnow().isoformat() + "Z"
+    data = {
+        "endpoint": "_proxy_state",
+        "method": "dead_subnet",
+        "ip": subnet,
+        "user_agent": "",
+        "status": 503,
+        "latency_ms": 0,
+        "tier": reason[:100] if reason else "",
+        "created_at": now_iso,
+    }
+    try:
+        supabase_fetch(
+            STATE_ENDPOINT,
+            method="POST",
+            data=data,
+        )
+    except Exception:
+        pass
+
+
+def _fetch_state_set(state, hours):
+    cutoff = datetime.datetime.utcnow() - datetime.timedelta(hours=hours)
+    cutoff_iso = cutoff.isoformat() + "Z"
+    endpoint = (
+        f"{STATE_ENDPOINT}"
+        f"?select=ip,method,created_at"
+        f"&endpoint=eq._proxy_state"
+        f"&method=eq.{state}"
+        f"&created_at=gt.{cutoff_iso}"
+        f"&order=created_at.desc&limit=1000"
+    )
+    try:
+        resp = supabase_fetch(endpoint)
+        if resp.ok:
+            return resp.json()
+    except Exception:
+        pass
+    return []
+
+
+def _fetch_subnet_dead_set(hours):
+    cutoff = datetime.datetime.utcnow() - datetime.timedelta(hours=hours)
+    cutoff_iso = cutoff.isoformat() + "Z"
+    endpoint = (
+        f"{STATE_ENDPOINT}"
+        f"?select=ip,created_at"
+        f"&endpoint=eq._proxy_state"
+        f"&method=eq.dead_subnet"
+        f"&created_at=gt.{cutoff_iso}"
+        f"&order=created_at.desc&limit=500"
+    )
+    try:
+        resp = supabase_fetch(endpoint)
+        if resp.ok:
+            return resp.json()
+    except Exception:
+        pass
+    return []
+
+
+def _ip_in_subnet(ip, subnet_cidr):
+    try:
+        parts = subnet_cidr.replace("/24", "").split(".")
+        ip_parts = ip.split(".")
+        return parts[:3] == ip_parts[:3]
+    except Exception:
+        return False
+
+
+def _get_blacklist_sets():
+    dead_entries = _fetch_state_set("dead", 24)
+    dead_keys = set()
+    for e in dead_entries:
+        dead_keys.add(e["ip"])
+
+    subnet_entries = _fetch_subnet_dead_set(24)
+    dead_subnets = set()
+    for e in subnet_entries:
+        dead_subnets.add(e["ip"])
+
+    used_entries = _fetch_state_set("used", 1)
+    used_keys = set()
+    for e in used_entries:
+        used_keys.add(e["ip"])
+
+    try:
+        local_bl = config.load_proxy_blacklist()
+        for k in local_bl:
+            dead_keys.add(k)
+    except Exception:
+        pass
+
+    return dead_keys, dead_subnets, used_keys
+
+
+def mark_dead(ip, port, reason=""):
+    key = f"{ip}:{port}"
+    _record_state(ip, port, "dead", reason)
+    _record_subnet_dead(ip, reason)
+    try:
+        from config import add_proxy_blacklist
         add_proxy_blacklist(ip, port)
     except Exception:
         pass
-    print(f"  [Proxy] Blacklisted {ip}:{port} for 24h", file=sys.stderr)
+    subnet = _get_subnet(ip) or "?"
+    print(f"  [Proxy] Blacklisted {key} + subnet {subnet} for 24h ({reason})", file=sys.stderr)
     return True
 
 
 def mark_proxy_used(ip, port):
-    pass
+    _record_state(ip, port, "used")
+    print(f"  [Proxy] Marked {ip}:{port} as used (skip 1h)", file=sys.stderr)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -271,23 +407,40 @@ def get_proxy(tier="premium"):
     if not all_proxies:
         return None
 
-    blacklist = config.load_proxy_blacklist()
-    if blacklist:
-        bl_set = set(blacklist)
-        proxies = [p for p in all_proxies if f"{p['ip']}:{p['port']}" not in bl_set]
-        print(f"  [Proxy] Blacklist: {len(blacklist)} excluded, {len(proxies)} remaining", file=sys.stderr)
-    else:
-        proxies = all_proxies
-    if not proxies:
-        print("  [Proxy] All proxies blacklisted locally", file=sys.stderr)
-        return None
+    print("  [Proxy] Checking shared blacklist (Supabase)...", file=sys.stderr)
+    dead_keys, dead_subnets, used_keys = _get_blacklist_sets()
+    print(f"  [Proxy] Shared state: {len(dead_keys)} dead, {len(dead_subnets)} dead subnets, {len(used_keys)} recently used", file=sys.stderr)
 
-    random.shuffle(proxies)
+    filtered = []
+    skipped_dead = 0
+    skipped_used = 0
+    skipped_subnet = 0
+    for p in all_proxies:
+        key = f"{p['ip']}:{p['port']}"
+        if key in dead_keys:
+            skipped_dead += 1
+            continue
+        if key in used_keys:
+            skipped_used += 1
+            continue
+        subnet = _get_subnet(p["ip"])
+        if subnet and subnet in dead_subnets:
+            skipped_subnet += 1
+            continue
+        filtered.append(p)
+
+    print(f"  [Proxy] Filtered: {len(filtered)} remaining (skipped {skipped_dead} dead, {skipped_used} used, {skipped_subnet} dead-subnet)", file=sys.stderr)
+
+    if not filtered:
+        print("  [Proxy] All proxies excluded by shared blacklist, trying local fallback...", file=sys.stderr)
+        filtered = all_proxies
+
+    random.shuffle(filtered)
 
     alive = []
     dead = []
     with ThreadPoolExecutor(max_workers=50) as pool:
-        futures = {pool.submit(test_proxy_quick, p, 3000): p for p in proxies}
+        futures = {pool.submit(test_proxy_quick, p, 3000): p for p in filtered}
         for f in as_completed(futures):
             p = futures[f]
             try:
@@ -301,11 +454,7 @@ def get_proxy(tier="premium"):
 
     if dead:
         for p in dead:
-            try:
-                from config import add_proxy_blacklist
-                add_proxy_blacklist(p["ip"], p["port"])
-            except Exception:
-                pass
+            mark_dead(p["ip"], p["port"], "tcp_dead")
         print(f"  [Proxy] Blacklisted {len(dead)} dead proxies for 24h", file=sys.stderr)
 
     if not alive:

@@ -96,6 +96,7 @@ DEBUG = "--vplink-debug" in sys.argv or os.environ.get("VPLINK_DEBUG") == "1"
 driver = None
 destination_url = None
 start_time = time.time()
+monitor = None  # initialized after PageMonitor class definition
 
 PROXY = os.environ.get("VPLINK_PROXY", "")
 PROXY_HOST = PROXY.replace("https://", "").replace("http://", "").split(":")[0] if PROXY else ""
@@ -123,6 +124,33 @@ TRAFFIC_UTM = {
     "twitter": {"utm_source": "twitter", "utm_medium": "social", "utm_campaign": "tweet"},
     "direct": {},
 }
+
+
+def _inject_timer_cookies():
+    """Inject adcacg/adcadg cookie to force 15s timers instead of 24s."""
+    try:
+        domain = safe_eval("return window.location.hostname;")
+        if not domain:
+            return
+        for cookie_name in ("adcadg", "adcacg"):
+            try:
+                driver.execute_cdp_cmd("Network.setCookie", {
+                    "name": cookie_name,
+                    "value": "1",
+                    "domain": "." + domain,
+                    "path": "/",
+                    "secure": True,
+                    "httpOnly": False,
+                    "maxAge": 86400,
+                })
+            except Exception:
+                try:
+                    driver.add_cookie({"name": cookie_name, "value": "1", "path": "/"})
+                except Exception:
+                    pass
+        log(f"injected timer cookies on {domain}")
+    except Exception:
+        pass
 
 
 def _inject_traffic_source():
@@ -218,6 +246,404 @@ adpt_load = AdaptiveTimeout('load', 30, safety=2)
 adpt_redirect = AdaptiveTimeout('redirect', 25, safety=3, hard_max=30)
 adpt_poll = AdaptiveTimeout('poll', 30, safety=3)
 adpt_getlink = AdaptiveTimeout('getlink', 40, safety=2)
+
+
+# ══════════════════════════════════════════════════════════════
+#  PageMonitor — per-second real-time page scanner
+# ══════════════════════════════════════════════════════════════
+
+# ── JS injected into page: MutationObserver + Network Interceptors ──
+_MONITOR_JS = r"""
+(function() {
+    if (window.__vplink_monitor) return;
+    window.__vplink_monitor = true;
+    window.__vplink_events = [];
+    window.__vplink_snap = {};
+
+    function pushEvent(type, detail) {
+        window.__vplink_events.push({
+            type: type,
+            time: Date.now(),
+            detail: detail || {}
+        });
+        if (window.__vplink_events.length > 200) {
+            window.__vplink_events = window.__vplink_events.slice(-200);
+        }
+    }
+
+    // ── 1. MutationObserver: fires on ANY DOM change ──
+    var lastUrl = location.href;
+    var observer = new MutationObserver(function(mutations) {
+        var changed = false;
+        var addedNodes = [];
+        var removedNodes = [];
+        var attrChanges = [];
+
+        for (var i = 0; i < mutations.length; i++) {
+            var m = mutations[i];
+            if (m.type === 'childList') {
+                for (var j = 0; j < m.addedNodes.length; j++) {
+                    var n = m.addedNodes[j];
+                    if (n.nodeType === 1) {
+                        addedNodes.push(n.tagName + (n.id ? '#' + n.id : '') + (n.className ? '.' + String(n.className).split(' ').join('.') : ''));
+                    }
+                }
+                for (var j = 0; j < m.removedNodes.length; j++) {
+                    var n = m.removedNodes[j];
+                    if (n.nodeType === 1) {
+                        removedNodes.push(n.tagName + (n.id ? '#' + n.id : '') + (n.className ? '.' + String(n.className).split(' ').join('.') : ''));
+                    }
+                }
+                changed = true;
+            }
+            if (m.type === 'attributes') {
+                attrChanges.push({
+                    el: m.target.tagName + (m.target.id ? '#' + m.target.id : ''),
+                    attr: m.attributeName
+                });
+                changed = true;
+            }
+        }
+
+        if (changed) {
+            pushEvent('dom_mutation', {
+                added: addedNodes.slice(0, 10),
+                removed: removedNodes.slice(0, 10),
+                attrs: attrChanges.slice(0, 10)
+            });
+        }
+
+        // Detect URL change (SPA navigation)
+        if (location.href !== lastUrl) {
+            var oldUrl = lastUrl;
+            lastUrl = location.href;
+            pushEvent('url_change', { from: oldUrl, to: location.href });
+        }
+    });
+
+    observer.observe(document.documentElement, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['style', 'class', 'href', 'disabled', 'onclick']
+    });
+
+    // ── 2. Network Interceptors: fetch + XMLHttpRequest ──
+    var origFetch = window.fetch;
+    window.fetch = function() {
+        var url = arguments[0];
+        var method = (arguments[1] && arguments[1].method) || 'GET';
+        pushEvent('net_request', { url: String(url).substring(0, 200), method: method });
+        return origFetch.apply(this, arguments).then(function(resp) {
+            pushEvent('net_response', {
+                url: String(url).substring(0, 200),
+                status: resp.status,
+                ok: resp.ok
+            });
+            return resp;
+        }).catch(function(err) {
+            pushEvent('net_error', { url: String(url).substring(0, 200), error: String(err) });
+            throw err;
+        });
+    };
+
+    var origOpen = XMLHttpRequest.prototype.open;
+    var origSend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function(method, url) {
+        this._vplink_url = url;
+        this._vplink_method = method;
+        return origOpen.apply(this, arguments);
+    };
+    XMLHttpRequest.prototype.send = function() {
+        var self = this;
+        var url = this._vplink_url || '';
+        pushEvent('net_request', { url: String(url).substring(0, 200), method: this._vplink_method || 'GET' });
+        this.addEventListener('load', function() {
+            pushEvent('net_response', {
+                url: String(url).substring(0, 200),
+                status: self.status,
+                ok: self.status >= 200 && self.status < 400
+            });
+        });
+        this.addEventListener('error', function() {
+            pushEvent('net_error', { url: String(url).substring(0, 200), error: 'network error' });
+        });
+        return origSend.apply(this, arguments);
+    };
+
+    // ── 3. Navigation interceptors ──
+    var origAssign = window.location.assign;
+    window.addEventListener('beforeunload', function() {
+        pushEvent('navigation', { url: location.href, type: 'beforeunload' });
+    });
+
+    // ── 4. Periodic state snapshot (every 500ms as supplement) ──
+    setInterval(function() {
+        var snap = {};
+        try {
+            // Countdown
+            snap.countdown = -1;
+            var cdEls = document.querySelectorAll('[id*="time"], [id*="countdown"], [id*="wait"], [class*="timer"], [class*="countdown"]');
+            for (var i = 0; i < cdEls.length; i++) {
+                var v = parseInt(cdEls[i].textContent);
+                if (!isNaN(v) && v >= 0 && v <= 120) { snap.countdown = v; break; }
+            }
+
+            // Visible nav buttons
+            snap.buttons = [];
+            var allBtns = document.querySelectorAll('button, a, input[type="submit"], [role="button"]');
+            var navWords = ['continue', 'verify', 'next', 'proceed', 'get link', 'get-link', 'click to', 'start'];
+            for (var i = 0; i < allBtns.length; i++) {
+                var el = allBtns[i];
+                var style = getComputedStyle(el);
+                if (style.display === 'none' || style.visibility === 'hidden') continue;
+                if (el.offsetParent === null && style.position !== 'fixed') continue;
+                var rect = el.getBoundingClientRect();
+                if (rect.width < 5 || rect.height < 5 || rect.width > 350 || rect.height > 120) continue;
+                var txt = el.textContent.trim().toLowerCase();
+                if (txt.length > 40) continue;
+                var isNav = false;
+                for (var w = 0; w < navWords.length; w++) {
+                    if (txt === navWords[w] || txt.indexOf(navWords[w]) >= 0) { isNav = true; break; }
+                }
+                snap.buttons.push({
+                    tag: el.tagName, text: txt.substring(0, 40),
+                    href: el.href || '', isNav: isNav,
+                    w: Math.round(rect.width), h: Math.round(rect.height)
+                });
+            }
+
+            // Overlays
+            snap.hasPopup = !!(document.getElementById('continueBtn') || document.getElementById('gcont'));
+            snap.hasAdOverlay = !!(document.getElementById('block-cont-1') || document.getElementById('overcn'));
+            snap.hasGoogRewarded = (location.hash === '#goog_rewarded');
+
+            // Step info
+            snap.stepInfo = '';
+            var stick = document.getElementById('stick');
+            if (stick) snap.stepInfo = stick.textContent.trim();
+
+            // get-link href
+            snap.getLinkHref = '';
+            var gl = document.getElementById('get-link');
+            if (gl) {
+                var el = gl;
+                while (el && el.tagName !== 'A') el = el.parentElement;
+                if (el && el.href && el.href.indexOf('http') === 0) snap.getLinkHref = el.href;
+            }
+
+            // learn_more links
+            snap.hasLearnMore = document.querySelectorAll('a[href*="learn_more.php"]').length > 0;
+            snap.url = location.href;
+            snap.hash = location.hash;
+            snap.title = document.title;
+            snap.readyState = document.readyState;
+        } catch(e) {}
+        window.__vplink_snap = snap;
+    }, 500);
+
+    pushEvent('monitor_installed', {});
+})();
+"""
+
+
+class PageMonitor:
+    """
+    Real-time page monitor using MutationObserver + Network Interceptors.
+    JS listeners fire on EVERY DOM change and network request — no blind polling.
+    Python side reads events from window.__vplink_events every 100ms.
+
+    Usage:
+        monitor.install(driver)           # inject listeners into page
+        monitor.poll()                    # drain events (call in loop)
+        monitor.wait_for("url_change")   # block until event fires
+        e = monitor.pop_event("dom_mutation")  # get + remove event
+        snap = monitor.snapshot()         # current page state
+    """
+    __slots__ = ('_driver', '_events', '_snap', '_lock', '_installed')
+
+    def __init__(self):
+        self._events = []
+        self._snap = {}
+        self._lock = __import__('threading').Lock()
+        self._installed = False
+
+    def install(self, driver):
+        """Inject MutationObserver + Network Interceptors into the page."""
+        self._driver = driver
+        try:
+            driver.execute_script(_MONITOR_JS)
+            self._installed = True
+            log("PageMonitor: MutationObserver + Network interceptors installed")
+        except Exception as e:
+            log(f"PageMonitor: install failed: {e}")
+
+    def reinstall(self, driver):
+        """Reinstall after page navigation (new page = new JS context)."""
+        self._installed = False
+        self.install(driver)
+
+    def poll(self):
+        """Read events from JS queue. Call this frequently (every 100ms)."""
+        if not self._installed or not self._driver:
+            return
+        try:
+            raw = self._driver.execute_script(
+                "var e = window.__vplink_events || []; window.__vplink_events = []; return JSON.stringify(e);"
+            )
+            if raw:
+                new_events = json.loads(raw)
+                if new_events:
+                    with self._lock:
+                        self._events.extend(new_events)
+                    # Update snapshot from JS side
+                    snap_raw = self._driver.execute_script(
+                        "return JSON.stringify(window.__vplink_snap || {});"
+                    )
+                    if snap_raw:
+                        self._snap = json.loads(snap_raw)
+        except Exception:
+            pass
+
+    def snapshot(self):
+        """Get current page state snapshot."""
+        self.poll()
+        with self._lock:
+            return dict(self._snap) if self._snap else {}
+
+    def events(self, event_type=None, last_sec=None):
+        """Get events, optionally filtered by type and time window."""
+        self.poll()
+        with self._lock:
+            evts = list(self._events)
+        if event_type:
+            evts = [e for e in evts if e.get("type") == event_type]
+        if last_sec:
+            cutoff = (time.time() - last_sec) * 1000
+            evts = [e for e in evts if e.get("time", 0) >= cutoff]
+        return evts
+
+    def pop_event(self, event_type=None):
+        """Get and remove the oldest event of given type (or any type)."""
+        self.poll()
+        with self._lock:
+            for i, e in enumerate(self._events):
+                if event_type is None or e.get("type") == event_type:
+                    return self._events.pop(i)
+        return None
+
+    def has_event(self, event_type, last_sec=5):
+        """Check if a specific event type fired recently."""
+        evts = self.events(event_type, last_sec)
+        return len(evts) > 0
+
+    def clear_events(self):
+        with self._lock:
+            self._events = []
+
+    def url(self):
+        snap = self.snapshot()
+        return snap.get("url", "")
+
+    def countdown(self):
+        snap = self.snapshot()
+        return snap.get("countdown", -1)
+
+    def step_info(self):
+        snap = self.snapshot()
+        return snap.get("stepInfo", "")
+
+    def nav_buttons(self):
+        snap = self.snapshot()
+        return [b for b in snap.get("buttons", []) if b.get("isNav")]
+
+    def has_popup(self):
+        return self.snapshot().get("hasPopup", False)
+
+    def has_ad_overlay(self):
+        return self.snapshot().get("hasAdOverlay", False)
+
+    def has_goog_rewarded(self):
+        return self.snapshot().get("hasGoogRewarded", False)
+
+    def get_link_href(self):
+        return self.snapshot().get("getLinkHref", "")
+
+    def has_learn_more(self):
+        return self.snapshot().get("hasLearnMore", False)
+
+    def url_changed(self, last_sec=2):
+        """Check if URL changed recently (via MutationObserver event)."""
+        return self.has_event("url_change", last_sec)
+
+    def dom_changed(self, last_sec=1):
+        """Check if DOM mutated recently."""
+        return self.has_event("dom_mutation", last_sec)
+
+    def net_activity(self, last_sec=2):
+        """Check if any network requests fired recently."""
+        return self.has_event("net_request", last_sec) or self.has_event("net_response", last_sec)
+
+    def wait_for_event(self, event_type, timeout_sec=30, poll_ms=100):
+        """Block until a specific event type fires. Returns event dict or None."""
+        deadline = time.time() + timeout_sec
+        while time.time() < deadline:
+            e = self.pop_event(event_type)
+            if e:
+                return e
+            time.sleep(poll_ms / 1000.0)
+        return None
+
+    def wait_for_url_change(self, timeout_sec=30):
+        """Block until URL changes. Returns new URL or ''."""
+        start = self.url()
+        start_base = start.split("#")[0] if start else ""
+        deadline = time.time() + timeout_sec
+        while time.time() < deadline:
+            cur = self.url()
+            cur_base = cur.split("#")[0] if cur else ""
+            if cur and cur != start and cur_base != start_base:
+                return cur
+            time.sleep(0.1)
+        return ""
+
+    def wait_for_element_visible(self, selector, timeout_sec=15):
+        """Block until element appears via MutationObserver or snapshot."""
+        deadline = time.time() + timeout_sec
+        while time.time() < deadline:
+            found = self._driver.execute_script(f"""
+                var el = document.querySelector({json.dumps(selector)});
+                if (!el) return false;
+                var s = getComputedStyle(el);
+                return s.display !== 'none' && s.visibility !== 'hidden' && el.offsetParent !== null;
+            """) if self._driver else False
+            if found:
+                return True
+            time.sleep(0.1)
+        return False
+
+    def wait_for_countdown_zero(self, timeout_sec=60):
+        """Block until countdown reaches 0 or -1."""
+        deadline = time.time() + timeout_sec
+        while time.time() < deadline:
+            cd = self.countdown()
+            if cd == 0 or cd == -1:
+                return True
+            time.sleep(0.1)
+        return False
+
+    def wait_for_nav_button(self, timeout_sec=15):
+        """Block until a navigation button appears."""
+        deadline = time.time() + timeout_sec
+        while time.time() < deadline:
+            btns = self.nav_buttons()
+            if btns:
+                return btns[0]
+            time.sleep(0.1)
+        return None
+
+
+monitor = PageMonitor()
 
 
 def log(msg):
@@ -605,13 +1031,14 @@ SKIP_NAV_URLS = ["vplink.in", "learn_more", "about:", "chrome-", "cdn-cgi", "gst
 
 
 def has_countdown_template():
-    """Check if current page has any article template elements (TP/CE/LINK1S)."""
+    """Check if current page has any article template elements (TP/CE/LINK1S/getlink)."""
     return safe_eval("""
         if (document.getElementById('tp-time') || document.getElementById('tp-wait1')) return true;
         if (document.getElementById('ce-time') || document.getElementById('ce-wait1')) return true;
         if (document.getElementById('link1s-wait1') || document.getElementById('startCountdownBtn')) return true;
         if (document.getElementById('tp-snp2') || document.getElementById('cross-snp2')) return true;
         if (document.getElementById('btn6') || document.getElementById('btn7')) return true;
+        if (document.getElementById('get-link')) return true;
         return false;
     """) or False
 
@@ -620,6 +1047,8 @@ def is_article_page(url):
     if not url or not url.startswith("http"):
         return False
     if "vplink.in" in url or "learn_more.php" in url:
+        return False
+    if safe_eval("return !!document.getElementById('get-link');"):
         return False
     return has_countdown_template()
 
@@ -658,14 +1087,158 @@ def is_ad_domain(url):
 #  Template detection
 # ══════════════════════════════════════════════════════════════
 
+def get_step_info():
+    """Extract step progress from 'stick' element (e.g., 'step 1/3')."""
+    result = safe_eval("""
+        var stick = document.getElementById('stick');
+        if (!stick) return '';
+        return stick.textContent.trim();
+    """)
+    return result or ""
+
+
 def detect_template():
     result = safe_eval("""
         if (document.getElementById('tp-time') || document.getElementById('tp-wait1')) return 'tp';
         if (document.getElementById('ce-time') || document.getElementById('ce-wait1')) return 'ce';
         if (document.getElementById('link1s-wait1') || document.getElementById('startCountdownBtn')) return 'link1s';
+        if (document.getElementById('get-link')) return 'getlink';
         return 'unknown';
     """)
     return result or "unknown"
+
+
+# ══════════════════════════════════════════════════════════════
+#  Behavioral Page Fingerprinting (survives ID renames)
+# ══════════════════════════════════════════════════════════════
+
+def fingerprint_page():
+    """
+    Scan page structure and return behavioral fingerprint.
+    Works even if element IDs change — detects what the page DOES.
+    Returns dict with keys:
+      has_countdown: bool — page has a timer/countdown
+      has_verify_btn: bool — page has a verify/click-to-start button
+      has_continue_btn: bool — page has a continue/next button
+      has_getlink: bool — page has a get-link element with parent <a>
+      has_step_indicator: bool — page shows step progress
+      has_popup_blocker: bool — page has continueBtn/gcont overlay
+      has_learn_more: bool — page has learn_more.php links
+      countdown_value: int — current countdown value or -1
+      nav_trigger: str — how navigation is triggered (href, onclick, etc.)
+      page_type: str — 'landing', 'step', 'countdown', 'destination', 'intermediate', 'unknown'
+    """
+    result = safe_eval("""
+        var fp = {
+            has_countdown: false,
+            has_verify_btn: false,
+            has_continue_btn: false,
+            has_getlink: false,
+            has_step_indicator: false,
+            has_popup_blocker: false,
+            has_learn_more: false,
+            countdown_value: -1,
+            nav_trigger: '',
+            page_type: 'unknown'
+        };
+
+        // Check for countdown elements (any element with time/wait/countdown in id/class)
+        var allEls = document.querySelectorAll('[id*="time"], [id*="wait"], [id*="countdown"], [class*="time"], [class*="wait"], [class*="countdown"]');
+        for (var i = 0; i < allEls.length; i++) {
+            var el = allEls[i];
+            var txt = el.textContent.trim();
+            var num = parseInt(txt);
+            if (!isNaN(num) && num >= 0 && num <= 120) {
+                fp.has_countdown = true;
+                fp.countdown_value = num;
+                break;
+            }
+        }
+
+        // Check for verify/click-to-start buttons
+        var btns = document.querySelectorAll('button, [role="button"], [onclick]');
+        for (var i = 0; i < btns.length; i++) {
+            var txt = btns[i].textContent.trim().toLowerCase();
+            if (txt.indexOf('verify') >= 0 || txt.indexOf('click to') >= 0 || txt.indexOf('start') >= 0) {
+                fp.has_verify_btn = true;
+                break;
+            }
+        }
+
+        // Check for continue/next buttons
+        var continueBtns = document.querySelectorAll('button, [role="button"], a[href]');
+        for (var i = 0; i < continueBtns.length; i++) {
+            var txt = continueBtns[i].textContent.trim().toLowerCase();
+            if (txt.indexOf('continue') >= 0 || txt.indexOf('next') >= 0 || txt.indexOf('proceed') >= 0) {
+                fp.has_continue_btn = true;
+                break;
+            }
+        }
+
+        // Check for get-link element
+        var getLink = document.getElementById('get-link');
+        if (getLink) {
+            fp.has_getlink = true;
+            var el = getLink;
+            while (el && el.tagName !== 'A') el = el.parentElement;
+            if (el && el.href && el.href.indexOf('http') === 0) {
+                fp.nav_trigger = 'parent_a_href';
+            }
+        }
+
+        // Check for step indicator
+        var stick = document.getElementById('stick');
+        if (!stick) {
+            // Fallback: look for text containing "step" and numbers
+            var body = document.body ? document.body.textContent : '';
+            if (/\\bstep\\s*\\d+\\s*\\/\\s*\\d+/i.test(body)) {
+                fp.has_step_indicator = true;
+            }
+        } else {
+            fp.has_step_indicator = true;
+        }
+
+        // Check for popup blocker overlay
+        var continueBtn = document.getElementById('continueBtn');
+        var gcont = document.getElementById('gcont');
+        if (continueBtn || gcont) {
+            fp.has_popup_blocker = true;
+        }
+
+        // Check for learn_more.php links
+        var learnMore = document.querySelectorAll('a[href*="learn_more.php"]');
+        if (learnMore.length > 0) {
+            fp.has_learn_more = true;
+        }
+
+        // Classify page type based on behaviors
+        if (fp.has_getlink) {
+            fp.page_type = 'destination';
+        } else if (fp.has_verify_btn && fp.has_continue_btn && fp.has_step_indicator) {
+            fp.page_type = 'step';
+        } else if (fp.has_verify_btn && fp.has_countdown) {
+            fp.page_type = 'countdown';
+        } else if (fp.has_countdown && fp.has_continue_btn) {
+            fp.page_type = 'landing';
+        } else if (fp.has_learn_more) {
+            fp.page_type = 'intermediate';
+        } else if (fp.has_countdown) {
+            fp.page_type = 'timer_only';
+        }
+
+        return JSON.stringify(fp);
+    """)
+    if result:
+        try:
+            return json.loads(result)
+        except Exception:
+            pass
+    return {
+        "has_countdown": False, "has_verify_btn": False, "has_continue_btn": False,
+        "has_getlink": False, "has_step_indicator": False, "has_popup_blocker": False,
+        "has_learn_more": False, "countdown_value": -1, "nav_trigger": "",
+        "page_type": "unknown"
+    }
 
 
 def get_countdown():
@@ -690,6 +1263,14 @@ def get_countdown():
             if (!btnClicked && btn && !btn.disabled) return -1;
             var v = parseInt(link1sTime.textContent);
             return isNaN(v) ? -1 : v;
+        }}
+        // Fallback: pattern-match any element with time/countdown in id/class
+        var candidates = document.querySelectorAll('[id*="time"], [id*="countdown"], [class*="timer"], [class*="countdown"]');
+        for (var i = 0; i < candidates.length; i++) {{
+            var el = candidates[i];
+            if (el.offsetParent === null && getComputedStyle(el).position !== 'fixed') continue;
+            var v = parseInt(el.textContent);
+            if (!isNaN(v) && v >= 0 && v <= 120) return v;
         }}
         return -1;
     """)
@@ -1319,6 +1900,240 @@ def handle_unknown():
     return False
 
 
+def handle_generic(fp):
+    """
+    Generic handler using behavioral fingerprint.
+    Works even if element IDs change — uses what the page DOES.
+    fp = fingerprint_page() result dict
+
+    Uses strict isRealButton() JS helper to avoid clicking decorative text
+    that merely contains words like 'continue' or 'verify'.
+    """
+    page_type = fp.get("page_type", "unknown")
+    log(f"generic handler: page_type={page_type}, fingerprint={fp}")
+
+    close_ad_overlay()
+    handle_popup()
+
+    # ── Destination page: extract from parent <a> ──
+    if fp.get("has_getlink"):
+        fast_dest = safe_eval("""
+            var btn = document.getElementById('get-link');
+            if (!btn) return '';
+            var el = btn;
+            while (el && el.tagName !== 'A') el = el.parentElement;
+            if (el && el.href && el.href.indexOf('http') === 0) return el.href;
+            return '';
+        """) or ""
+        if fast_dest and is_destination(fast_dest):
+            global destination_url
+            log(f"generic: destination from parent <a> href: {fast_dest[:120]}")
+            destination_url = fast_dest
+            return True
+        # Fallback: click get-link and follow new tab
+        human_click("#get-link")
+        ms(3000)
+        if destination_url:
+            return True
+
+    # ── Strict button detection helper ──
+    # A real button must be:
+    #   - A real interactive tag (button, a, input submit, [role=button])
+    #   - Small enough to be a button (not a paragraph: max 300x100px)
+    #   - Text must EXACTLY match (not substring of "continue reading the article")
+    #   - Has onclick/href or is a native button
+    #   - Visible and rendered
+    IS_REAL_BUTTON_JS = """
+        function isRealButton(el, targetText) {
+            var tag = el.tagName.toLowerCase();
+            var validTag = (tag === 'button' || tag === 'a' || tag === 'input'
+                           || el.getAttribute('role') === 'button');
+            if (!validTag) return false;
+
+            var style = getComputedStyle(el);
+            if (style.display === 'none' || style.visibility === 'hidden') return false;
+            if (el.offsetParent === null && style.position !== 'fixed') return false;
+
+            var rect = el.getBoundingClientRect();
+            if (rect.width < 5 || rect.height < 5) return false;
+            if (rect.width > 350 || rect.height > 120) return false;
+
+            var txt = el.textContent.trim().toLowerCase();
+            if (txt.length > 40) return false;
+
+            var exactMatch = (txt === targetText.toLowerCase());
+            if (!exactMatch) return false;
+
+            var hasAction = el.onclick || (el.href && el.href.indexOf('http') === 0)
+                           || (tag === 'input' && (el.type === 'submit' || el.type === 'button'))
+                           || tag === 'button';
+            return hasAction;
+        }
+    """
+
+    # ── Step page: verify then continue ──
+    if page_type == "step" or (fp.get("has_verify_btn") and fp.get("has_continue_btn")):
+        log("generic: step page detected — looking for verify/continue buttons")
+        # Find and click verify button
+        verify_clicked = safe_eval(IS_REAL_BUTTON_JS + """
+            var btns = document.querySelectorAll('button, [role="button"], a, input');
+            for (var i = 0; i < btns.length; i++) {
+                var txt = btns[i].textContent.trim().toLowerCase();
+                if (txt.indexOf('verify') >= 0 && isRealButton(btns[i], 'verify')) {
+                    btns[i].click();
+                    return 'verify';
+                }
+            }
+            for (var i = 0; i < btns.length; i++) {
+                var txt = btns[i].textContent.trim().toLowerCase();
+                if (txt.indexOf('click to') >= 0 && isRealButton(btns[i], txt)) {
+                    btns[i].click();
+                    return 'click_to';
+                }
+            }
+            return false;
+        """)
+        if verify_clicked:
+            log(f"generic: clicked button ({verify_clicked})")
+            human_delay(2000, 4000)
+        # Find and click continue button
+        continue_clicked = safe_eval(IS_REAL_BUTTON_JS + """
+            var btns = document.querySelectorAll('a, button, input');
+            for (var i = 0; i < btns.length; i++) {
+                var txt = btns[i].textContent.trim().toLowerCase();
+                if (txt === 'continue' && isRealButton(btns[i], 'continue')) {
+                    if (btns[i].href && btns[i].href.indexOf('http') === 0) {
+                        window.location.href = btns[i].href;
+                        return 'href';
+                    }
+                    btns[i].click();
+                    return 'click';
+                }
+            }
+            for (var i = 0; i < btns.length; i++) {
+                var txt = btns[i].textContent.trim().toLowerCase();
+                if (txt === 'next' && isRealButton(btns[i], 'next')) {
+                    if (btns[i].href && btns[i].href.indexOf('http') === 0) {
+                        window.location.href = btns[i].href;
+                        return 'href';
+                    }
+                    btns[i].click();
+                    return 'click';
+                }
+            }
+            return false;
+        """)
+        if continue_clicked:
+            log(f"generic: clicked continue button ({continue_clicked})")
+            human_delay(1000, 2000)
+            return True
+
+    # ── Countdown page: wait for timer, then click continue ──
+    if page_type in ("countdown", "landing", "timer_only") or fp.get("has_countdown"):
+        log(f"generic: countdown page (value={fp.get('countdown_value', -1)})")
+        # Try clicking start/verify button first
+        safe_eval(IS_REAL_BUTTON_JS + """
+            var btns = document.querySelectorAll('button, [role="button"], a, input');
+            for (var i = 0; i < btns.length; i++) {
+                var txt = btns[i].textContent.trim().toLowerCase();
+                if (txt.indexOf('click to') >= 0 && isRealButton(btns[i], txt)) {
+                    btns[i].click();
+                    break;
+                }
+            }
+            for (var i = 0; i < btns.length; i++) {
+                var txt = btns[i].textContent.trim().toLowerCase();
+                if ((txt === 'verify' || txt === 'start') && isRealButton(btns[i], txt)) {
+                    btns[i].click();
+                    break;
+                }
+            }
+        """)
+        human_delay(1000, 2000)
+        # Wait for countdown
+        for w in range(60):
+            if "#goog_rewarded" in safe_url():
+                handle_goog_rewarded()
+                safe_eval("if (window.location.hash) history.replaceState(null, '', window.location.pathname + window.location.search);")
+                human_delay(500, 1000)
+            cd = get_countdown()
+            if cd == 0 or cd == -1:
+                break
+            if w % 5 == 0:
+                close_ad_overlay()
+                handle_popup()
+            ms(1000)
+        # Click any visible continue/next button
+        nav_clicked = safe_eval(IS_REAL_BUTTON_JS + """
+            var btns = document.querySelectorAll('a, button, input');
+            for (var i = 0; i < btns.length; i++) {
+                var txt = btns[i].textContent.trim().toLowerCase();
+                if (txt === 'continue' && isRealButton(btns[i], 'continue')) {
+                    if (btns[i].href && btns[i].href.indexOf('http') === 0) {
+                        window.location.href = btns[i].href;
+                        return 'href';
+                    }
+                    btns[i].click();
+                    return 'click';
+                }
+            }
+            for (var i = 0; i < btns.length; i++) {
+                var txt = btns[i].textContent.trim().toLowerCase();
+                if (txt === 'next' && isRealButton(btns[i], 'next')) {
+                    if (btns[i].href && btns[i].href.indexOf('http') === 0) {
+                        window.location.href = btns[i].href;
+                        return 'href';
+                    }
+                    btns[i].click();
+                    return 'click';
+                }
+            }
+            return false;
+        """)
+        if nav_clicked:
+            log(f"generic: clicked continue after countdown ({nav_clicked})")
+            return True
+
+    # ── Fallback: learn_more.php links ──
+    learn_more = safe_eval("""
+        var links = document.querySelectorAll('a[href*="learn_more.php"]');
+        for (var i = 0; i < links.length; i++) {
+            if (links[i].offsetParent !== null) {
+                window.location.href = links[i].href;
+                return links[i].href;
+            }
+        }
+        return null;
+    """)
+    if learn_more:
+        log(f"generic: clicked learn_more.php link: {learn_more[:80]}")
+        return True
+
+    # ── Last resort: strict text match on real buttons only ──
+    for txt in ["Continue", "Verify", "Get Link", "Next", "Proceed"]:
+        clicked = safe_eval(IS_REAL_BUTTON_JS + f"""
+            var btns = document.querySelectorAll('button, a, input, [role="button"]');
+            for (var i = 0; i < btns.length; i++) {{
+                if (isRealButton(btns[i], '{txt.lower()}')) {{
+                    if (btns[i].href && btns[i].href.indexOf('http') === 0) {{
+                        window.location.href = btns[i].href;
+                        return true;
+                    }}
+                    btns[i].click();
+                    return true;
+                }}
+            }}
+            return false;
+        """)
+        if clicked:
+            log(f"generic: clicked text '{txt}'")
+            human_delay(1000, 2000)
+            return True
+
+    log("generic: no action taken")
+    return False
+
+
 def handle_article():
     log("article page")
     debug_shot("article-start")
@@ -1339,7 +2154,8 @@ def handle_article():
     close_ad_overlay()
 
     template = detect_template()
-    log(f"detected template: {template}")
+    step_info = get_step_info()
+    log(f"detected template: {template}" + (f" [{step_info}]" if step_info else ""))
 
     if template == "unknown":
         for retry in range(3):
@@ -1350,8 +2166,11 @@ def handle_article():
                 log(f"retry detected template: {template} (attempt {retry + 1})")
                 break
 
+    fp = None
     if template == "unknown":
         debug_shot(f"unknown-{int(time.time())}")
+        fp = fingerprint_page()
+        log(f"behavioral fingerprint: type={fp.get('page_type')}, countdown={fp.get('has_countdown')}, verify={fp.get('has_verify_btn')}, continue={fp.get('has_continue_btn')}, getlink={fp.get('has_getlink')}")
 
     countdown = get_countdown()
     timer_done = countdown <= 1 and countdown != -2
@@ -1370,6 +2189,8 @@ def handle_article():
         ce_btn7_clicked = safe_eval("return window._ce_btn7_clicked === true;") or False
     elif template == "link1s":
         navigated = handle_link1s()
+    elif fp:
+        navigated = handle_generic(fp)
     else:
         navigated = handle_unknown()
 
@@ -1464,6 +2285,24 @@ def do_get_link():
 
         ms(500)
 
+        # ── Fast path: extract destination from parent <a> href ──
+        # get-link is <button> inside <a href="DESTINATION_URL">
+        # The parent <a> href IS the destination — no need to click/follow
+        fast_dest = safe_eval("""
+            var btn = document.getElementById('get-link');
+            if (!btn) return '';
+            var el = btn;
+            while (el && el.tagName !== 'A') el = el.parentElement;
+            if (el && el.href && el.href.indexOf('http') === 0 && el.href.indexOf('void') < 0) {
+                return el.href;
+            }
+            return '';
+        """) or ""
+        if fast_dest and is_destination(fast_dest):
+            log(f"destination (parent <a> href): {fast_dest[:120]}")
+            destination_url = fast_dest
+            return True
+
         human_delay(800, 2000)
         human_mouse_move("#get-link")
         human_delay(300, 700)
@@ -1545,6 +2384,7 @@ def do_get_link():
             except Exception:
                 pass
 
+        # ── Fallbacks ──
         get_link_href = safe_eval("""
             var el = document.getElementById('get-link');
             return el ? el.href : '';
@@ -1699,6 +2539,9 @@ def main():
     global driver, destination_url, start_time, profile, proxy_blocked, PROXY, PROXY_HOST, PROXY_IP, PROXY_PORT
 
     _create_driver()
+    monitor.install(driver)
+    automation_start = time.time()
+    AUTOMATION_HARD_TIMEOUT = 600  # 10 minutes max from browser start to destination
 
     storage_dir = Path.home() / ".vplink3.0" / "storage"
     storage_file = storage_dir / "state.json"
@@ -1802,9 +2645,12 @@ def main():
           redirect_elapsed = time.time() - redirect_start
           if "vplink.in" not in safe_url():
               adpt_redirect.observe(redirect_elapsed)
+              _inject_timer_cookies()
+              monitor.install(driver)
           debug_shot("03-after-redirect")
 
-          for attempt in range(2):
+          # Adaptive redirect chain: keep following until we reach an article or destination
+          for attempt in range(5):
               url = safe_url()
               if "vplink.in" not in url or "cdn-cgi" in url:
                   break
@@ -1819,7 +2665,7 @@ def main():
               """)
               if is_cf:
                   log("Cloudflare challenge detected")
-              log(f"waiting for page content (attempt {attempt + 1})...")
+              log(f"waiting for page content (attempt {attempt + 1}/5)...")
               cf_wait = int(adpt_poll.get())
               loaded = False
               for i in range(cf_wait):
@@ -1828,6 +2674,10 @@ def main():
                       loaded = True
                       break
                   if safe_eval("return !!document.getElementById('get-link');"):
+                      loaded = True
+                      break
+                  # Also check for article template elements (redirect chain may land on article)
+                  if has_countdown_template():
                       loaded = True
                       break
               if loaded:
@@ -1858,16 +2708,24 @@ def main():
       ad_hijack_count = 0
       last_stuck_article = ""
       max_goog_reward_retries = 3
-      max_url_visits = 4
+      max_url_visits = 10
       max_ad_hijacks = 5
       url_visits = {}
       exhausted_cycles = 0
       learn_more_count = 0
       last_action_was_learn_more = False
+      total_steps_seen = 0
+      last_step_info = ""
 
       for cycle in range(30):
           if destination_url or skip_main_loop:
               break
+          elapsed = time.time() - automation_start
+          if elapsed >= AUTOMATION_HARD_TIMEOUT:
+              log(f"HARD TIMEOUT: {elapsed:.0f}s exceeded {AUTOMATION_HARD_TIMEOUT}s limit, forcing exit")
+              break
+          monitor.install(driver)
+          monitor.poll()
           url = safe_url()
           if not url:
               ms(2000)
@@ -1889,9 +2747,16 @@ def main():
           is_intermediate = is_intermediate_page(url)
           if "vplink.in" not in url and not is_intermediate:
               url_visits[url_key] = url_visits.get(url_key, 0) + 1
+              # Adaptive stuck detection: track step progress
+              cur_step = get_step_info()
+              if cur_step and cur_step != last_step_info:
+                  last_step_info = cur_step
+                  total_steps_seen += 1
+                  log(f"step progress: {cur_step} (total transitions: {total_steps_seen})")
+              # Stuck if same URL visited too many times WITHOUT step progress
               if url_visits[url_key] >= max_url_visits:
                   if last_stuck_article == url_key:
-                      log(f"STUCK LOOP: same article visited {url_visits[url_key]} times after force-nav, exiting")
+                      log(f"STUCK LOOP: same article visited {url_visits[url_key]} times without step progress, exiting")
                       if PROXY:
                           report_proxy_failure("article-stuck-loop")
                       proxy_blocked = True
@@ -2276,6 +3141,7 @@ def main():
       if destination_url or not proxy_blocked:
           break
 
+    elapsed = time.time() - automation_start
     print("\n" + "=" * 39)
     print("  " + ("DESTINATION URL:" if destination_url else "NO DESTINATION"))
     if destination_url:
@@ -2285,7 +3151,7 @@ def main():
         _revisit_with_referrer(final_url)
         if PROXY_IP and PROXY_PORT:
             mark_proxy_used(PROXY_IP, PROXY_PORT)
-    log(f"funnel stats: learn_more navigations={learn_more_count}, vplink arrivals={vplink_arrivals}, cycles={cycle + 1 if 'cycle' in dir() else 0}")
+    log(f"funnel stats: learn_more navigations={learn_more_count}, vplink arrivals={vplink_arrivals}, cycles={cycle + 1 if 'cycle' in dir() else 0}, elapsed={elapsed:.0f}s/{AUTOMATION_HARD_TIMEOUT}s")
     ms(2000)
     try:
         driver.quit()

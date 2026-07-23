@@ -1,0 +1,35 @@
+{
+  "name": "installer",
+  "version": "1.0.0",
+  "description": "Production-grade cross-platform bootstrap installer",
+  "type": "module",
+  "bin": {
+    "installer": "./src/cli.tsx"
+  },
+  "scripts": {
+    "dev": "bun run --watch src/cli.tsx",
+    "start": "bun run src/cli.tsx",
+    "build": "bun build src/cli.tsx --compile --outfile dist/installer",
+    "test": "bun test",
+    "lint": "tsc --noEmit",
+    "install-global": "bun run src/cli.tsx install"
+  },
+  "dependencies": {
+    "@opentui/core": "^0.4.5",
+    "@opentui/react": "^0.4.5",
+    "react": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/react": "^19.2.17",
+    "typescript": "^5.9.3"
+  },
+  "keywords": [
+    "installer",
+    "bootstrap",
+    "cross-platform",
+    "cli",
+    "setup"
+  ],
+  "license": "MIT"
+}

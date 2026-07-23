@@ -164,10 +164,6 @@ async function testProxyPlaywright(proxy, timeoutMs = 30000) {
 
         if (passedVplink && !finalUrl.includes('vplink.in')
             && !finalUrl.includes('learn_more.php')
-            && !finalUrl.includes('studiiessuniversitiess')
-            && !finalUrl.includes('universitesstudiiess')
-            && !finalUrl.includes('studiessuniversitiess')
-            && !finalUrl.includes('studieseducates')
             && finalUrl.includes('/')) {
           passedIntermediate = true;
           break;

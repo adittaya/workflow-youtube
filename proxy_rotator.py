@@ -264,7 +264,7 @@ def test_proxy_selenium(proxy, timeout_s=60):
                 break
             if not passed_vplink and "vplink.in" not in final_url:
                 passed_vplink = True
-            if passed_vplink and "vplink.in" not in final_url and "learn_more.php" not in final_url and "studiiessuniversitiess" not in final_url and "universitesstudiiess" not in final_url and "studiessuniversitiess" not in final_url and "studieseducates" not in final_url:
+            if passed_vplink and "vplink.in" not in final_url and "learn_more.php" not in final_url:
                 passed_intermediate = True
                 break
 

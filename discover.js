@@ -193,14 +193,14 @@ async function dumpDOM(page, label) {
   
   // ── STAGE 2: Intermediate page ──
   const url2 = page.url();
-  if (url2.includes('studiiessuniversitiess') || url2.includes('studieseducates') || url2.includes('learn_more.php')) {
+  if (url2.includes('learn_more.php')) {
     log('=== STAGE 2: Intermediate redirect page ===');
     await dumpDOM(page, '03_intermediate');
     // Wait for redirect to article
     for (let i = 0; i < 15; i++) {
       await ms(1000);
       const cur = page.url();
-      if (!cur.includes('studiiessuniversitiess') && !cur.includes('studieseducates') && !cur.includes('learn_more.php')) {
+      if (!cur.includes('learn_more.php')) {
         log(`Redirected to article: ${cur.substring(0, 120)}`);
         break;
       }

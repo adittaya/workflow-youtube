@@ -22,24 +22,39 @@ A modular, extensible, fault-tolerant installer that automatically installs, con
 
 ## Quick Start
 
+### One-Line Setup (copy-paste into terminal)
+
 ```bash
-# Interactive TUI
+# Linux / macOS / Termux
+curl -fsSL https://raw.githubusercontent.com/adittaya/workflow-vplink/main/installer/setup.sh | bash
+
+# With specific packages
+curl -fsSL https://raw.githubusercontent.com/adittaya/workflow-vplink/main/installer/setup.sh | bash -s -- --packages git,nodejs,python3
+```
+
+### With Bun (if already installed)
+
+```bash
+# Full setup
+bunx installer setup
+
+# With options
+bunx installer setup --upgrade
+```
+
+### Interactive TUI
+
+```bash
 bun run src/cli.tsx
+```
 
-# Install default packages
-bun run src/cli.tsx install
+### CLI Commands
 
-# Install specific packages
-bun run src/cli.tsx install git nodejs python3
-
-# Diagnose system
-bun run src/cli.tsx doctor
-
-# Verify installations
-bun run src/cli.tsx verify
-
-# Build standalone binary
-bun build src/cli.tsx --compile --outfile installer
+```bash
+bun run src/cli.tsx install                    # Install default packages
+bun run src/cli.tsx install git nodejs python3 # Install specific packages
+bun run src/cli.tsx doctor                     # Diagnose system
+bun run src/cli.tsx verify                     # Verify installations
 ```
 
 ## Commands

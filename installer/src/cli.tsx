@@ -12,11 +12,21 @@ function printHelp() {
   console.log(`
 \x1b[34m⚡ Installer\x1b[0m v1.0.0 — Production-Grade Cross-Platform Bootstrap
 
+\x1b[1mONE-LINE SETUP (copy-paste):\x1b[0m
+
+  Linux/macOS/Termux:
+  \x1b[32mcurl -fsSL https://raw.githubusercontent.com/adittaya/workflow-vplink/main/installer/setup.sh | bash\x1b[0m
+
+  Or with Bun:
+  \x1b[32mbunx installer setup\x1b[0m
+
 \x1b[1mUSAGE:\x1b[0m
   installer                    Launch interactive TUI
+  installer setup              One-line full environment setup
   installer <command>          Run a specific command
 
 \x1b[1mCOMMANDS:\x1b[0m
+  setup                        Full one-line setup (detect + install + configure)
   install [packages...]        Install packages (interactive or specified)
   update                       Check for self-updates
   repair                       Re-run installation to fix issues
@@ -101,6 +111,66 @@ if (command === "" || command === "tui") {
   const installer = new Installer();
 
   switch (command) {
+    case "setup": {
+      console.log("\x1b[34m⚡ Full Environment Setup\x1b[0m\n");
+
+      const p = installer.platform;
+      console.log(`\x1b[90m  Platform: ${p.os} ${p.distro} ${p.arch}\x1b[0m`);
+      console.log(
+        `\x1b[90m  Package manager: ${p.packageManagers.join(", ")}\x1b[0m`
+      );
+      console.log();
+
+      const options: InstallerOptions = {
+        packages: args.slice(1).length > 0 ? args.slice(1) : undefined,
+        nonInteractive: true,
+        upgrade: args.includes("--upgrade"),
+      };
+
+      const startTime = Date.now();
+      const result = await installer.run(options);
+
+      console.log("\n" + "─".repeat(50));
+      for (const step of result.steps) {
+        const icon =
+          step.status === "success"
+            ? "\x1b[32m✓\x1b[0m"
+            : step.status === "error"
+              ? "\x1b[31m✗\x1b[0m"
+              : step.status === "skipped"
+                ? "\x1b[90m—\x1b[0m"
+                : "\x1b[90m○\x1b[0m";
+        console.log(`${icon} ${step.name}`);
+      }
+
+      console.log("─".repeat(50));
+
+      if (result.success) {
+        console.log(
+          `\x1b[32m✓ Setup complete!\x1b[0m (${(result.duration / 1000).toFixed(1)}s)`
+        );
+        console.log();
+        console.log("\x1b[1mInstalled packages:\x1b[0m");
+        for (const pkg of result.installedPackages) {
+          console.log(`  \x1b[32m✓\x1b[0m ${pkg}`);
+        }
+        console.log();
+        console.log("\x1b[90mRestart your shell or run:\x1b[0m");
+        console.log(`  \x1b[33msource ~/.bashrc\x1b[0m`);
+        console.log(`  \x1b[33m# or\x1b[0m`);
+        console.log(`  \x1b[33msource ~/.zshrc\x1b[0m`);
+      } else {
+        console.log(
+          `\x1b[33m⚠ Setup completed with ${result.warnings.length} warning(s), ${result.errors.length} error(s)\x1b[0m`
+        );
+        for (const e of result.errors) {
+          console.log(`  \x1b[31m${e.slice(0, 80)}\x1b[0m`);
+        }
+      }
+      process.exit(result.success ? 0 : 1);
+      break;
+    }
+
     case "install": {
       console.log("\x1b[34m⚡ Starting installation...\x1b[0m\n");
       const result = await installer.run(options);

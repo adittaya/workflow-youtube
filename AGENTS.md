@@ -8,9 +8,9 @@
 ## Current State
 
 - **Last updated:** 2026-07-24
-- **Latest remote commit:** `18b997e` (feat: OpenTUI React TUI — modern terminal management CLI)
-- **Local codebase status:** CLEAN — all changes committed and pushed
-- **Git status:** Clean
+- **Latest remote commit:** `ca18dbf` (feat: production-grade cross-platform bootstrap installer)
+- **Local codebase status:** MODIFIED — setup.sh + one-line setup not yet committed
+- **Git status:** Modified: installer/cli.tsx, installer/README.md; New: installer/setup.sh
 
 ## What Has Been Done
 

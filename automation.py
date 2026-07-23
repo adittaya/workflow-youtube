@@ -130,13 +130,6 @@ def _inject_traffic_source():
     referrer = TRAFFIC_REFERRERS[TRAFFIC_SOURCE]
     if not referrer:
         return
-    try:
-        driver.execute_cdp_cmd("Network.setExtraHTTPHeaders", {
-            "headers": {"Referer": referrer}
-        })
-        log(f"traffic source: {TRAFFIC_SOURCE} referrer={referrer}")
-    except Exception:
-        pass
     referrer_js = f"""
     Object.defineProperty(document, 'referrer', {{
         get: function() {{ return '{referrer}'; }}
@@ -144,6 +137,8 @@ def _inject_traffic_source():
     """
     try:
         driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": referrer_js})
+        driver.execute_script(referrer_js)
+        log(f"traffic source: {TRAFFIC_SOURCE} referrer={referrer}")
     except Exception:
         pass
 
@@ -162,6 +157,28 @@ def _add_utm_to_url(url):
             params[k] = [v]
     new_query = urlencode({k: v[0] for k, v in params.items()})
     return urlunparse(parsed._replace(query=new_query))
+
+
+def _revisit_with_referrer(url):
+    if TRAFFIC_SOURCE not in TRAFFIC_REFERRERS:
+        return
+    referrer = TRAFFIC_REFERRERS[TRAFFIC_SOURCE]
+    if not referrer or not url:
+        return
+    try:
+        driver.execute_cdp_cmd("Network.enable", {})
+        driver.execute_cdp_cmd("Network.setExtraHTTPHeaders", {
+            "headers": {"Referer": referrer}
+        })
+        log(f"re-navigating with referrer: {referrer}")
+        driver.get(url)
+        ms(3000)
+        driver.execute_cdp_cmd("Network.setExtraHTTPHeaders", {
+            "headers": {}
+        })
+        log(f"cleared extra headers after destination visit")
+    except Exception as e:
+        log(f"referrer revisit failed: {e}")
 
 
 class AdaptiveTimeout:
@@ -2413,6 +2430,7 @@ def main():
         final_url = _add_utm_to_url(destination_url)
         print("  " + final_url)
         (Path(__file__).parent / "destination_url.txt").write_text(final_url, "utf-8")
+        _revisit_with_referrer(final_url)
         if PROXY_IP and PROXY_PORT:
             mark_proxy_used(PROXY_IP, PROXY_PORT)
     ms(2000)

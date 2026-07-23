@@ -8,9 +8,9 @@
 ## Current State
 
 - **Last updated:** 2026-07-24
-- **Latest remote commit:** `ca18dbf` (feat: production-grade cross-platform bootstrap installer)
-- **Local codebase status:** MODIFIED — setup.sh + one-line setup not yet committed
-- **Git status:** Modified: installer/cli.tsx, installer/README.md; New: installer/setup.sh
+- **Latest remote commit:** `5e60804` (feat: one-line full environment setup)
+- **Local codebase status:** CLEAN — all changes committed and pushed
+- **Git status:** Clean
 
 ## What Has Been Done
 

@@ -632,8 +632,6 @@ def is_intermediate_page(url):
     return False
 
 
-_current_key = ""
-
 def is_destination(url):
     if not url or not url.startswith("http"):
         return False

@@ -8,9 +8,9 @@
 ## Current State
 
 - **Last updated:** 2026-07-24
-- **Latest remote commit:** `5e60804` (feat: one-line full environment setup)
-- **Local codebase status:** MODIFIED — uncommitted changes in continuous.yml and AGENTS.md
-- **Git status:** 1 file modified (continuous.yml), 1 file modified (AGENTS.md)
+- **Latest remote commit:** `28aac05` (fix: destination capture, relay, automation.py fixes, AUTOMATION.md update)
+- **Local codebase status:** CLEAN — all changes committed and pushed
+- **Git status:** Up to date with origin/main
 
 ## What Has Been Done
 

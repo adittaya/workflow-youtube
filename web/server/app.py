@@ -348,7 +348,7 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
             acct = accounts[active_name]
             token = acct["token"]
             owner = acct.get("username", acct["name"])
-            full_name = repo_name if repo_name.startswith("vplink-") else f"vplink-{repo_name}" if repo_name else f"vplink-{int(time.time()).toString(36)}"
+            full_name = repo_name if repo_name.startswith("vplink-") else f"vplink-{repo_name}" if repo_name else f"vplink-{int(time.time()).to_bytes(4,'big').hex()}"
 
             create_resp = gh_request("/user/repos", token, "POST", {
                 "name": full_name,

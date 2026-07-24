@@ -8,7 +8,7 @@
 ## Current State
 
 - **Last updated:** 2026-07-24
-- **Latest remote commit:** `e011c0a` (fix: deploy handler crashes — .git copytree, gh_request empty body, try/except indentation)
+- **Latest remote commit:** `fb50184` (feat: live deployment status dashboard — cached log results, destination tracking, auto-refresh)
 - **Local codebase status:** MODIFIED — Web GUI built (uncommitted)
 - **Git status:** Modified: AGENTS.md. New: web/ directory (React + Vite + Tailwind + Flask API)
 
@@ -198,6 +198,15 @@
 121. **web/server/app.py** — `gh_request()`: Fixed `json.loads` crash on 204 No Content responses (returns `{"ok": True}` instead)
 122. **web/server/app.py** — `deploy` handler: Fixed broken `try/except` indentation (entire handler body now inside try block)
 123. **web/server/app.py** — `paginate_repos()`: Added page limit (max 5) and try/except to prevent infinite loop on API errors
+
+### Code Changes Made (This Session — Deployment Status Dashboard)
+
+124. **web/server/app.py** — Added `_cache_result()`: saves log extraction results to `status_cache.json` (destination, success/fail, timestamps, consecutive fails)
+125. **web/server/app.py** — Log extraction (`/api/github/log`): now auto-caches destination after extraction
+126. **web/server/app.py** — Fixed destination parser: handles two-line pattern (DESTINATION URL: on one line, URL on next) and filters non-URL lines
+127. **web/server/app.py** — New `/api/status` endpoint: returns per-deployment status merging cached log results + live GitHub run data (destination, runs, successes, consecutive fails, last success time)
+128. **web/client/src/services/api.ts** — Added `StatusDeployment` interface and `getStatus()` API method
+129. **web/client/src/pages/Dashboard.tsx** — Complete rewrite: stat cards (deployments/destinations hit/running/fails), per-deployment cards showing destination URL, success/fail counts, last run time, last success time, auto-refresh every 30s, destination history section
 
 ### Code Changes Made (This Session — Workflow Destination Capture Fix)
 

@@ -1,15 +1,13 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════
 #  VPLINK-GUI — Web Control Center Launcher
-#  Starts API server + serves frontend, opens browser
+#  Single server: serves API + frontend on one port
 # ═══════════════════════════════════════════════════════════════
 set -euo pipefail
 
 VPLINK_HOME="${VPLINK_HOME:-$HOME/.vplink247}"
 WEB_DIR="$VPLINK_HOME/web"
-API_PORT="${VPLINK_API_PORT:-5180}"
-WEB_PORT="${VPLINK_WEB_PORT:-5173}"
-NO_BROWSER=false
+PORT="${VPLINK_PORT:-5173}"
 
 GREEN='\033[0;32m'; CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
 
@@ -21,14 +19,12 @@ case "${1:-}" in
     echo "Usage: vplink-gui [options]"
     echo ""
     echo "Options:"
-    echo "  --port PORT     Web UI port (default: 5173)"
-    echo "  --api-port PORT API server port (default: 5180)"
+    echo "  --port PORT     Port to serve on (default: 5173)"
     echo "  --no-browser    Don't open browser"
     echo "  --help          Show this help"
     echo ""
     echo "Environment:"
-    echo "  VPLINK_WEB_PORT   Frontend port (default: 5173)"
-    echo "  VPLINK_API_PORT   API server port (default: 5180)"
+    echo "  VPLINK_PORT       Server port (default: 5173)"
     echo "  VPLINK_HOME       Config directory (default: ~/.vplink247)"
     exit 0
     ;;
@@ -38,10 +34,10 @@ case "${1:-}" in
     ;;
 esac
 
+NO_BROWSER=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --port) WEB_PORT="$2"; shift 2 ;;
-    --api-port) API_PORT="$2"; shift 2 ;;
+    --port) PORT="$2"; shift 2 ;;
     --no-browser) NO_BROWSER=true; shift ;;
     *) shift ;;
   esac
@@ -54,36 +50,30 @@ if [ ! -d "$WEB_DIR" ]; then
   exit 1
 fi
 
-# ── Kill existing instances ───────────────────────────
-pkill -f "python3.*web/server/app.py" 2>/dev/null || true
-pkill -f "python3 -m http.server $WEB_PORT" 2>/dev/null || true
-sleep 0.5
-
-# ── Start API server ──────────────────────────────────
-echo -e "${DIM}Starting API server on port $API_PORT...${NC}"
-VPLINK_WEB_PORT=$API_PORT python3 "$WEB_DIR/server/app.py" &
-API_PID=$!
-sleep 1
-
-if ! curl -s "http://localhost:$API_PORT/api/health" >/dev/null 2>&1; then
-  echo "API server failed to start on port $API_PORT"
-  kill $API_PID 2>/dev/null
-  exit 1
-fi
-
-# ── Serve frontend ────────────────────────────────────
+# ── Check dist exists ─────────────────────────────────
 DIST_DIR="$WEB_DIR/client/dist"
 if [ ! -d "$DIST_DIR" ] || [ ! -f "$DIST_DIR/index.html" ]; then
   echo "Frontend not built. Run installer or build manually:"
   echo "  cd ~/.vplink247/web/client && npm install && npx vite build"
-  kill $API_PID 2>/dev/null
   exit 1
 fi
 
-echo -e "${DIM}Serving frontend on port $WEB_PORT...${NC}"
-(cd "$DIST_DIR" && python3 -m http.server "$WEB_PORT" --bind 0.0.0.0) &
-WEB_PID=$!
+# ── Kill existing instances ───────────────────────────
+pkill -f "python3.*web/server/app.py" 2>/dev/null || true
 sleep 0.5
+
+# ── Start server ──────────────────────────────────────
+echo -e "${DIM}Starting VPLink Control Center on port $PORT...${NC}"
+VPLINK_HOME="$VPLINK_HOME" VPLINK_WEB_PORT=$PORT python3 "$WEB_DIR/server/app.py" &
+SERVER_PID=$!
+sleep 1
+
+# Verify
+if ! curl -s "http://localhost:$PORT/api/health" >/dev/null 2>&1; then
+  echo "Server failed to start on port $PORT"
+  kill $SERVER_PID 2>/dev/null
+  exit 1
+fi
 
 # ── Print info ────────────────────────────────────────
 LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
@@ -93,9 +83,8 @@ echo -e "${BOLD}╔════════════════════�
 echo -e "${BOLD}║          ⚡ VPLink Control Center v3.0                  ║${NC}"
 echo -e "${BOLD}╠══════════════════════════════════════════════════════════╣${NC}"
 echo -e "${BOLD}║                                                          ║${NC}"
-echo -e "${BOLD}║  Local:   ${CYAN}http://localhost:$WEB_PORT${NC}${BOLD}                      ║${NC}"
-echo -e "${BOLD}║  Network: ${CYAN}http://$LOCAL_IP:$WEB_PORT${NC}${BOLD}                  ║${NC}"
-echo -e "${BOLD}║  API:     ${DIM}http://localhost:$API_PORT${NC}${BOLD}                       ║${NC}"
+echo -e "${BOLD}║  Local:   ${CYAN}http://localhost:$PORT${NC}${BOLD}                          ║${NC}"
+echo -e "${BOLD}║  Network: ${CYAN}http://$LOCAL_IP:$PORT${NC}${BOLD}                      ║${NC}"
 echo -e "${BOLD}║                                                          ║${NC}"
 echo -e "${BOLD}║  ${DIM}Press Ctrl+C to stop${NC}${BOLD}                                  ║${NC}"
 echo -e "${BOLD}║                                                          ║${NC}"
@@ -104,7 +93,7 @@ echo ""
 
 # ── Open browser ──────────────────────────────────────
 if [ "$NO_BROWSER" = false ]; then
-  URL="http://localhost:$WEB_PORT"
+  URL="http://localhost:$PORT"
   if command -v xdg-open &>/dev/null; then
     xdg-open "$URL" 2>/dev/null &
   elif command -v open &>/dev/null; then
@@ -118,8 +107,8 @@ fi
 cleanup() {
   echo ""
   echo -e "${DIM}Shutting down...${NC}"
-  kill $API_PID $WEB_PID 2>/dev/null
-  wait $API_PID $WEB_PID 2>/dev/null
+  kill $SERVER_PID 2>/dev/null
+  wait $SERVER_PID 2>/dev/null
   echo -e "${GREEN}Stopped.${NC}"
 }
 trap cleanup EXIT INT TERM

@@ -607,9 +607,10 @@ def screen_remove():
             input(f"  Press Enter to continue...")
             return
         for i, d in enumerate(dep_list, 1):
-            status_color = C_GREEN if d["status"] == "success" else C_YELLOW if d["status"] == "deployed" else C_RED
+            dep_status = d.get("status", "?")
+            status_color = C_GREEN if dep_status == "success" else C_YELLOW if dep_status == "deployed" else C_RED
             print(f"  {C_BOLD}{i}.{C_RESET} {d['name']}  "
-                  f"{status_color}{d['status']}{C_RESET}  "
+                  f"{status_color}{dep_status}{C_RESET}  "
                   f"{C_DIM}{d.get('account', '?')}{C_RESET}")
         print(f"\n  {C_BOLD}[N]{C_RESET} Remove deployment N")
         print(f"  {C_BOLD}[a]{C_RESET} Nuke ALL deployments")
@@ -675,7 +676,7 @@ def screen_status():
         runs = get_runs(owner, rn, token, per=1)
         if runs:
             latest = runs[0]
-            status = latest.get("conclusion") or latest["status"]
+            status = latest.get("conclusion") or latest.get("status", "unknown")
             created = latest.get("created_at", "")[:16].replace("T", " ")
         else:
             status = "no_runs"
@@ -815,6 +816,8 @@ def screen_sync():
             acct["username"] = owner
             for repo in vplink:
                 rn = repo["name"]
+                status = "unknown"
+                dest = ""
                 try:
                     runs = get_runs(owner, rn, tok, per=1)
                     last = runs[0] if runs else None

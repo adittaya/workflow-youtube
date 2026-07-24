@@ -8,7 +8,7 @@
 ## Current State
 
 - **Last updated:** 2026-07-24
-- **Latest remote commit:** `03afedd` (fix: vplink-gui single-server mode — serves API + frontend on one port)
+- **Latest remote commit:** `bc1fbed` (feat: SSE real-time sync + account search + fix remove bug)
 - **Local codebase status:** MODIFIED — Web GUI built (uncommitted)
 - **Git status:** Modified: AGENTS.md. New: web/ directory (React + Vite + Tailwind + Flask API)
 

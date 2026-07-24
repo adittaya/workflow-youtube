@@ -65,6 +65,24 @@ def gh_request(endpoint, token, method="GET", body=None):
         body_text = e.read().decode(errors="replace")
         return {"error": True, "status": e.code, "message": body_text}
 
+def _cache_result(owner, repo, run_id, destination):
+    cache = load_json("status_cache.json")
+    rn = repo
+    entry = cache.get(rn, {})
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ")
+    entry["last_run_at"] = now
+    entry["last_run_id"] = run_id
+    if destination:
+        entry["destination"] = destination
+        entry["last_success_at"] = now
+        entry["total_successes"] = entry.get("total_successes", 0) + 1
+        entry["consecutive_fails"] = 0
+    else:
+        entry["consecutive_fails"] = entry.get("consecutive_fails", 0) + 1
+    cache[rn] = entry
+    save_json("status_cache.json", cache)
+
+
 def paginate_repos(token):
     all_repos = []
     page = 1
@@ -265,13 +283,82 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
                         if name.endswith(".txt"):
                             logs[name] = zf.read(name).decode(errors="replace")
                     dest = ""
+                    found_dest_line = False
                     for name, content in logs.items():
                         for line in content.split("\n"):
-                            if "DESTINATION URL:" in line or "Destination:" in line:
-                                dest = line.split(":", 1)[-1].strip()
+                            stripped = line.strip()
+                            if "DESTINATION URL:" in stripped or "Destination:" in stripped:
+                                val = stripped.split(":", 1)[-1].strip()
+                                if val.startswith("http"):
+                                    dest = val
+                                    break
+                                found_dest_line = True
+                            elif found_dest_line and stripped.startswith("http"):
+                                dest = stripped
+                                found_dest_line = False
+                                break
+                            else:
+                                found_dest_line = False
+                        if dest:
+                            break
+                    _cache_result(owner, repo, run_id, dest)
                     return self.send_json({"logs": list(logs.keys()), "destination": dest})
             except Exception as e:
                 return self.send_json({"error": str(e)})
+
+        if path == "/api/status":
+            token = qs.get("token", "")
+            if not token:
+                accounts = load_json("accounts.json")
+                settings = load_json("settings.json")
+                active = settings.get("active_account")
+                if active and active in accounts:
+                    token = accounts[active]["token"]
+            if not token:
+                return self.send_json({"deployments": [], "error": "no token"})
+            cache = load_json("status_cache.json")
+            repos = paginate_repos(token)
+            vplink = [r for r in repos if r["name"].startswith("vplink-")]
+            result = []
+            for repo in vplink:
+                rn = repo["name"]
+                owner = repo["owner"]["login"]
+                entry = {
+                    "repo_name": rn,
+                    "owner": owner,
+                    "repo_url": repo["html_url"],
+                    "destination": "",
+                    "status": "unknown",
+                    "last_run_at": None,
+                    "last_run_conclusion": None,
+                    "last_run_id": None,
+                    "last_run_url": None,
+                    "total_runs": 0,
+                    "consecutive_fails": 0,
+                    "total_successes": 0,
+                    "last_success_at": None,
+                }
+                c = cache.get(rn, {})
+                entry["destination"] = c.get("destination", "")
+                entry["consecutive_fails"] = c.get("consecutive_fails", 0)
+                entry["total_successes"] = c.get("total_successes", 0)
+                entry["last_success_at"] = c.get("last_success_at")
+                try:
+                    runs_data = gh_request(f"/repos/{owner}/{rn}/actions/runs?per_page=5", token)
+                    if isinstance(runs_data, dict) and not runs_data.get("error"):
+                        wr = runs_data.get("workflow_runs", [])
+                        entry["total_runs"] = runs_data.get("total_count", len(wr))
+                        if wr:
+                            latest = wr[0]
+                            entry["last_run_at"] = latest["created_at"]
+                            entry["last_run_conclusion"] = latest.get("conclusion")
+                            entry["last_run_id"] = latest["id"]
+                            entry["last_run_url"] = latest.get("html_url")
+                            entry["status"] = latest.get("conclusion") or latest["status"]
+                except:
+                    pass
+                result.append(entry)
+            return self.send_json({"deployments": result})
 
         if path == "/api/github/log/download":
             token = qs.get("token", "")
@@ -586,7 +673,7 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     os.makedirs(DATA_DIR, exist_ok=True)
-    for f in ["accounts.json", "deployments.json", "settings.json"]:
+    for f in ["accounts.json", "deployments.json", "settings.json", "status_cache.json"]:
         p = data_path(f)
         if not os.path.exists(p):
             with open(p, "w") as fh:

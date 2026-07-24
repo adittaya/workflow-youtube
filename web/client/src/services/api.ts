@@ -55,6 +55,22 @@ export interface DiscoveryDeployment {
   is_public: boolean;
 }
 
+export interface StatusDeployment {
+  repo_name: string;
+  owner: string;
+  repo_url: string;
+  destination: string;
+  status: string;
+  last_run_at: string | null;
+  last_run_conclusion: string | null;
+  last_run_id: number | null;
+  last_run_url: string | null;
+  total_runs: number;
+  consecutive_fails: number;
+  total_successes: number;
+  last_success_at: string | null;
+}
+
 export const api = {
   health: () => request<{ ok: boolean; version: string }>('/health'),
 
@@ -98,6 +114,10 @@ export const api = {
   downloadLog: (token: string, owner: string, repo: string, runId: number) =>
     request<{ log: string }>(
       `/github/log/download?token=${encodeURIComponent(token)}&owner=${owner}&repo=${repo}&run_id=${runId}`
+    ),
+  getStatus: (token?: string) =>
+    request<{ deployments: StatusDeployment[] }>(
+      `/status${token ? `?token=${encodeURIComponent(token)}` : ''}`
     ),
 };
 

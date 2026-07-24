@@ -85,8 +85,9 @@ fi
 
 # ── Create wrapper ─────────────────────────────────────
 # Write to temp first, then mv (avoids heredoc stdin issue with curl|bash)
+BUN_PATH=$(which bun)
 TMPWRAPPER=$(mktemp)
-printf '#!/bin/bash\nexec bun run "$HOME/.vplink247/tui/src/cli.tsx" "$@"\n' > "$TMPWRAPPER"
+printf '#!/bin/bash\nexport PATH="%s:$PATH"\nexec bun run "$HOME/.vplink247/tui/src/cli.tsx" "$@"\n' "$BUN_PATH" > "$TMPWRAPPER"
 chmod +x "$TMPWRAPPER"
 if [ -w "$(dirname "$TUI_BIN")" ]; then
   mv "$TMPWRAPPER" "$TUI_BIN"

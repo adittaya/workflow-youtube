@@ -97,14 +97,54 @@ fi
 
 mkdir -p "$HOME/.vplink247"
 
+# ── Install Bun (for React TUI) ────────────────────────
+TUI_BIN="/usr/local/bin/vplink-tui"
+if ! command -v bun &>/dev/null; then
+  info "Installing Bun runtime (for React TUI)..."
+  curl -fsSL https://bun.sh/install | bash 2>/dev/null
+  # add bun to PATH for this session
+  export BUN_INSTALL="$HOME/.bun"
+  export PATH="$BUN_INSTALL/bin:$PATH"
+fi
+if command -v bun &>/dev/null; then
+  ok "Bun $(bun --version)"
+else
+  warn "Bun not available — React TUI will not be installed"
+fi
+
+# ── Install React TUI ──────────────────────────────────
+if command -v bun &>/dev/null; then
+  TUI_DIR="$HOME/.vplink247/tui"
+  info "Downloading React TUI..."
+  mkdir -p "$TUI_DIR"
+  # download essential TUI files
+  for f in package.json tsconfig.json src/index.tsx src/cli.tsx src/components/App.tsx src/components/Header.tsx src/components/Sidebar.tsx src/screens/Dashboard.tsx src/screens/Deployments.tsx src/screens/Accounts.tsx src/screens/Analytics.tsx src/screens/Settings.tsx src/screens/Sync.tsx src/utils/storage.ts src/services/github.ts src/services/deploy.ts src/hooks/useAppState.ts; do
+    DIR=$(dirname "$f")
+    mkdir -p "$TUI_DIR/$DIR"
+    FETCH="https://api.github.com/repos/$REPO/contents/tui/$f"
+    curl -fsSL -H "Accept: application/vnd.github.v3.raw" "$FETCH" -o "$TUI_DIR/$f" 2>/dev/null || \
+      curl -fsSL "$RAW/tui/$f" -o "$TUI_DIR/$f" 2>/dev/null || true
+  done
+  # install dependencies
+  if [ -f "$TUI_DIR/package.json" ]; then
+    (cd "$TUI_DIR" && bun install --no-save 2>/dev/null) || warn "bun install failed"
+  fi
+  # create wrapper script
+  cat > "$TUI_BIN" << 'TUIEOF'
+#!/bin/bash
+exec bun run "$HOME/.vplink247/tui/src/cli.tsx" "$@"
+TUIEOF
+  chmod +x "$TUI_BIN"
+  ok "React TUI installed: $TUI_BIN"
+fi
+
 echo ""
 echo -e "${BOLD}╔══════════════════════════════════════════════════════════╗${NC}"
 echo -e "${BOLD}║  ✓ vplink247 installed!                                 ║${NC}"
 echo -e "${BOLD}╠══════════════════════════════════════════════════════════╣${NC}"
 echo -e "${BOLD}║  Next:                                                  ║${NC}"
-echo -e "${BOLD}║    vplink247                    # interactive menu   ║${NC}"
-echo -e "${BOLD}║    vplink247 setup               # interactive wizard ║${NC}"
-echo -e "${BOLD}║    vplink247 account add         # add GitHub account  ║${NC}"
+echo -e "${BOLD}║    vplink-tui                   # React TUI (new!)   ║${NC}"
+echo -e "${BOLD}║    vplink247                    # Python CLI (classic)║${NC}"
 echo -e "${BOLD}║    vplink247 deploy create       # deploy relay        ║${NC}"
 echo -e "${BOLD}║    vplink247 test <repo>         # test your relay     ║${NC}"
 echo -e "${BOLD}║    vplink247 status              # view status         ║${NC}"

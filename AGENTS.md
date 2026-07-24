@@ -8,7 +8,7 @@
 ## Current State
 
 - **Last updated:** 2026-07-24
-- **Latest remote commit:** `9908ffb` (feat: vplink-gui global command + updated installer)
+- **Latest remote commit:** `137df8d` (fix: installer uses git clone instead of unreliable file downloads)
 - **Local codebase status:** MODIFIED — Web GUI built (uncommitted)
 - **Git status:** Modified: AGENTS.md. New: web/ directory (React + Vite + Tailwind + Flask API)
 

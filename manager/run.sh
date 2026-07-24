@@ -1,4 +1,0 @@
-#!/usr/bin/env bash
-cd "$(dirname "$0")"
-pip install -q -r requirements.txt
-python3 app.py

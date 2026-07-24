@@ -18,3 +18,4 @@ recorder.log
 __pycache__/
 manager/.venv/
 manager/manager.db
+template/

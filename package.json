@@ -1,6 +1,0 @@
-{
-  "name": "vplink3.0",
-  "private": true,
-  "description": "Automated vplink.in URL funnel (Python/Selenium)",
-  "python": ">=3.8"
-}

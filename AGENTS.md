@@ -8,7 +8,7 @@
 ## Current State
 
 - **Last updated:** 2026-07-24
-- **Latest remote commit:** `cbfa619` (fix: improve handle_tp click resilience, is_destination false-positive, article content-wait, learn_more fallback)
+- **Latest remote commit:** `ad0f42b` (fix: raw HTML fallback + funnel progress guard for VPLink JS failures)
 - **Local codebase status:** CLEAN — all changes committed and pushed
 - **Git status:** Up to date with origin/main
 
@@ -90,6 +90,29 @@
 39. **proxy-rotator.js** — Same fix: removed hardcoded domain checks from proxy test
 40. **discover.js** — Same fix: removed hardcoded domain checks from intermediate page detection
 41. **automation.py** — Disabled `restart_proxy()` mid-session rotation; one IP per session, workflow handles retries
+
+### Code Changes Made (This Session — Raw HTML Fallback + Funnel Progress Guard)
+
+42. **automation.py** — Added `_funnel_progress` module-level variable for destination detection guard
+43. **automation.py** — Added `get_raw_html(max_len)`: gets raw HTML source from page, works when JS broken
+44. **automation.py** — Added `detect_js_health()`: comprehensive JS health check (height/body_len/vplink_elements/verdict)
+45. **automation.py** — Added `find_learn_more_in_html()`: regex-searches raw HTML for learn_more.php links, navigates to first one
+46. **automation.py** — Added `extract_redirect_from_html(html)`: extracts redirect targets from scripts/meta refresh/external links in raw HTML
+47. **automation.py** — Added `looks_like_article_url(url)`: detects article pages by URL structure heuristics (any domain, no hardcoding)
+48. **automation.py** — Modified `is_destination()`: added 3 guards — looks_like_article_url(), raw HTML VPLink check, _funnel_progress==0
+49. **automation.py** — Modified `handle_article()`: raw HTML fallback before and after reload when page height < 50
+50. **automation.py** — Modified `handle_tp()`: raw HTML fallback after navigate_learn_more() fails
+51. **automation.py** — Modified `handle_ce()`: raw HTML fallback after btn7 never appears
+52. **automation.py** — Modified `handle_link1s()`: raw HTML fallback after cross-snp2 never appears
+53. **automation.py** — Modified intermediate page handler: extract_redirect_from_html() before incrementing stuck count
+54. **automation.py** — Modified main loop: _funnel_progress synced with learn_more_count, initialized to 0
+55. **automation.py** — Modified `main()` global declaration: added _funnel_progress
+56. **AUTOMATION.md** — Added Raw HTML Fallback section explaining the system
+57. **AUTOMATION.md** — Added Funnel Progress Tracking section explaining the guard
+58. **AUTOMATION.md** — Updated Helper Functions list with 5 new functions
+59. **AUTOMATION.md** — Updated Key Functions Reference table with 7 new entries
+60. **AUTOMATION.md** — Added Design Principles #7 (funnel progress), #8 (raw HTML fallback), #9 (domain-agnostic)
+61. **AUTOMATION.md** — Added "Resilient" section to "What Makes This System Good"
 
 ### Code Changes Made (This Session — Deployment CI Overhaul — 11 fixes)
 
@@ -193,7 +216,7 @@
 
 | File | Status | Changes Made |
 |------|--------|-------------|
-| `automation.py` | MODIFIED | is_destination article signal check, handle_tp learn_more fast-path + overlay cleanup, handle_ce overlay cleanup, handle_article 15s content-wait + learn_more fallback + fingerprint logging |
+| `automation.py` | MODIFIED | Raw HTML fallback system, funnel progress guard, looks_like_article_url heuristics, detect_js_health, extract_redirect_from_html, is_destination 3 new guards, handle_article/tp/ce/link1s raw HTML fallbacks |
 | `proxy_rotator.py` | MODIFIED | Pagination added to `fetch_proxies()`, `_fetch_state_keys()` helper, blacklist/used paginated |
 | `.github/workflows/continuous.yml` | MODIFIED | `RELAY_TARGET_REPO` env var, relay dispatch fix, per-repo concurrency, pip --break-system-packages, key validation, relay health checks, destination capture, GITHUB_TOKEN fallback, workflow summary |
 | `manager/app.py` | MODIFIED | Full deployment CI overhaul: template clone, RELAY_TARGET_REPO, workflow management, deployment verification, token scope validation |

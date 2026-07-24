@@ -10,6 +10,8 @@ import zipfile
 import io
 import time
 import shutil
+import threading
+import queue
 from pathlib import Path
 
 PORT = int(os.environ.get("VPLINK_WEB_PORT", "5180"))
@@ -81,6 +83,123 @@ def _cache_result(owner, repo, run_id, destination):
         entry["consecutive_fails"] = entry.get("consecutive_fails", 0) + 1
     cache[rn] = entry
     save_json("status_cache.json", cache)
+
+
+class EventBus:
+    def __init__(self):
+        self._subscribers: list[queue.Queue] = []
+        self._lock = threading.Lock()
+
+    def subscribe(self) -> queue.Queue:
+        q = queue.Queue(maxsize=50)
+        with self._lock:
+            self._subscribers.append(q)
+        return q
+
+    def unsubscribe(self, q: queue.Queue):
+        with self._lock:
+            if q in self._subscribers:
+                self._subscribers.remove(q)
+
+    def publish(self, event_type: str, data: dict):
+        msg = json.dumps({"type": event_type, "data": data})
+        with self._lock:
+            dead = []
+            for q in self._subscribers:
+                try:
+                    q.put_nowait(msg)
+                except queue.Full:
+                    dead.append(q)
+            for q in dead:
+                self._subscribers.remove(q)
+
+    @property
+    def subscriber_count(self):
+        with self._lock:
+            return len(self._subscribers)
+
+
+event_bus = EventBus()
+
+
+def _background_poll():
+    last_status = {}
+    while True:
+        time.sleep(30)
+        try:
+            accounts = load_json("accounts.json")
+            if not accounts:
+                continue
+            settings = load_json("settings.json")
+            active_name = settings.get("active_account")
+            if not active_name or active_name not in accounts:
+                continue
+            token = accounts[active_name]["token"]
+            repos = paginate_repos(token)
+            vplink = [r for r in repos if r["name"].startswith("vplink-")]
+            for repo in vplink:
+                rn = repo["name"]
+                owner = repo["owner"]["login"]
+                try:
+                    runs_data = gh_request(f"/repos/{owner}/{rn}/actions/runs?per_page=1", token)
+                    if isinstance(runs_data, dict) and not runs_data.get("error"):
+                        wr = runs_data.get("workflow_runs", [])
+                        if wr:
+                            latest = wr[0]
+                            status = latest.get("conclusion") or latest["status"]
+                            run_id = latest["id"]
+                            changed = last_status.get(rn, {}).get("status") != status
+                            if changed:
+                                last_status[rn] = {"status": status, "run_id": run_id}
+                                event_bus.publish("status_change", {
+                                    "repo": rn,
+                                    "status": status,
+                                    "run_id": run_id,
+                                    "run_url": latest.get("html_url"),
+                                    "last_run_at": latest["created_at"],
+                                })
+                                if status == "completed":
+                                    try:
+                                        log_url = f"/repos/{owner}/{rn}/actions/runs/{run_id}/logs"
+                                        req = urllib.request.Request(f"{GITHUB_API}{log_url}")
+                                        req.add_header("Authorization", f"token {token}")
+                                        req.add_header("Accept", "application/vnd.github.v3+json")
+                                        req.add_header("User-Agent", "vplink-web/3.0")
+                                        with urllib.request.urlopen(req, timeout=30) as resp:
+                                            data = resp.read()
+                                            zf = zipfile.ZipFile(io.BytesIO(data))
+                                            dest = ""
+                                            found_dest_line = False
+                                            for name in zf.namelist():
+                                                if name.endswith(".txt"):
+                                                    content = zf.read(name).decode(errors="replace")
+                                                    for line in content.split("\n"):
+                                                        stripped = line.strip()
+                                                        if "DESTINATION URL:" in stripped or "Destination:" in stripped:
+                                                            val = stripped.split(":", 1)[-1].strip()
+                                                            if val.startswith("http"):
+                                                                dest = val
+                                                                break
+                                                            found_dest_line = True
+                                                        elif found_dest_line and stripped.startswith("http"):
+                                                            dest = stripped
+                                                            found_dest_line = False
+                                                            break
+                                                        else:
+                                                            found_dest_line = False
+                                                if dest:
+                                                    break
+                                            _cache_result(owner, rn, run_id, dest)
+                                            if dest:
+                                                event_bus.publish("destination", {
+                                                    "repo": rn, "destination": dest, "run_id": run_id,
+                                                })
+                                    except Exception:
+                                        pass
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
 
 def paginate_repos(token):
@@ -359,6 +478,31 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
                     pass
                 result.append(entry)
             return self.send_json({"deployments": result})
+
+        if path == "/api/events":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            q = event_bus.subscribe()
+            try:
+                self.wfile.write(b"data: {\"type\":\"connected\"}\n\n")
+                self.wfile.flush()
+                while True:
+                    try:
+                        msg = q.get(timeout=25)
+                        self.wfile.write(f"data: {msg}\n\n".encode())
+                        self.wfile.flush()
+                    except queue.Empty:
+                        self.wfile.write(b": keepalive\n\n")
+                        self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            finally:
+                event_bus.unsubscribe(q)
+            return
 
         if path == "/api/github/log/download":
             token = qs.get("token", "")
@@ -678,6 +822,10 @@ if __name__ == "__main__":
         if not os.path.exists(p):
             with open(p, "w") as fh:
                 fh.write("{}")
+    poll_thread = threading.Thread(target=_background_poll, daemon=True)
+    poll_thread.start()
     print(f"VPLink Web API starting on http://localhost:{PORT}")
-    server = http.server.HTTPServer(("0.0.0.0", PORT), APIHandler)
+    print(f"Background poller active (30s interval)")
+    server = http.server.ThreadingHTTPServer(("0.0.0.0", PORT), APIHandler)
+    server.daemon_threads = True
     server.serve_forever()

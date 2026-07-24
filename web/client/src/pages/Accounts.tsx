@@ -14,9 +14,14 @@ export function Accounts({ state, refresh, toast }: Props) {
   const [acctToken, setAcctToken] = useState('');
   const [adding, setAdding] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
 
   const accounts = Object.values(state.accounts);
   const active = state.activeAccount?.name;
+  const filtered = accounts.filter(a =>
+    !search || a.name.toLowerCase().includes(search.toLowerCase()) ||
+    (a.username || '').toLowerCase().includes(search.toLowerCase())
+  );
 
   const handleAdd = async () => {
     if (!acctName.trim() || !acctToken.trim()) {
@@ -25,14 +30,14 @@ export function Accounts({ state, refresh, toast }: Props) {
     }
     setAdding(true);
     try {
-      const result = await api.addAccount(acctName, acctToken);
+      const result = await api.addAccount(acctName.trim(), acctToken.trim());
       const warnings: string[] = [];
       if (!result.scopes.some(s => s.includes('repo'))) warnings.push('missing repo scope');
       if (!result.scopes.some(s => s.includes('workflow'))) warnings.push('missing workflow scope');
-      const msg = 'Added ' + acctName + ' (@' + result.username + ')' + (warnings.length ? ' - ' + warnings.join(', ') : '');
-      toast(msg, warnings.length ? 'warning' : 'success');
+      const msg = 'Added ' + acctName + ' (@' + result.username + ')' + (warnings.length ? ' — ' + warnings.join(', ') : '');
+      toast(msg, warnings.length ? 'info' : 'success');
       if (!active) {
-        await api.setActiveAccount(acctName);
+        await api.setActiveAccount(acctName.trim());
       }
       setShowAdd(false);
       setAcctName('');
@@ -55,7 +60,9 @@ export function Accounts({ state, refresh, toast }: Props) {
     }
   };
 
-  const handleRemove = async (name: string) => {
+  const handleRemove = async (e: React.MouseEvent, name: string) => {
+    e.stopPropagation();
+    if (!name) return;
     setRemoving(name);
     try {
       await api.removeAccount(name);
@@ -78,15 +85,34 @@ export function Accounts({ state, refresh, toast }: Props) {
         <button className="btn-primary" onClick={() => setShowAdd(true)}>+ Add Account</button>
       </div>
 
+      {accounts.length > 2 && (
+        <div className="relative">
+          <input
+            className="input-field pl-9"
+            placeholder="Search accounts..."
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
+          <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+        </div>
+      )}
+
       {accounts.length === 0 ? (
         <div className="card text-center py-12">
           <span className="text-4xl mb-3 block opacity-30">👤</span>
           <p className="text-gray-400 text-sm">No accounts added yet</p>
+          <p className="text-gray-600 text-xs mt-1">Add your GitHub account to start managing deployments</p>
           <button className="btn-primary mt-4" onClick={() => setShowAdd(true)}>Add your first account</button>
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="card text-center py-8">
+          <p className="text-gray-500 text-sm">No accounts matching "{search}"</p>
         </div>
       ) : (
         <div className="space-y-2">
-          {accounts.map(acct => (
+          {filtered.map(acct => (
             <div
               key={acct.name}
               className={`card flex items-center gap-4 cursor-pointer transition-all touch-manipulation ${
@@ -112,7 +138,7 @@ export function Accounts({ state, refresh, toast }: Props) {
               </div>
               <button
                 className="btn-icon text-red-400 hover:text-red-300"
-                onClick={e => { e.stopPropagation(); handleRemove(acct.name); }}
+                onClick={e => handleRemove(e, acct.name)}
                 disabled={removing === acct.name}
               >
                 {removing === acct.name ? '...' : (

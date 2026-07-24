@@ -80,7 +80,7 @@ export const api = {
       method: 'POST', body: JSON.stringify({ name, token }),
     }),
   removeAccount: (name: string) =>
-    request('/accounts', { method: 'DELETE', body: JSON.stringify({ name }) }),
+    request(`/accounts?name=${encodeURIComponent(name)}`, { method: 'DELETE' }),
   setActiveAccount: (name: string) =>
     request('/accounts/active', { method: 'POST', body: JSON.stringify({ name }) }),
 

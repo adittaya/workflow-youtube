@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api, formatStatus, timeAgo, type StatusDeployment } from '../services/api';
+import { useSSE } from '../hooks/useSSE';
 import type { AppState } from '../hooks/useAppState';
 
 interface Props {
@@ -12,6 +13,7 @@ export function Dashboard({ state, refresh, toast }: Props) {
   const [statuses, setStatuses] = useState<StatusDeployment[]>([]);
   const [loading, setLoading] = useState(false);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
+  const [liveEvent, setLiveEvent] = useState<string | null>(null);
 
   const activeAccount = state.activeAccount;
   const accounts = Object.values(state.accounts);
@@ -29,10 +31,19 @@ export function Dashboard({ state, refresh, toast }: Props) {
     }
   }, [activeAccount?.token]);
 
+  useSSE((type, data) => {
+    if (type === 'status_change') {
+      setLiveEvent(`${data.repo}: ${data.status}`);
+      setTimeout(() => setLiveEvent(null), 5000);
+      fetchStatus();
+    } else if (type === 'destination') {
+      toast(`${data.repo} hit destination: ${data.destination}`, 'success');
+      fetchStatus();
+    }
+  });
+
   useEffect(() => {
     fetchStatus();
-    const interval = setInterval(fetchStatus, 30000);
-    return () => clearInterval(interval);
   }, [fetchStatus]);
 
   const totalSuccesses = statuses.reduce((s, d) => s + d.total_successes, 0);
@@ -55,16 +66,16 @@ export function Dashboard({ state, refresh, toast }: Props) {
           <p className="text-sm text-gray-400 mt-1">VPLink automation control center</p>
         </div>
         <div className="flex items-center gap-3">
+          {liveEvent && (
+            <span className="text-xs text-green-400 animate-pulse-soft">{liveEvent}</span>
+          )}
           {lastRefresh && (
             <span className="text-xs text-gray-500">Updated {timeAgo(lastRefresh.toISOString())}</span>
           )}
-          <button
-            onClick={fetchStatus}
-            disabled={loading}
-            className="btn-secondary text-xs"
-          >
-            {loading ? 'Refreshing...' : 'Refresh'}
-          </button>
+          <div className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse-soft" title="Live — SSE connected" />
+            <span className="text-[10px] text-gray-500">LIVE</span>
+          </div>
         </div>
       </div>
 

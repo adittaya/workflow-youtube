@@ -3,7 +3,7 @@ set -e
 
 MANAGER_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(dirname "$MANAGER_DIR")"
-BIN="/usr/local/bin/vplink247"
+BIN="/usr/local/bin/vplink-manager"
 SERVICE="/etc/systemd/system/vplink-manager.service"
 MGR_PORT="${MANAGER_PORT:-8888}"
 
@@ -93,8 +93,8 @@ EOF
 sudo chmod 600 "$ENV_FILE"
 ok "Environment config saved"
 
-# ── Create vplink247 command ─────────────────────────────
-info "Creating global command: vplink247"
+# ── Create vplink-manager command ─────────────────────────────
+info "Creating global command: vplink-manager"
 sudo tee "$BIN" > /dev/null <<'SCRIPT'
 #!/usr/bin/env bash
 set -e
@@ -150,7 +150,7 @@ case "$CMD" in
         echo "Web UI: http://localhost:$PORT"
         echo "Login:  admin / admin"
         echo ""
-        echo "Terminal mode: vplink247"
+        echo "Terminal mode: vplink-manager"
         ;;
     terminal|tui|cli)
         cd "$MANAGER_DIR" && python3 cli.py
@@ -176,7 +176,7 @@ case "$CMD" in
     update)
         echo "Updating VPLink Manager..."
         cd "$MANAGER_DIR/.." && git pull
-        echo "Update complete. Restart web: vplink247 restart"
+        echo "Update complete. Restart web: vplink-manager restart"
         ;;
     install)
         cd "$MANAGER_DIR" && sudo bash install.sh
@@ -203,7 +203,7 @@ print(f'Password updated to: {pw}')
     *)
         echo "VPLink 24/7 Manager — Control Command"
         echo ""
-        echo "Usage: vplink247 <command>"
+        echo "Usage: vplink-manager <command>"
         echo ""
         echo "  (no args)    Terminal mode — interactive menu"
         echo "  web|start    Start web interface"
@@ -225,7 +225,7 @@ print(f'Password updated to: {pw}')
 esac
 SCRIPT
 sudo chmod +x "$BIN"
-ok "Global command created: vplink247"
+ok "Global command created: vplink-manager"
 
 # ── Create systemd service ───────────────────────────────
 info "Setting up systemd service..."
@@ -268,11 +268,11 @@ echo -e "${GREEN}╚════════════════════
 echo ""
 echo -e "  ${CYAN}Web UI:${NC}     http://localhost:$MGR_PORT"
 echo -e "  ${CYAN}Login:${NC}      admin / admin"
-echo -e "  ${CYAN}Command:${NC}    vplink247          (terminal interactive mode)"
-echo -e "  ${CYAN}Web UI:${NC}      vplink247 web      (start web interface)"
-echo -e "  ${CYAN}Status:${NC}      vplink247 status   (terminal status view)"
+echo -e "  ${CYAN}Command:${NC}    vplink-manager          (terminal interactive mode)"
+echo -e "  ${CYAN}Web UI:${NC}      vplink-manager web      (start web interface)"
+echo -e "  ${CYAN}Status:${NC}      vplink-manager status   (terminal status view)"
 echo ""
-echo -e "  ${YELLOW}Change password:${NC}  vplink247 passwd <new_password>"
+echo -e "  ${YELLOW}Change password:${NC}  vplink-manager passwd <new_password>"
 echo ""
 
 # ── Create a quick config note ──────────────────────────
@@ -284,12 +284,12 @@ cat <<EOF | sudo tee /etc/vplink-welcome.txt > /dev/null
 ║ Login:   admin / admin                       ║
 ║                                              ║
 ║ Commands:                                    ║
-║   vplink247            Terminal interactive   ║
-║   vplink247 web        Start web interface    ║
-║   vplink247 stop       Stop web interface     ║
-║   vplink247 status     Status overview        ║
-║   vplink247 open       Open in browser        ║
-║   vplink247 logs       View logs              ║
-║   vplink247 update     Pull latest code       ║
+║   vplink-manager            Terminal interactive   ║
+║   vplink-manager web        Start web interface    ║
+║   vplink-manager stop       Stop web interface     ║
+║   vplink-manager status     Status overview        ║
+║   vplink-manager open       Open in browser        ║
+║   vplink-manager logs       View logs              ║
+║   vplink-manager update     Pull latest code       ║
 ╚══════════════════════════════════════════════╝
 EOF

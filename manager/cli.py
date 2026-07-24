@@ -125,7 +125,7 @@ def cmd_status(user_id):
         print(f"  {d['repo_name']:<30} {status_str:<12} {d['total_views']:<8} "
               f"{d['vplink_key'][:12]:<15} {d['account_name']:<15} ")
     print()
-    print(f"  {c('Detail: use web UI or run: vplink247 web', CYAN)}")
+    print(f"  {c('Detail: use web UI or run: vplink-manager web', CYAN)}")
     pause()
 
 
@@ -178,7 +178,7 @@ def cmd_deploy_single(user_id):
 
     threading.Thread(target=create_repo_and_deploy, args=(dep_id,), daemon=True).start()
     print(f"\n  {c('Deploying:', GREEN)} {repo}")
-    print(f"  {c('Track progress:', CYAN)} vplink247 web")
+    print(f"  {c('Track progress:', CYAN)} vplink-manager web")
     pause()
 
 
@@ -233,7 +233,7 @@ def cmd_deploy_bulk(user_id):
     print(f"\n  {c(f'{len(results)} deployment(s) created:', GREEN)}")
     for dep_id, rname in results:
         print(f"    - {rname}")
-    print(f"\n  {c('Track: vplink247 web', CYAN)}")
+    print(f"\n  {c('Track: vplink-manager web', CYAN)}")
     pause()
 
 
@@ -389,7 +389,7 @@ def cmd_password(user_id):
 
 def cmd_web():
     print(f"\n  {c('Starting web interface...', GREEN)}")
-    print(f"  {c('Run: vplink247 web', CYAN)}")
+    print(f"  {c('Run: vplink-manager web', CYAN)}")
     print(f"  {c('Or open http://localhost:8888', CYAN)}")
     pause()
 
@@ -404,7 +404,7 @@ def cmd_update():
     print(f"  {result.stdout}")
     if result.returncode != 0:
         print(f"  {c(result.stderr, RED)}")
-    print(f"\n  {c('Restart needed: vplink247 restart', CYAN)}")
+    print(f"\n  {c('Restart needed: vplink-manager restart', CYAN)}")
     pause()
 
 

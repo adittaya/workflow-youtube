@@ -317,6 +317,5 @@ Attempt 3: New proxy → Run automation
 | `profile_generator.py` | Browser profile generation — viewport, UA, stealth properties |
 | `config.py` | Configuration — Supabase, proxy settings |
 | `continuous.yml` | GitHub Actions workflow — proxy retry, relay dispatch, destination capture |
-| `vplink247.py` | CLI tool — status, analytics, reports, deploy, sync |
+| `tui/` | React TUI — deploy, monitor, manage (OpenTUI + Bun) |
 | `manager/app.py` | Web dashboard — deploy, monitor, manage |
-| `github_sync.py` | GitHub-as-database — real-time deployment sync |

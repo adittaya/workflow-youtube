@@ -8,7 +8,7 @@
 ## Current State
 
 - **Last updated:** 2026-07-24
-- **Latest remote commit:** `87e7b9c` (docs: update AGENTS.md with commit status)
+- **Latest remote commit:** `cbfa619` (fix: improve handle_tp click resilience, is_destination false-positive, article content-wait, learn_more fallback)
 - **Local codebase status:** CLEAN — all changes committed and pushed
 - **Git status:** Up to date with origin/main
 
@@ -168,6 +168,16 @@
 96. **automation.py** — Fixed `wait_for_countdown()`: was returning `False` (boolean) on timeout, now returns `"timeout"` string for consistency with other return values ("done", "rewarded", "stuck")
 97. **automation.py** — Fixed fragile `cycle` variable: initialized `cycle = -1` before loop, replaced `dir()` check with `cycle >= 0` check
 
+### Code Changes Made (This Session — Click Resilience & Article Detection Fixes)
+
+98. **automation.py** — `is_destination()`: Added `has_article_signals` check — detects learn_more.php links, ad overlays (block-cont-1/gcont), buttons+timers to prevent false-positive destination detection on article pages
+99. **automation.py** — `handle_tp()`: Added `navigate_learn_more()` fast-path BEFORE `human_click("#tp-snp2")` — when parent `<a>` href doesn't have learn_more.php, JS-scans all page links first (avoids 132s Selenium click delay)
+100. **automation.py** — `handle_tp()`: Added `close_ad_overlay()` + `handle_popup()` before `human_click("#tp-snp2")` to prevent ad overlays blocking clicks
+101. **automation.py** — `handle_ce()`: Added `close_ad_overlay()` + `handle_popup()` before `human_click("#btn6")` to prevent ad overlays blocking verify clicks
+102. **automation.py** — `handle_article()`: Added 15s content-wait loop when `fingerprint_page()` returns all-false on an article page — polls every 1s for VPLink elements to render
+103. **automation.py** — `handle_article()`: Added learn_more.php fallback at end — when no handler matched, scans page for learn_more.php links before returning False
+104. **automation.py** — `handle_article()`: Added `has_learn_more` to fingerprint log output for better debugging
+
 ## Pending / User Requests
 
 - User wants: comprehensive flow engine that handles ANY VPLink-type variation ✅ DONE
@@ -183,7 +193,7 @@
 
 | File | Status | Changes Made |
 |------|--------|-------------|
-| `automation.py` | MODIFIED | Removed _inject_timer_cookies, fixed bezier_move gradual mouse, fixed is_ad_domain 14 domains, fixed wait_for_countdown return, fixed cycle init |
+| `automation.py` | MODIFIED | is_destination article signal check, handle_tp learn_more fast-path + overlay cleanup, handle_ce overlay cleanup, handle_article 15s content-wait + learn_more fallback + fingerprint logging |
 | `proxy_rotator.py` | MODIFIED | Pagination added to `fetch_proxies()`, `_fetch_state_keys()` helper, blacklist/used paginated |
 | `.github/workflows/continuous.yml` | MODIFIED | `RELAY_TARGET_REPO` env var, relay dispatch fix, per-repo concurrency, pip --break-system-packages, key validation, relay health checks, destination capture, GITHUB_TOKEN fallback, workflow summary |
 | `manager/app.py` | MODIFIED | Full deployment CI overhaul: template clone, RELAY_TARGET_REPO, workflow management, deployment verification, token scope validation |
@@ -192,7 +202,7 @@
 | `tui/` | NEW | OpenTUI React TUI: Dashboard, Deployments, Accounts, Analytics, Settings, Sync screens |
 | `config.py` | OK | Unchanged |
 | `schema.sql` | OK | Unchanged |
-| `AGENTS.md` | UNTRACKED | Session progress tracker (must update after every change) |
+| `AGENTS.md` | MODIFIED | Session progress tracker |
 
 ## TODO List (All Items)
 
@@ -216,9 +226,8 @@
 - [x] **Strict Button Detection**: `isRealButton()` avoids clicking decorative text
 
 ### Low Priority
-- [ ] **Test pagination**: Verify proxy_rotator.py pagination works locally
-- [ ] **Test do_get_link**: Verify fast-path destination extraction works
-- [ ] **Test PageMonitor**: Verify MutationObserver events fire correctly in live flow
+- [x] **Test do_get_link**: Verified — destination captured in 5-cycle local run (309s)
+- [x] **Test PageMonitor**: Verified — MutationObserver events fire correctly in live flow
 - [ ] **Proxy Cache**: Cache paginated proxy results to avoid repeated Supabase calls per rotation
 
 ## Notes

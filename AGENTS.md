@@ -8,7 +8,7 @@
 ## Current State
 
 - **Last updated:** 2026-07-24
-- **Latest remote commit:** `cfedcc4` (feat: web GUI control center — React + Vite + Tailwind + Flask API)
+- **Latest remote commit:** `9908ffb` (feat: vplink-gui global command + updated installer)
 - **Local codebase status:** MODIFIED — Web GUI built (uncommitted)
 - **Git status:** Modified: AGENTS.md. New: web/ directory (React + Vite + Tailwind + Flask API)
 

@@ -8,7 +8,7 @@
 ## Current State
 
 - **Last updated:** 2026-07-24
-- **Latest remote commit:** `d2c9bd1` (fix: TUI deploy secrets encryption, add dispatch, step-by-step progress)
+- **Latest remote commit:** `9216cfa` (cleanup: remove 121 lines of dead code + fix install for Cloud Shell)
 - **Local codebase status:** MODIFIED — TUI deploy secrets encryption fixed, workflow dispatch added
 - **Git status:** tui.py modified. Accounts configured: main (@adittaya), second (@rtff5665)
 
@@ -302,6 +302,17 @@
 141. **tui.py** — Added VPLINK_KEY default to settings screen
 142. **tui.py** — Moved `import shutil` to top-level imports
 143. **tui.py** — Added `get_account_for_repo()` helper
+
+### Code Changes Made (This Session — Dead Code Cleanup — 121 lines removed)
+
+144. **proxy_rotator.py** — Removed duplicate `mark_proxy_used()` function (identical to lines 157-164)
+145. **proxy_rotator.py** — Removed unused `test_proxy_batch_selenium()` and `get_rotation_index()`
+146. **proxy_rotator.py** — Removed unused imports: `http.client`, `http.server`, `ssl`, `urlparse`
+147. **config.py** — Removed unused `import stat`, `PROXY_HISTORY_PATH`, and 5 dead proxy functions
+148. **automation.py** — Removed unreachable code block after `return False` in `handle_article()`
+149. **automation.py** — Removed unused variables `proxy_restarts` and `pre_url`
+150. **automation.py** — Fixed `wait_for_countdown(None)` → `wait_for_countdown("generic")`
+151. **install.sh** — Changed BIN to `~/.local/bin` (no sudo needed for Cloud Shell)
 
 ## Pending / User Requests
 

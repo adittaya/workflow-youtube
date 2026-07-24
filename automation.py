@@ -1016,7 +1016,7 @@ def human_scroll():
         human_delay(300, 800)
 
 
-def human_read(duration_sec=45):
+def human_read(duration_sec=45, known_height=0):
     dur = min(duration_sec or 45, 70)
     read_start = time.time()
     start_url = safe_url()
@@ -1024,8 +1024,11 @@ def human_read(duration_sec=45):
         max_scroll = safe_eval("document.documentElement.scrollHeight - window.innerHeight") or 0
     except Exception:
         max_scroll = 0
-    current_y = 0
-    log(f"human read: {dur}s, page height={max_scroll}px")
+    if max_scroll < 200 and known_height > 200:
+        max_scroll = known_height
+        log(f"human read: {dur}s, page height=0 (using known_height={known_height}px)")
+    else:
+        log(f"human read: {dur}s, page height={max_scroll}px")
 
     if max_scroll < 200:
         log("page height too small, performing quick scroll only")
@@ -1034,6 +1037,7 @@ def human_read(duration_sec=45):
         return
 
     try:
+        current_y = 0
         iterations = rand(12, 20)
         for i in range(iterations):
             if time.time() - read_start >= dur:
@@ -1047,7 +1051,8 @@ def human_read(duration_sec=45):
             try:
                 safe_eval(f"window.scrollBy(0, {scroll_amt})")
             except Exception:
-                break
+                ms(rand(1000, 3000))
+                continue
 
             vp_w = profile["viewport"]["width"]
             vp_h = profile["viewport"]["height"]
@@ -1056,7 +1061,8 @@ def human_read(duration_sec=45):
             try:
                 ActionChains(driver).move_by_offset(mx - vp_w // 2, my - vp_h // 2).pause(random.uniform(0.1, 0.3)).move_by_offset(-(mx - vp_w // 2), -(my - vp_h // 2)).perform()
             except Exception:
-                break
+                ms(rand(1000, 3000))
+                continue
 
             if random.random() < 0.2:
                 safe_eval("""
@@ -1724,10 +1730,25 @@ def handle_tp():
                 return True
             close_ad_overlay()
             handle_popup()
+            pre_click_url = safe_url()
             human_click("#tp-snp2")
             log("clicked tp-snp2")
-            human_delay(2000, 4000)
-            return navigate_learn_more()
+            for wait_i in range(15):
+                human_delay(1000, 1500)
+                cur = safe_url()
+                if cur != pre_click_url:
+                    log(f"tp-snp2 click navigated to: {cur[:80]}")
+                    return True
+            nav = navigate_learn_more()
+            if nav:
+                return True
+            lm_url = find_learn_more_in_html()
+            if lm_url:
+                log("navigated via learn_more.php found in raw HTML after click")
+                return True
+            log("tp-snp2 click did not navigate, trying JS redirect")
+            safe_eval("window.location.href = 'learn_more.php';")
+            return True
 
         if w % 10 == 0 and w > 0:
             cd = get_countdown()
@@ -2281,6 +2302,10 @@ def handle_article():
         ready, height, body_len = wait_for_page_ready(min_height=200, timeout_sec=15)
         log(f"after reload: ready={ready}, height={height}, body_len={body_len}")
 
+        if not ready or height < 50:
+            log("reload also failed — proxy may be blocking this domain, returning False")
+            return False
+
     # If reload also failed, try raw HTML fallback one more time
     if not ready or height < 50:
         lm_url = find_learn_more_in_html()
@@ -2356,7 +2381,7 @@ def handle_article():
 
     countdown = get_countdown()
     read_secs = max(countdown + 5, 35) if countdown > 0 else rand(35, 55)
-    human_read(min(read_secs, 65))
+    human_read(min(read_secs, 65), known_height=height)
 
     navigated = False
     ce_btn7_clicked = False
@@ -2691,7 +2716,7 @@ def _create_driver():
                     except Exception:
                         continue
 
-    driver.set_page_load_timeout(90)
+    driver.set_page_load_timeout(30)
     driver.implicitly_wait(0)
 
     try:
@@ -2798,26 +2823,32 @@ def main():
           adpt_nav.observe(time.time() - nav_start)
       except Exception as e:
           log(f"first goto failed: {e}, retrying...")
-          if PROXY and "timeout" in str(e).lower():
-              report_proxy_failure("first-goto-hang")
-              proxy_blocked = True
-              skip_main_loop = True
-          elif PROXY:
+          if PROXY:
               report_proxy_failure("first-goto-error")
           time.sleep(2)
-          if not skip_main_loop:
+          try:
+              adpt_load.set_page_load(driver)
+              nav_start = time.time()
+              driver.get(f"https://{BASE_DOMAIN}/{KEY}")
+              adpt_nav.observe(time.time() - nav_start)
+          except Exception as e2:
+              log(f"second goto failed: {e2}")
+              adpt_nav.timeout_occured()
               try:
-                  adpt_load.set_page_load(driver)
-                  nav_start = time.time()
-                  driver.get(f"https://{BASE_DOMAIN}/{KEY}")
-                  adpt_nav.observe(time.time() - nav_start)
-              except Exception as e2:
-                  log(f"second goto failed: {e2}")
-                  adpt_nav.timeout_occured()
+                  ready = driver.execute_script("return document.readyState")
+                  url_now = safe_url()
+                  has_body = driver.execute_script("return (document.body?.innerHTML || '').length")
+                  log(f"page state after timeout: readyState={ready} url={url_now} body_len={has_body}")
+                  if has_body > 100:
+                      log("page has content despite load timeout — continuing")
+                  else:
+                      log("page empty after load timeout — proxy blocked")
+                      proxy_blocked = True
+                      skip_main_loop = True
+              except Exception:
                   if PROXY:
-                      report_proxy_failure("second-goto-error")
-                  proxy_blocked = True
-                  skip_main_loop = True
+                      proxy_blocked = True
+                      skip_main_loop = True
 
       if not skip_main_loop:
           human_delay(2000, 4000)
@@ -2897,13 +2928,25 @@ def main():
               ready, h, bl = wait_for_page_ready(min_height=100, timeout_sec=10)
               log(f"post-redirect page ready: {ready}, height={h}, body_len={bl}")
               if not ready or h < 50:
-                  log("redirected page empty, reloading...")
-                  try:
-                      adpt_load.set_page_load(driver)
-                      driver.get(cur_url)
-                  except Exception:
-                      adpt_load.timeout_occured()
-                  human_delay(2000, 4000)
+                  html = get_raw_html(3000)
+                  redirect = extract_redirect_from_html(html)
+                  if redirect:
+                      full_url = redirect if redirect.startswith("http") else f"https://{safe_url().split('/')[2]}{redirect}"
+                      log(f"guard page redirect found in raw HTML: {full_url[:80]}")
+                      try:
+                          adpt_load.set_page_load(driver)
+                          driver.get(full_url)
+                      except Exception:
+                          adpt_load.timeout_occured()
+                      human_delay(2000, 4000)
+                  else:
+                      log("redirected page empty, reloading...")
+                      try:
+                          adpt_load.set_page_load(driver)
+                          driver.get(cur_url)
+                      except Exception:
+                          adpt_load.timeout_occured()
+                      human_delay(2000, 4000)
                   monitor.install(driver)
 
       vplink_arrivals = 0
@@ -2917,6 +2960,7 @@ def main():
       max_ad_hijacks = 5
       url_visits = {}
       exhausted_cycles = 0
+      dead_urls = set()
       learn_more_count = 0
       _funnel_progress = 0
       last_action_was_learn_more = False
@@ -2932,11 +2976,35 @@ def main():
           if elapsed >= AUTOMATION_HARD_TIMEOUT:
               log(f"HARD TIMEOUT: {elapsed:.0f}s exceeded {AUTOMATION_HARD_TIMEOUT}s limit, forcing exit")
               break
+          try:
+              driver.title
+          except Exception:
+              log("Chrome session dead, stopping")
+              break
           monitor.install(driver)
           monitor.poll()
           url = safe_url()
           if not url:
               ms(2000)
+              continue
+          url_key = url.split("?")[0].rstrip("/")
+          if url_key in dead_urls:
+              log(f"dead URL detected: {url_key[:80]} — force-navigating to vplink.in")
+              exhausted_cycles += 1
+              if exhausted_cycles >= 3:
+                  log("3 consecutive dead URL bounces — breaking to final get-link")
+                  break
+              last_base = ""
+              try:
+                  adpt_load.set_page_load(driver)
+                  driver.get(f"https://{BASE_DOMAIN}/{KEY}")
+              except Exception:
+                  adpt_load.timeout_occured()
+              human_delay(2000, 4000)
+              for i in range(int(adpt_poll.get())):
+                  ms(1000)
+                  if "vplink.in" not in safe_url():
+                      break
               continue
           base = url_base(url)
 
@@ -3310,6 +3378,7 @@ def main():
                   exhausted_cycles = 0
                   continue
           exhausted_cycles += 1
+          dead_urls.add(url.split("?")[0].rstrip("/"))
           log(f"exhausted (x{exhausted_cycles}), force-navigating to vplink.in")
           if exhausted_cycles >= 3:
               log("3 consecutive exhausted cycles — breaking to final get-link")

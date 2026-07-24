@@ -9,8 +9,8 @@
 
 - **Last updated:** 2026-07-24
 - **Latest remote commit:** `ad0f42b` (fix: raw HTML fallback + funnel progress guard for VPLink JS failures)
-- **Local codebase status:** CLEAN — all changes committed and pushed
-- **Git status:** Up to date with origin/main
+- **Local codebase status:** DIRTY — uncommitted fixes for page load timeout, human_read, tp-snp2 click, dead URL tracking, Chrome session death
+- **Git status:** Local changes ready to commit
 
 ## What Has Been Done
 
@@ -200,6 +200,22 @@
 102. **automation.py** — `handle_article()`: Added 15s content-wait loop when `fingerprint_page()` returns all-false on an article page — polls every 1s for VPLink elements to render
 103. **automation.py** — `handle_article()`: Added learn_more.php fallback at end — when no handler matched, scans page for learn_more.php links before returning False
 104. **automation.py** — `handle_article()`: Added `has_learn_more` to fingerprint log output for better debugging
+
+### Code Changes Made (This Session — Production Readiness Fixes)
+
+105. **automation.py** — Reduced `driver.set_page_load_timeout()` from 90s → 30s (page load was hanging forever on vplink.in JS redirect)
+106. **automation.py** — Removed `proxy_blocked = True` and `skip_main_loop = True` on first goto timeout; now checks if page has content before blocking proxy
+107. **automation.py** — Second goto timeout handler: checks `readyState`, `body_len`, URL before declaring proxy dead; continues if page has content (>100 bytes)
+108. **automation.py** — `human_read()`: Added `known_height` parameter; uses height from `wait_for_page_ready()` when re-evaluation returns 0
+109. **automation.py** — `handle_article()`: Passes `known_height=height` to `human_read()` so scrolling works even when DOM state changes
+110. **automation.py** — `human_read()`: Fixed uninitialized `current_y` variable (was causing NameError)
+111. **automation.py** — `human_read()`: Changed inner `break` to `continue` on scroll/mouse failures — no longer kills entire read loop on first JS error
+112. **automation.py** — `handle_tp()`: After clicking tp-snp2, now waits up to 15s for URL change before trying navigate_learn_more(); adds raw HTML learn_more.php fallback; falls back to JS redirect if nothing else works
+113. **automation.py** — `handle_article()`: When reload after empty page also fails, immediately returns False instead of wasting time on JS reload + template detection
+114. **automation.py** — Main loop: Added Chrome session death detection (`driver.title` check) — breaks loop immediately when session is dead
+115. **automation.py** — Main loop: Added `dead_urls` set — tracks URLs that failed; force-navigates away immediately when same URL fails again
+116. **automation.py** — Main loop: `exhausted_cycles` increments on dead URL bounce too; breaks after 3 consecutive dead URL bounces
+117. **automation.py** — Guard page handler: Extracts redirect from raw HTML before reloading when post-redirect page is empty
 
 ## Pending / User Requests
 

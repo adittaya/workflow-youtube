@@ -8,7 +8,7 @@
 ## Current State
 
 - **Last updated:** 2026-07-24
-- **Latest remote commit:** `137df8d` (fix: installer uses git clone instead of unreliable file downloads)
+- **Latest remote commit:** `e011c0a` (fix: deploy handler crashes — .git copytree, gh_request empty body, try/except indentation)
 - **Local codebase status:** MODIFIED — Web GUI built (uncommitted)
 - **Git status:** Modified: AGENTS.md. New: web/ directory (React + Vite + Tailwind + Flask API)
 
@@ -192,6 +192,13 @@
 97. **web/client/src/pages/Analytics.tsx** — Bar charts, per-account stats, status breakdown
 98. **web/client/src/pages/Sync.tsx** — GitHub sync with step-by-step explanation
 
+### Code Changes Made (This Session — Web GUI Bug Fixes)
+
+120. **web/server/app.py** — `deploy` handler: Fixed `shutil.copytree` crash on `.git` packfiles (added `ignore_git` callback)
+121. **web/server/app.py** — `gh_request()`: Fixed `json.loads` crash on 204 No Content responses (returns `{"ok": True}` instead)
+122. **web/server/app.py** — `deploy` handler: Fixed broken `try/except` indentation (entire handler body now inside try block)
+123. **web/server/app.py** — `paginate_repos()`: Added page limit (max 5) and try/except to prevent infinite loop on API errors
+
 ### Code Changes Made (This Session — Workflow Destination Capture Fix)
 
 87. **continuous.yml** — Added destination URL capture: reads `destination_url.txt` after automation, writes to `$GITHUB_OUTPUT` as `destination` output
@@ -268,6 +275,8 @@
 | File | Status | Changes Made |
 |------|--------|-------------|
 | `automation.py` | MODIFIED | Raw HTML fallback system, funnel progress guard, looks_like_article_url heuristics, detect_js_health, extract_redirect_from_html, is_destination 3 new guards, handle_article/tp/ce/link1s raw HTML fallbacks |
+| `web/server/app.py` | MODIFIED | Full web API: deploy handler crash fixes (copytree, empty body, try/except), paginate_repos safety |
+| `web/vplink-gui` | MODIFIED | Global launcher script |
 | `proxy_rotator.py` | MODIFIED | Pagination added to `fetch_proxies()`, `_fetch_state_keys()` helper, blacklist/used paginated |
 | `.github/workflows/continuous.yml` | MODIFIED | `RELAY_TARGET_REPO` env var, relay dispatch fix, per-repo concurrency, pip --break-system-packages, key validation, relay health checks, destination capture, GITHUB_TOKEN fallback, workflow summary |
 | `manager/app.py` | MODIFIED | Full deployment CI overhaul: template clone, RELAY_TARGET_REPO, workflow management, deployment verification, token scope validation |

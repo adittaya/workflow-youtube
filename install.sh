@@ -85,9 +85,15 @@ fi
 
 # ── Create wrapper ─────────────────────────────────────
 # Write to temp first, then mv (avoids heredoc stdin issue with curl|bash)
-BUN_PATH=$(which bun)
+BUN_PATH="${BUN_INSTALL:-$HOME/.bun}/bin/bun"
+if [ ! -x "$BUN_PATH" ]; then
+  BUN_PATH=$(which bun 2>/dev/null || echo "")
+fi
+if [ ! -x "$BUN_PATH" ]; then
+  fail "bun binary not found"
+fi
 TMPWRAPPER=$(mktemp)
-printf '#!/bin/bash\nexport PATH="%s:$PATH"\nexec bun run "$HOME/.vplink247/tui/src/cli.tsx" "$@"\n' "$BUN_PATH" > "$TMPWRAPPER"
+printf '#!/bin/bash\nexport PATH="%s:$PATH"\nexec "%s" run "$HOME/.vplink247/tui/src/cli.tsx" "$@"\n' "$BUN_PATH" "$BUN_PATH" > "$TMPWRAPPER"
 chmod +x "$TMPWRAPPER"
 if [ -w "$(dirname "$TUI_BIN")" ]; then
   mv "$TMPWRAPPER" "$TUI_BIN"

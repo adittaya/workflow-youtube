@@ -38,6 +38,15 @@ fi
 # --- TUI launcher ---
 echo "[4/4] Installing vplink launcher..."
 
+# Remove old Node.js install if present
+if [ -L "$HOME/.local/bin/vplink" ]; then
+    rm -f "$HOME/.local/bin/vplink"
+fi
+if [ -d "$HOME/vplink" ] && [ -f "$HOME/vplink/cli.sh" ]; then
+    echo "  Removing old Node.js installation at ~/vplink/..."
+    rm -rf "$HOME/vplink"
+fi
+
 # Download tui.py
 curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/tui.py" -o /tmp/vplink_tui.py
 
@@ -62,6 +71,10 @@ cat > "$BIN" << 'WRAPPER'
 exec python3 "${VPLINK_HOME:-$HOME/.vplink247}/tui.py" "$@"
 WRAPPER
 chmod +x "$BIN"
+
+# Also symlink to ~/.local/bin for user-local access
+mkdir -p "$HOME/.local/bin"
+ln -sf "$BIN" "$HOME/.local/bin/vplink"
 
 # Install TUI
 mv /tmp/vplink_tui.py "$INSTALL_DIR/tui.py"

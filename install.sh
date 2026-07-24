@@ -84,9 +84,9 @@ if [ -f "$TUI_DIR/package.json" ]; then
 fi
 
 # ── Create wrapper ─────────────────────────────────────
+# Write to temp first, then mv (avoids heredoc stdin issue with curl|bash)
 TMPWRAPPER=$(mktemp)
-echo '#!/bin/bash' > "$TMPWRAPPER"
-echo 'exec bun run "$HOME/.vplink247/tui/src/cli.tsx" "$@"' >> "$TMPWRAPPER"
+printf '#!/bin/bash\nexec bun run "$HOME/.vplink247/tui/src/cli.tsx" "$@"\n' > "$TMPWRAPPER"
 chmod +x "$TMPWRAPPER"
 if [ -w "$(dirname "$TUI_BIN")" ]; then
   mv "$TMPWRAPPER" "$TUI_BIN"

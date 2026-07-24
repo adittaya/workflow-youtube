@@ -323,7 +323,7 @@ def remove_deployment(name):
     acct = accounts.get(dep.get("account", ""))
     if acct:
         owner = acct.get("username", dep.get("account", ""))
-        resp = gh(f"/repos/{owner}/{name}", acct["token"], "DELETE")
+        resp = gh(f"/repos/{owner}/{name}", acct.get("token", ""), "DELETE")
         if isinstance(resp, dict) and resp.get("error"):
             return False, f"GitHub API error: {resp.get('message', '')}"
     del deps[name]
@@ -339,7 +339,7 @@ def nuke_deployments():
         acct = accounts.get(dep.get("account", ""))
         if acct:
             owner = acct.get("username", dep.get("account", ""))
-            resp = gh(f"/repos/{owner}/{name}", acct["token"], "DELETE")
+            resp = gh(f"/repos/{owner}/{name}", acct.get("token", ""), "DELETE")
             if isinstance(resp, dict) and resp.get("error"):
                 errors += 1
             else:
@@ -412,7 +412,7 @@ def get_active_token():
     settings = load_json("settings.json")
     active = settings.get("active_account")
     if active and active in accounts:
-        return accounts[active]["token"], active
+        return accounts[active].get("token", ""), active
     return None, None
 
 def get_account_for_repo(repo_name):
@@ -442,14 +442,15 @@ def screen_accounts():
             print(f"\n  {C_DIM}No accounts configured yet.{C_RESET}")
             print(f"  {C_DIM}Add a GitHub account to get started.{C_RESET}\n")
         else:
-            for i, a in enumerate(accts, 1):
-                is_active = a["name"] == active
+            deps = load_json("deployments.json")
+            for key, a in accounts.items():
+                acct_name = a.get("name", key)
+                is_active = acct_name == active
                 marker = f"{C_GREEN}●{C_RESET}" if is_active else f"{C_DIM}○{C_RESET}"
                 user = a.get("username", "?")
-                tok = a["token"]
-                deps = load_json("deployments.json")
-                n_deps = sum(1 for d in deps.values() if d.get("account") == a["name"])
-                print(f"  {marker} {C_BOLD}{a['name']}{C_RESET} "
+                tok = a.get("token", "")
+                n_deps = sum(1 for d in deps.values() if d.get("account") == acct_name)
+                print(f"  {marker} {C_BOLD}{acct_name}{C_RESET} "
                       f"{C_DIM}@{user}  {tok[:8]}...{tok[-4:]}{C_RESET}  "
                       f"{C_DIM}{n_deps} deployments{C_RESET}")
             print()
@@ -515,7 +516,7 @@ def screen_accounts():
             name = prompt("Account name to validate")
             if name and name in accounts:
                 loading(f"Validating token for '{name}'")
-                user_data = gh_user(accounts[name]["token"])
+                user_data = gh_user(accounts[name].get("token", ""))
                 if isinstance(user_data, dict) and user_data.get("login"):
                     accounts[name]["username"] = user_data["login"]
                     save_json("accounts.json", accounts)
@@ -790,22 +791,26 @@ def screen_sync():
     errors = []
 
     for name, acct in accounts.items():
+        tok = acct.get("token", "")
+        if not tok:
+            errors.append(f"@{name}: no token")
+            continue
         loading(f"Scanning @{acct.get('username', name)}")
         try:
-            repos = paginate_repos(acct["token"])
+            repos = paginate_repos(tok)
             vplink = [r for r in repos if r["name"].startswith("vplink-")]
             owner = vplink[0]["owner"]["login"] if vplink else acct.get("username", name)
             acct["username"] = owner
             for repo in vplink:
                 rn = repo["name"]
                 try:
-                    runs = get_runs(owner, rn, acct["token"], per=1)
+                    runs = get_runs(owner, rn, tok, per=1)
                     last = runs[0] if runs else None
                     status = (last.get("conclusion") or last.get("status", "unknown")) if last else "no_runs"
 
                     dest = ""
                     if last and last.get("conclusion") == "success":
-                        dest = extract_destination(acct["token"], owner, rn, last["id"])
+                        dest = extract_destination(tok, owner, rn, last["id"])
                 except Exception as e:
                     status = "unknown"
                     errors.append(f"{rn}: {str(e)[:40]}")

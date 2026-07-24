@@ -8,9 +8,9 @@
 ## Current State
 
 - **Last updated:** 2026-07-24
-- **Latest remote commit:** `bc1fbed` (feat: SSE real-time sync + account search + fix remove bug)
-- **Local codebase status:** MODIFIED — Web GUI built (uncommitted)
-- **Git status:** Modified: AGENTS.md. New: web/ directory (React + Vite + Tailwind + Flask API)
+- **Latest remote commit:** `a18fa50` (feat: replace web GUI + old TUI with fresh interactive Python TUI)
+- **Local codebase status:** CLEAN — Fresh TUI, no web GUI
+- **Git status:** Clean. New: tui.py. Deleted: web/, tui/, manager/, all .js files, old shell scripts
 
 ## What Has Been Done
 
@@ -268,6 +268,22 @@
 121. **automation.py** — `handle_article()`: Changed ad dismissal order — now calls `close_ad_overlay()` + `handle_popup()` BEFORE `human_read()`, not after (CDP steps 4-8 before steps 9-80)
 122. **automation.py** — `handle_link1s()`: Added `#post-2500 > div` click after startCountdownBtn (CDP step 300 — new element discovered)
 
+### Code Changes Made (This Session — Fresh TUI)
+
+124. **Deleted**: `web/` (React+Vite+Tailwind web GUI), `tui/` (React+Bun TUI), `manager/` (Flask web manager), all `.js` files, old shell scripts
+125. **tui.py** — NEW FILE: Fresh interactive Python TUI, zero dependencies, pure stdlib
+     - 7 screens: Accounts, Deploy, Remove, Sync, Status, Logs, Settings
+     - Full-color ANSI terminal UI with box-drawing banner
+     - GitHub API: token validation, repo CRUD, workflow management, log extraction
+     - Deploy: create repo, clone template, push, set secrets, enable+dispatch workflow
+     - Remove: individual or nuke all (deletes GitHub repos)
+     - Sync: scan all accounts, import missing deployments from GitHub
+     - Status: live deployment status with destination URLs, success/fail counts
+     - Logs: view workflow run logs with destination extraction
+     - Settings: Supabase configuration
+126. **.gitignore** — Added `template/` to prevent committing embedded git repo
+127. **Removed stale test data**: `accounts.json`, `deployments.json`, `settings.json` from repo root
+
 ## Pending / User Requests
 
 - User wants: comprehensive flow engine that handles ANY VPLink-type variation ✅ DONE
@@ -283,18 +299,12 @@
 
 | File | Status | Changes Made |
 |------|--------|-------------|
-| `automation.py` | MODIFIED | Raw HTML fallback system, funnel progress guard, looks_like_article_url heuristics, detect_js_health, extract_redirect_from_html, is_destination 3 new guards, handle_article/tp/ce/link1s raw HTML fallbacks |
-| `web/server/app.py` | MODIFIED | Full web API: deploy handler crash fixes (copytree, empty body, try/except), paginate_repos safety |
-| `web/vplink-gui` | MODIFIED | Global launcher script |
-| `proxy_rotator.py` | MODIFIED | Pagination added to `fetch_proxies()`, `_fetch_state_keys()` helper, blacklist/used paginated |
-| `.github/workflows/continuous.yml` | MODIFIED | `RELAY_TARGET_REPO` env var, relay dispatch fix, per-repo concurrency, pip --break-system-packages, key validation, relay health checks, destination capture, GITHUB_TOKEN fallback, workflow summary |
-| `manager/app.py` | MODIFIED | Full deployment CI overhaul: template clone, RELAY_TARGET_REPO, workflow management, deployment verification, token scope validation |
-| `vplink247.py` | MODIFIED | Added RELAY_TARGET_REPO to _deploy_one and _update_one secrets, added cmd_sync(), registered sync subcommand |
-| `github_sync.py` | MODIFIED | Fixed zip-as-text bug in `_extract_destinations_from_run()`, added "Destination:" pattern |
-| `tui/` | NEW | OpenTUI React TUI: Dashboard, Deployments, Accounts, Analytics, Settings, Sync screens |
-| `test_cdp_flow.py` | NEW | Standalone script replicating exact CDP recording sequence from vplink111.json |
-| `config.py` | OK | Unchanged |
-| `schema.sql` | OK | Unchanged |
+| `tui.py` | NEW | Fresh interactive Python TUI — 7 screens, zero deps, pure stdlib |
+| `automation.py` | OK | VPLink automation engine — raw HTML fallback, funnel progress guard, CDP analysis |
+| `proxy_rotator.py` | OK | Proxy rotation with pagination, blacklist, used tracking |
+| `.github/workflows/continuous.yml` | OK | CI workflow with destination capture, relay, per-repo concurrency |
+| `config.py` | OK | Config management (Supabase, proxy settings) |
+| `schema.sql` | OK | Database schema |
 | `AGENTS.md` | MODIFIED | Session progress tracker |
 
 ## TODO List (All Items)
@@ -337,14 +347,6 @@
 - Step count is variable (2, 3, 4, N) — automation handles any number
 - Redirect chains are variable (1, 2, 3, 5 hops) — automation follows until article page
 - PageMonitor uses MutationObserver (fires on ANY DOM change) + Network Interceptors (fetch/XHR)
-- OpenTUI TUI built with React + Bun + Zig — runs in `tui/` directory
-- `bun run tui/src/cli.tsx` launches the interactive TUI
-- `bun run tui/src/cli.tsx --help` shows CLI options
+- Fresh TUI at `tui.py` — single file, zero deps, run with `python3 tui.py`
+- All data stored in `~/.vplink247/` (accounts.json, deployments.json, settings.json)
 - `/home/ubuntu/Documents/vplink111.json` is a Chrome DevTools Protocol recording of a real VPLink session (KEY=ekor0) showing exact user flow with 543 steps, 22 clicks, 259 scroll keys
-- CDP recording shows 4 templates in sequence: TP → TP → CE → LINK1S → getlink (destination: liteapks.com)
-- CDP flow: vplink.in → darkguruji(TP) → learn_more → darkguruji(TP) → learn_more → srtak(CE) → article → srtak(LINK1S) → learn_more(500 error) → recovery → getlink → liteapks.com
-- Real user ad dismissal order: block-cont-1 → continueBtn → gcont → iframe ads → THEN scroll → THEN template button
-- Real user clicks #get-link TWICE (CDP steps 541-542) — first click may not register
-- New element discovered: #post-2500 > div (CDP step 300, during LINK1S template)
-- SafeFrame iframe ads have close buttons (#close-button, #close-ad-button) that need explicit handling
-- 500 Internal Server Error on learn_more.php didn't kill session — user kept scrolling and found getlink page

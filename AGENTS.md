@@ -9,8 +9,8 @@
 
 - **Last updated:** 2026-07-24
 - **Latest remote commit:** `3c9d54f` (fix: production readiness — page load timeout, human_read, tp-snp2 click, dead URL tracking, Chrome session death)
-- **Local codebase status:** CLEAN — all changes committed and pushed
-- **Git status:** Up to date with origin/main
+- **Local codebase status:** MODIFIED — CDP analysis + automation fixes (uncommitted)
+- **Git status:** Modified files: automation.py, AGENTS.md. New file: test_cdp_flow.py
 
 ## What Has Been Done
 
@@ -217,6 +217,23 @@
 116. **automation.py** — Main loop: `exhausted_cycles` increments on dead URL bounce too; breaks after 3 consecutive dead URL bounces
 117. **automation.py** — Guard page handler: Extracts redirect from raw HTML before reloading when post-redirect page is empty
 
+### Code Changes Made (This Session — CDP Recording Analysis)
+
+118. **test_cdp_flow.py** — NEW FILE: Standalone script replicating exact CDP recording sequence from vplink111.json
+119. **automation.py** — `close_ad_overlay()`: Added iframe close button handling (#close-button > div, #close-ad-button) for SafeFrame Google ads (CDP steps 7-8)
+120. **automation.py** — `do_get_link()`: Added 2nd click retry when 1st #get-link click doesn't open new tab (CDP steps 541-542 — real user clicks twice)
+121. **automation.py** — `handle_article()`: Changed ad dismissal order — now calls `close_ad_overlay()` + `handle_popup()` BEFORE `human_read()`, not after (CDP steps 4-8 before steps 9-80)
+122. **automation.py** — `handle_link1s()`: Added `#post-2500 > div` click after startCountdownBtn (CDP step 300 — new element discovered)
+123. **automation.py** — `do_get_link()`: Rewrote as click→check→retry loop→wait 10s→capture URL. No `is_destination()` check. Up to 5 click attempts, each waits 5s for page to open.
+
+### Code Changes Made (This Session — CDP Recording Analysis)
+
+118. **test_cdp_flow.py** — NEW FILE: Standalone script replicating exact CDP recording sequence from vplink111.json
+119. **automation.py** — `close_ad_overlay()`: Added iframe close button handling (#close-button > div, #close-ad-button) for SafeFrame Google ads (CDP steps 7-8)
+120. **automation.py** — `do_get_link()`: Added 2nd click retry when 1st #get-link click doesn't open new tab (CDP steps 541-542 — real user clicks twice)
+121. **automation.py** — `handle_article()`: Changed ad dismissal order — now calls `close_ad_overlay()` + `handle_popup()` BEFORE `human_read()`, not after (CDP steps 4-8 before steps 9-80)
+122. **automation.py** — `handle_link1s()`: Added `#post-2500 > div` click after startCountdownBtn (CDP step 300 — new element discovered)
+
 ## Pending / User Requests
 
 - User wants: comprehensive flow engine that handles ANY VPLink-type variation ✅ DONE
@@ -239,6 +256,7 @@
 | `vplink247.py` | MODIFIED | Added RELAY_TARGET_REPO to _deploy_one and _update_one secrets, added cmd_sync(), registered sync subcommand |
 | `github_sync.py` | MODIFIED | Fixed zip-as-text bug in `_extract_destinations_from_run()`, added "Destination:" pattern |
 | `tui/` | NEW | OpenTUI React TUI: Dashboard, Deployments, Accounts, Analytics, Settings, Sync screens |
+| `test_cdp_flow.py` | NEW | Standalone script replicating exact CDP recording sequence from vplink111.json |
 | `config.py` | OK | Unchanged |
 | `schema.sql` | OK | Unchanged |
 | `AGENTS.md` | MODIFIED | Session progress tracker |
@@ -248,6 +266,7 @@
 ### High Priority
 - [x] **Proxy Pool Pagination**: Added `fetch_proxies()` pagination with batch_size=500
 - [x] **do_get_link() Fast Path**: Extract destination from parent `<a>` href directly
+- [x] **do_get_link() Full Rewrite**: Simple click→wait 10s→capture URL. No is_destination(), no retries.
 - [x] **Timer Cookie Injection**: `adcadg` cookie forces 15s timers instead of 24s
 - [x] **Cross-Account Dispatch**: Fixed `continuous.yml` relay to use `RELAY_TARGET_REPO` env var
 - [x] **Cross-Account Secrets**: Fixed `manager/app.py` — added `LOOP_TRIGGER_TOKEN` to deploy secrets
@@ -285,3 +304,11 @@
 - OpenTUI TUI built with React + Bun + Zig — runs in `tui/` directory
 - `bun run tui/src/cli.tsx` launches the interactive TUI
 - `bun run tui/src/cli.tsx --help` shows CLI options
+- `/home/ubuntu/Documents/vplink111.json` is a Chrome DevTools Protocol recording of a real VPLink session (KEY=ekor0) showing exact user flow with 543 steps, 22 clicks, 259 scroll keys
+- CDP recording shows 4 templates in sequence: TP → TP → CE → LINK1S → getlink (destination: liteapks.com)
+- CDP flow: vplink.in → darkguruji(TP) → learn_more → darkguruji(TP) → learn_more → srtak(CE) → article → srtak(LINK1S) → learn_more(500 error) → recovery → getlink → liteapks.com
+- Real user ad dismissal order: block-cont-1 → continueBtn → gcont → iframe ads → THEN scroll → THEN template button
+- Real user clicks #get-link TWICE (CDP steps 541-542) — first click may not register
+- New element discovered: #post-2500 > div (CDP step 300, during LINK1S template)
+- SafeFrame iframe ads have close buttons (#close-button, #close-ad-button) that need explicit handling
+- 500 Internal Server Error on learn_more.php didn't kill session — user kept scrolling and found getlink page

@@ -1508,6 +1508,22 @@ def close_ad_overlay():
             if (svg) {{ svg.click(); return 'gcont-svg'; }}
             return false;
         """)
+    # CDP step 7-8: Close SafeFrame iframe ads (#close-button, #close-ad-button)
+    if not closed:
+        closed = safe_eval("""
+            var closeSelectors = ['#close-button > div', '#close-ad-button', '#close-button'];
+            for (var s = 0; s < closeSelectors.length; s++) {
+                var els = document.querySelectorAll(closeSelectors[s]);
+                for (var i = 0; i < els.length; i++) {
+                    var style = getComputedStyle(els[i]);
+                    if (style.display !== 'none' && style.visibility !== 'hidden' && els[i].offsetParent !== null) {
+                        els[i].click();
+                        return 'iframe-' + closeSelectors[s];
+                    }
+                }
+            }
+            return false;
+        """)
     if closed:
         log(f"closed ad overlay: {closed}")
         human_delay(300, 800)
@@ -1891,6 +1907,15 @@ def handle_link1s():
     safe_eval("""
         var btn = document.getElementById('startCountdownBtn');
         if (btn && !btn.disabled) btn.click();
+    """)
+
+    # CDP step 300: click #post-2500 > div (content container interaction)
+    safe_eval("""
+        var el = document.getElementById('post-2500');
+        if (el) {
+            var div = el.querySelector('div');
+            if (div) div.click();
+        }
     """)
 
     btn_state = safe_eval("""
@@ -2337,8 +2362,10 @@ def handle_article():
         js_ok = verify_js_working()
         log(f"after JS reload: ready={ready}, height={height}, body_len={body_len}, js_ok={js_ok}")
 
-    human_scroll()
+    # CDP-exact ad dismissal order: overlay → continueBtn → gcont → iframes
+    # Real user dismisses ALL ads BEFORE scrolling, not after
     close_ad_overlay()
+    handle_popup()
 
     template = detect_template()
     step_info = get_step_info()
@@ -2455,11 +2482,12 @@ def handle_article():
 
 
 def do_get_link():
+    """Click #get-link properly, retry if nothing opened, then wait 10s and capture URL."""
     global destination_url
     try:
-        handles = driver.window_handles
+        # Close any extra tabs first
         main_handle = driver.current_window_handle
-        for h in handles:
+        for h in driver.window_handles:
             if h != main_handle:
                 try:
                     driver.switch_to.window(h)
@@ -2468,6 +2496,7 @@ def do_get_link():
                     pass
         driver.switch_to.window(main_handle)
 
+        # Wait for get-link element
         try:
             WebDriverWait(driver, int(adpt_getlink.get())).until(
                 lambda d: d.execute_script("return document.getElementById('get-link') !== null")
@@ -2477,7 +2506,7 @@ def do_get_link():
 
         log("get-link page loaded, waiting for countdown...")
 
-        t0 = time.time()
+        # Wait for countdown to finish
         try:
             WebDriverWait(driver, int(adpt_poll.get())).until(
                 lambda d: d.execute_script("""
@@ -2493,15 +2522,9 @@ def do_get_link():
             )
         except Exception:
             pass
-        countdown_elapsed = int((time.time() - t0) * 1000)
-        if countdown_elapsed > 500:
-            log(f"get-link countdown: {countdown_elapsed}ms")
-
         ms(500)
 
-        # ── Fast path: extract destination from parent <a> href ──
-        # get-link is <button> inside <a href="DESTINATION_URL">
-        # The parent <a> href IS the destination — no need to click/follow
+        # Fast path: extract destination from parent <a> href (no click needed)
         fast_dest = safe_eval("""
             var btn = document.getElementById('get-link');
             if (!btn) return '';
@@ -2512,121 +2535,68 @@ def do_get_link():
             }
             return '';
         """) or ""
-        if fast_dest and is_destination(fast_dest):
+        if fast_dest:
             log(f"destination (parent <a> href): {fast_dest[:120]}")
             destination_url = fast_dest
             return True
 
-        human_delay(800, 2000)
-        human_mouse_move("#get-link")
-        human_delay(300, 700)
+        # Click #get-link, retry if nothing opened (up to 5 clicks)
+        for click_attempt in range(5):
+            human_delay(800, 2000)
+            human_mouse_move("#get-link")
+            human_delay(300, 700)
+            pre_url = safe_url()
+            pre_handles = set(driver.window_handles)
 
-        log("clicking #get-link to open new tab...")
-        pre_handles = set(driver.window_handles)
+            log(f"clicking #get-link (attempt {click_attempt + 1})...")
+            human_click("#get-link")
 
-        human_click("#get-link")
-        ms(2000)
-
-        new_tab = None
-        for _ in range(15):
-            ms(1000)
-            cur_handles = set(driver.window_handles)
-            diff = cur_handles - pre_handles
-            if diff:
-                new_tab = diff.pop()
-                log("new tab opened from #get-link click")
-                break
-
-        if not new_tab:
-            log("no new tab opened, trying gt-link click...")
-            gt_clicked = safe_eval("""
-                var gt = document.getElementById('gt-link');
-                if (gt && gt.href && gt.href.indexOf('http') === 0) {
-                    gt.click();
-                    return true;
-                }
-                return false;
-            """)
-            if gt_clicked:
-                ms(2000)
-                for _ in range(10):
-                    ms(1000)
-                    cur_handles = set(driver.window_handles)
-                    diff = cur_handles - pre_handles
-                    if diff:
-                        new_tab = diff.pop()
-                        log("new tab opened from gt-link click")
-                        break
-
-        if new_tab:
-            driver.switch_to.window(new_tab)
-            log("switched to new tab, waiting for redirects...")
-            ms(3000)
-
-            final_url = ""
-            for attempt in range(20):
-                try:
-                    cur = driver.current_url
-                    if cur and "about:blank" not in cur and "chrome-error" not in cur:
-                        if cur != final_url:
-                            final_url = cur
-                            log(f"[tab {attempt}] {final_url[:120]}")
-                        is_tracking = any(x in cur for x in [
-                            "lnkd.in", "linkedin.com", "google.com/url",
-                            "facebook.com/l.php", "t.co/"
-                        ])
-                        if not is_tracking and final_url and attempt >= 2:
-                            break
-                except Exception:
-                    break
+            # Wait up to 5s per attempt to see if page opened
+            for wait in range(5):
                 ms(1000)
 
-            if final_url and "about:blank" not in final_url and "chrome-error" not in final_url:
-                if is_destination(final_url):
-                    log(f"destination from new tab: {final_url[:120]}")
-                    destination_url = final_url
-                    try:
-                        driver.close()
-                        driver.switch_to.window(driver.window_handles[0])
-                    except Exception:
-                        pass
-                    return True
+                # Check new tab
+                cur_handles = set(driver.window_handles)
+                diff = cur_handles - pre_handles
+                if diff:
+                    new_tab = diff.pop()
+                    driver.switch_to.window(new_tab)
+                    ms(1000)
+                    final_url = safe_url()
+                    if final_url and "about:blank" not in final_url:
+                        log(f"page opened in new tab: {final_url[:120]}")
+                        break
 
+                # Check same tab navigation
+                cur = safe_url()
+                if cur and cur != pre_url and "vplink.in" not in cur:
+                    log(f"page opened same-tab: {cur[:120]}")
+                    break
+            else:
+                # Nothing opened after 5s — click again
+                log(f"nothing opened after click {click_attempt + 1}, retrying...")
+                continue
+
+            # Something opened — wait 10s for full load then capture
+            log("page opened, waiting 10s for full load...")
+            ms(10000)
+
+            # Capture whatever is there
             try:
-                driver.close()
-                driver.switch_to.window(driver.window_handles[0])
+                final_url = driver.current_url
             except Exception:
-                pass
+                final_url = safe_url()
+            if final_url and "about:blank" not in final_url:
+                log(f"destination: {final_url[:120]}")
+                destination_url = final_url
+                return True
 
-        # ── Fallbacks ──
-        get_link_href = safe_eval("""
-            var el = document.getElementById('get-link');
-            return el ? el.href : '';
-        """) or ""
-        if get_link_href.startswith("http") and "void" not in get_link_href:
-            log(f"destination (get-link href fallback): {get_link_href[:100]}")
-            destination_url = get_link_href
-            return True
+        log("get-link: all click attempts exhausted, no destination found")
+        return False
 
-        gt_href = safe_eval("var gt = document.getElementById('gt-link'); return gt ? gt.href : '';") or ""
-        if gt_href.startswith("http"):
-            log(f"destination (gt-link fallback): {gt_href[:100]}")
-            destination_url = gt_href
-            return True
-
-        try:
-            driver.switch_to.window(driver.window_handles[0])
-        except Exception:
-            pass
-        m_url = safe_url()
-        if m_url and is_destination(m_url):
-            log(f"destination (main page): {m_url[:100]}")
-            destination_url = m_url
-            return True
-
-    except Exception as error:
-        log(f"get-link handler failed: {str(error) or 'unknown error'}")
-    return False
+    except Exception as e:
+        log(f"do_get_link error: {e}")
+        return False
 
 
 def _create_driver():
@@ -3121,23 +3091,21 @@ def main():
               if btn_state == "ready":
                   if do_get_link():
                       break
-                  log("get-link failed, reloading vplink.in")
-                  try:
-                      main_handle = driver.current_window_handle
-                      for h in driver.window_handles:
-                          if h != main_handle:
-                              driver.switch_to.window(h)
-                              driver.close()
-                      driver.switch_to.window(main_handle)
-                      adpt_load.set_page_load(driver)
-                      driver.get(f"https://{BASE_DOMAIN}/{KEY}")
-                  except Exception:
-                      adpt_load.timeout_occured()
-                  human_delay(3000, 5000)
-                  for i in range(15):
-                      ms(1000)
-                      if "vplink.in" not in safe_url():
+                  # Don't reload vplink.in — that restarts from scratch!
+                  # Instead, click #get-link again or wait for it to work
+                  log("get-link failed, retrying in-place (no reload)...")
+                  for retry in range(3):
+                      human_delay(3000, 5000)
+                      # Re-check if get-link is still there
+                      still_has = safe_eval("return !!document.getElementById('get-link');")
+                      if not still_has:
+                          log("get-link gone after retry, checking page...")
                           break
+                      if do_get_link():
+                          break
+                  if destination_url:
+                      break
+                  log("get-link retries exhausted, moving on")
                   continue
               if btn_state in ("missing", None):
                   if vplink_arrivals >= 5:
@@ -3361,6 +3329,7 @@ def main():
 
           navigated = handle_article()
           if navigated:
+              learn_more_count += 1
               _funnel_progress = learn_more_count
               inter_delay = rand(8000, 22000)
               log(f"inter-article delay: {inter_delay // 1000}s")

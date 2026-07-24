@@ -31,9 +31,11 @@ if command -v chromium &>/dev/null; then
     echo "  Chromium: $(chromium --version 2>/dev/null || echo 'installed')"
 elif command -v google-chrome &>/dev/null; then
     echo "  Chrome: $(google-chrome --version 2>/dev/null || echo 'installed')"
+elif command -v chromium-browser &>/dev/null; then
+    echo "  Chromium: $(chromium-browser --version 2>/dev/null || echo 'installed')"
 else
     echo "  WARNING: No browser found. Automation needs Chromium or Chrome."
-    echo "  Install: sudo apt install -y chromium-browser"
+    echo "  Install Chrome (no snap): wget -q -O /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb && sudo dpkg -i /tmp/chrome.deb"
 fi
 
 # --- TUI launcher ---
@@ -90,6 +92,15 @@ fi
 
 echo ""
 echo "✓ Installed to $INSTALL_DIR"
+echo ""
+
+# Ensure ~/.local/bin is in PATH
+if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
+    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
+    export PATH="$HOME/.local/bin:$PATH"
+    echo "  Added ~/.local/bin to PATH (run 'source ~/.bashrc' or open new terminal)"
+fi
+
 echo "✓ Run with: vplink"
 echo ""
 echo "Next steps:"

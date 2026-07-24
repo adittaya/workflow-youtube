@@ -8,9 +8,9 @@
 ## Current State
 
 - **Last updated:** 2026-07-24
-- **Latest remote commit:** `3c9d54f` (fix: production readiness — page load timeout, human_read, tp-snp2 click, dead URL tracking, Chrome session death)
-- **Local codebase status:** MODIFIED — CDP analysis + automation fixes (uncommitted)
-- **Git status:** Modified files: automation.py, AGENTS.md. New file: test_cdp_flow.py
+- **Latest remote commit:** `ab8116d` (fix: do_get_link click-retry loop — properly click, retry if nothing opens, wait 10s, capture URL)
+- **Local codebase status:** CLEAN — all changes committed and pushed
+- **Git status:** 2 untracked files: test_cdp_flow.py, record_flow.py
 
 ## What Has Been Done
 
@@ -286,7 +286,7 @@
 ### Low Priority
 - [x] **Test do_get_link**: Verified — destination captured in 5-cycle local run (309s)
 - [x] **Test PageMonitor**: Verified — MutationObserver events fire correctly in live flow
-- [ ] **Proxy Cache**: Cache paginated proxy results to avoid repeated Supabase calls per rotation
+- [x] **Proxy Cache**: CANCELLED — keeping proxy system as-is per user decision
 
 ## Notes
 

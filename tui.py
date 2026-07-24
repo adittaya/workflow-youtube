@@ -294,7 +294,13 @@ def deploy_new(repo_name, key, token, username, settings, step_cb=None):
 
     # Enable + dispatch workflow
     step(7, "Enabling workflow...")
-    wf = get_workflow(username, full_name, token)
+    time.sleep(5)
+    wf = None
+    for _attempt in range(5):
+        wf = get_workflow(username, full_name, token)
+        if wf:
+            break
+        time.sleep(3)
     if wf:
         gh(f"/repos/{username}/{full_name}/actions/workflows/{wf['id']}/enable", token, "PUT")
         step(8, "Dispatching workflow...")

@@ -9,8 +9,8 @@
 
 - **Last updated:** 2026-07-24
 - **Latest remote commit:** `a18fa50` (feat: replace web GUI + old TUI with fresh interactive Python TUI)
-- **Local codebase status:** CLEAN — Fresh TUI, no web GUI
-- **Git status:** Clean. New: tui.py. Deleted: web/, tui/, manager/, all .js files, old shell scripts
+- **Local codebase status:** MODIFIED — TUI deploy secrets encryption fixed, workflow dispatch added
+- **Git status:** tui.py modified. Accounts configured: main (@adittaya), second (@rtff5665)
 
 ## What Has Been Done
 
@@ -284,6 +284,25 @@
 126. **.gitignore** — Added `template/` to prevent committing embedded git repo
 127. **Removed stale test data**: `accounts.json`, `deployments.json`, `settings.json` from repo root
 
+### Code Changes Made (This Session — TUI Deploy Secrets Fix & Features)
+
+128. **tui.py** — Added `encrypt_secret()`: dual-mode RSA-OAEP-SHA1 + NaCl sealed box encryption (GitHub uses different key types per repo)
+129. **tui.py** — Added `set_repo_secret()`: fetches repo public key, encrypts value, PUTs to GitHub API
+130. **tui.py** — Fixed `deploy_new()`: replaced broken `{"encrypted_value": "", "key_id": ""}` with proper `set_repo_secret()` calls — verified secrets actually set on GitHub
+131. **tui.py** — Fixed `deploy_new()`: added repo-exists check before creating (prevents duplicate creation)
+132. **tui.py** — Fixed `deploy_new()`: added `step_cb` parameter for 8-step progress feedback
+133. **tui.py** — Fixed `gh()`: added `isinstance(result, dict)` check before `_scopes` assignment (list responses from `/user/repos` crashed)
+134. **tui.py** — Added `screen_dispatch()`: manually trigger workflow on any vplink repo (menu [7])
+135. **tui.py** — Fixed `remove_deployment()` + `nuke_deployments()`: checks API responses for errors
+136. **tui.py** — Fixed `screen_sync()`: extracts destination URLs during sync, reports errors per-account
+137. **tui.py** — Fixed `screen_deploy()`: checks both `HAS_CRYPTO` and `HAS_NACL` for encryption support
+138. **tui.py** — Fixed `screen_logs()`: increased to 80 lines, 10 runs, shows run number
+139. **tui.py** — Fixed `screen_status()`: shows `(@owner)` per repo for multi-account clarity
+140. **tui.py** — Fixed `screen_accounts()`: shows deployment count per account, added [4] Validate token
+141. **tui.py** — Added VPLINK_KEY default to settings screen
+142. **tui.py** — Moved `import shutil` to top-level imports
+143. **tui.py** — Added `get_account_for_repo()` helper
+
 ## Pending / User Requests
 
 - User wants: comprehensive flow engine that handles ANY VPLink-type variation ✅ DONE
@@ -299,7 +318,7 @@
 
 | File | Status | Changes Made |
 |------|--------|-------------|
-| `tui.py` | NEW | Fresh interactive Python TUI — 7 screens, zero deps, pure stdlib |
+| `tui.py` | MODIFIED | Fresh interactive Python TUI — 8 screens, encryption, dispatch, progress |
 | `automation.py` | OK | VPLink automation engine — raw HTML fallback, funnel progress guard, CDP analysis |
 | `proxy_rotator.py` | OK | Proxy rotation with pagination, blacklist, used tracking |
 | `.github/workflows/continuous.yml` | OK | CI workflow with destination capture, relay, per-repo concurrency |
@@ -349,4 +368,6 @@
 - PageMonitor uses MutationObserver (fires on ANY DOM change) + Network Interceptors (fetch/XHR)
 - Fresh TUI at `tui.py` — single file, zero deps, run with `python3 tui.py`
 - All data stored in `~/.vplink247/` (accounts.json, deployments.json, settings.json)
+- GitHub secrets encryption: NaCl sealed box for newer repos (32-byte X25519 key), RSA-OAEP-SHA1 for older repos (2048+ bit key)
+- Deploy verified: 8/8 steps succeed, secrets confirmed set via GitHub API on @rtff5665/vplink-test (test repo deleted)
 - `/home/ubuntu/Documents/vplink111.json` is a Chrome DevTools Protocol recording of a real VPLink session (KEY=ekor0) showing exact user flow with 543 steps, 22 clicks, 259 scroll keys

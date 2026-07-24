@@ -272,8 +272,14 @@ def deploy_new(repo_name, key, token, username, settings, step_cb=None):
         ["git", "push", "--force", "origin", "main"],
     ]:
         r = subprocess.run(cmd, cwd=repo_dir, capture_output=True, timeout=60, env=env)
-        if r.returncode != 0 and cmd[1] not in ("push",):
-            pass
+        if r.returncode != 0:
+            err = (r.stderr or r.stdout).decode(errors="replace").strip().replace(token, "***")
+            if cmd[1] == "push":
+                return None, f"Git push failed: {err}"
+            elif cmd[1] == "commit" and "nothing to commit" in err:
+                pass
+            else:
+                return None, f"Git {cmd[1]} failed: {err}"
 
     # Set secrets with encryption
     step(6, "Setting encrypted secrets...")

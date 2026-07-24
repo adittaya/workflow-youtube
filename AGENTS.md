@@ -9,8 +9,8 @@
 
 - **Last updated:** 2026-07-24
 - **Latest remote commit:** `2555c77` (docs: update AGENTS.md + add CDP test scripts)
-- **Local codebase status:** CLEAN — all changes committed and pushed
-- **Git status:** 2 untracked files: test_cdp_flow.py, record_flow.py
+- **Local codebase status:** MODIFIED — Web GUI built (uncommitted)
+- **Git status:** Modified: AGENTS.md. New: web/ directory (React + Vite + Tailwind + Flask API)
 
 ## What Has Been Done
 
@@ -173,6 +173,24 @@
 84. **tui/src/components/App.tsx** — Main app component: screen routing, state management
 85. **tui/src/index.tsx** — Entry point: creates OpenTUI renderer, renders App
 86. **tui/src/cli.tsx** — CLI entry point with --help, --version flags
+
+### Code Changes Made (This Session — Web GUI Control Center)
+
+87. **web/** — NEW DIRECTORY: Full web-based GUI with React + Vite + Tailwind CSS + Flask API
+    - `web/server/app.py` — Flask API backend: GitHub proxy, file ops, deploy/remove/nuke, workflow management, log extraction
+    - `web/client/` — React frontend: Vite + TypeScript + Tailwind CSS
+    - `web/start.sh` — One-line startup script for API + frontend
+88. **web/client/src/services/api.ts** — API service layer: all backend endpoints typed
+89. **web/client/src/hooks/useToast.tsx** — Toast notification system with auto-dismiss
+90. **web/client/src/hooks/useAppState.ts** — Global state: accounts, deployments, settings, discovery
+91. **web/client/src/styles/globals.css** — Tailwind components: glass morphism, buttons, inputs, badges, nav
+92. **web/client/src/App.tsx** — Main layout: responsive sidebar, header, screen routing, mobile menu
+93. **web/client/src/pages/Dashboard.tsx** — Live stats cards, deployment status, account overview
+94. **web/client/src/pages/Deployments.tsx** — Deploy/remove/nuke with modals, detail view, touch-friendly
+95. **web/client/src/pages/Accounts.tsx** — Add/switch/remove accounts with form modals
+96. **web/client/src/pages/Settings.tsx** — Supabase config form, save/load
+97. **web/client/src/pages/Analytics.tsx** — Bar charts, per-account stats, status breakdown
+98. **web/client/src/pages/Sync.tsx** — GitHub sync with step-by-step explanation
 
 ### Code Changes Made (This Session — Workflow Destination Capture Fix)
 

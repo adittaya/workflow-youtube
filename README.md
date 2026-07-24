@@ -2,25 +2,29 @@
 
 24/7 VPLink automation — deploy, manage, and monitor endless relay chains on GitHub Actions.
 
-## One-line installer
+## Quick Start
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/adittaya/workflow-vplink/main/install-vplink247.sh | bash
 ```
 
-Installs the `vplink247` global command, then runs setup wizard.
+Installs the React TUI (`vplink-tui`) and Python CLI (`vplink247`).
 
-## Commands
+## React TUI (recommended)
 
+```bash
+vplink-tui
 ```
-vplink247 setup              Interactive wizard
-vplink247 account add        Add GitHub account
-vplink247 account list       List accounts
-vplink247 account switch     Switch active account
-vplink247 deploy             Deploy automation to a new repo
-vplink247 deploy list        List deployments
-vplink247 test <name>        Test a deployment
-vplink247 status             Overall status
+
+Interactive terminal UI built with React + OpenTUI.
+
+## Python CLI (classic)
+
+```bash
+vplink247 account add        # Add GitHub account
+vplink247 deploy create      # Deploy automation
+vplink247 test <repo>        # Test relay
+vplink247 status             # Overall status
 ```
 
 ## How it works

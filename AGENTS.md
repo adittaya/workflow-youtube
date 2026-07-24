@@ -8,7 +8,7 @@
 ## Current State
 
 - **Last updated:** 2026-07-24
-- **Latest remote commit:** `a18fa50` (feat: replace web GUI + old TUI with fresh interactive Python TUI)
+- **Latest remote commit:** `d2c9bd1` (fix: TUI deploy secrets encryption, add dispatch, step-by-step progress)
 - **Local codebase status:** MODIFIED — TUI deploy secrets encryption fixed, workflow dispatch added
 - **Git status:** tui.py modified. Accounts configured: main (@adittaya), second (@rtff5665)
 

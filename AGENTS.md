@@ -8,7 +8,7 @@
 ## Current State
 
 - **Last updated:** 2026-07-24
-- **Latest remote commit:** `ab8116d` (fix: do_get_link click-retry loop — properly click, retry if nothing opens, wait 10s, capture URL)
+- **Latest remote commit:** `2555c77` (docs: update AGENTS.md + add CDP test scripts)
 - **Local codebase status:** CLEAN — all changes committed and pushed
 - **Git status:** 2 untracked files: test_cdp_flow.py, record_flow.py
 

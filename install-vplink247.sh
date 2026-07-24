@@ -75,6 +75,26 @@ else
 fi
 ok "Installed: $BIN"
 
+# ── Download github_sync.py ─────────────────────────────
+info "Downloading github_sync.py..."
+GITHUB_SYNC_BIN="/usr/local/bin/github_sync.py"
+TMPFILE2=$(mktemp)
+FETCH_URL2="https://api.github.com/repos/$REPO/contents/github_sync.py"
+if ! curl -fsSL -H "Accept: application/vnd.github.v3.raw" "$FETCH_URL2" -o "$TMPFILE2" 2>/dev/null; then
+  curl -fsSL "https://raw.githubusercontent.com/$REPO/main/github_sync.py" -o "$TMPFILE2" 2>/dev/null
+fi
+if [ -s "$TMPFILE2" ]; then
+  if [ -w "$(dirname "$GITHUB_SYNC_BIN")" ]; then
+    mv "$TMPFILE2" "$GITHUB_SYNC_BIN"
+  else
+    sudo mv "$TMPFILE2" "$GITHUB_SYNC_BIN" 2>/dev/null
+  fi
+  ok "Installed: $GITHUB_SYNC_BIN"
+else
+  rm -f "$TMPFILE2"
+  warn "Could not download github_sync.py (sync feature will be unavailable)"
+fi
+
 mkdir -p "$HOME/.vplink247"
 
 echo ""

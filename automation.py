@@ -656,9 +656,178 @@ def safe_eval(script, *args):
         return None
 
 
+def get_page_height():
+    """Get page scroll height. Returns 0 if unavailable."""
+    h = safe_eval("return document.documentElement.scrollHeight - window.innerHeight;")
+    return int(h) if h is not None else 0
 
 
+def get_body_text_length():
+    """Get body text length. Returns 0 if unavailable."""
+    l = safe_eval("return (document.body ? document.body.textContent : '').length;")
+    return int(l) if l is not None else 0
 
+
+def wait_for_page_ready(min_height=200, timeout_sec=20):
+    """Wait for page to be fully loaded with actual content rendered.
+    Returns (ready, page_height, body_text_len)."""
+    t0 = time.time()
+    while time.time() - t0 < timeout_sec:
+        state = safe_eval("return document.readyState;") or ""
+        height = get_page_height()
+        body_len = get_body_text_length()
+        if state == "complete" and height >= min_height and body_len > 100:
+            return True, height, body_len
+        if state == "complete" and body_len > 200:
+            return True, height, body_len
+        ms(500)
+    height = get_page_height()
+    body_len = get_body_text_length()
+    return False, height, body_len
+
+
+def get_page_html_snippet(max_len=2000):
+    """Get first max_len chars of page HTML for debugging."""
+    return safe_eval(f"return (document.documentElement.outerHTML || '').substring(0, {max_len});") or ""
+
+
+def verify_js_working():
+    """Check if JavaScript is actually executing on the page.
+    Returns True if basic JS works, False if JS is broken/blocked."""
+    return safe_eval("""
+        try {
+            var t = document.createTextNode('');
+            document.body.appendChild(t);
+            t.remove();
+            return true;
+        } catch(e) {
+            return false;
+        }
+    """) or False
+
+
+# ── Funnel progress tracking (module-level for is_destination guard) ──
+_funnel_progress = 0
+
+
+def get_raw_html(max_len=5000):
+    """Get raw HTML source from the page. Works even when JS doesn't execute."""
+    return safe_eval(f"return (document.documentElement.outerHTML || '').substring(0, {max_len});") or ""
+
+
+def detect_js_health():
+    """Comprehensive check of whether JavaScript is actually executing.
+    Returns dict with height, body_len, element_count, vplink_elements, js_working, html_len, verdict."""
+    height = get_page_height()
+    body_len = get_body_text_length()
+    element_count = safe_eval("return document.querySelectorAll('*').length;") or 0
+    vplink_elements = safe_eval("""
+        var count = 0;
+        if (document.getElementById('tp-time') || document.getElementById('tp-wait1')) count++;
+        if (document.getElementById('ce-time') || document.getElementById('ce-wait1')) count++;
+        if (document.getElementById('link1s-wait1') || document.getElementById('startCountdownBtn')) count++;
+        if (document.getElementById('get-link')) count++;
+        if (document.getElementById('btn6') || document.getElementById('btn7')) count++;
+        if (document.getElementById('stick')) count++;
+        return count;
+    """) or 0
+    js_working = verify_js_working()
+    html_len = safe_eval("return (document.documentElement.outerHTML || '').length;") or 0
+    if height > 200 and body_len > 500 and vplink_elements > 0:
+        verdict = "healthy"
+    elif height > 0 or body_len > 0:
+        verdict = "degraded"
+    else:
+        verdict = "broken"
+    return {
+        "height": height, "body_len": body_len, "element_count": element_count,
+        "vplink_elements": vplink_elements, "js_working": js_working,
+        "html_len": html_len, "verdict": verdict,
+    }
+
+
+def find_learn_more_in_html():
+    """Find learn_more.php links in raw HTML source and navigate to the first one.
+    Used when DOM is empty (JS didn't execute) but HTML still contains navigation links.
+    Returns the URL if found, empty string otherwise."""
+    html = get_raw_html(8000)
+    if not html:
+        return ""
+    import re
+    patterns = [
+        r'href=["\']([^"\']*learn_more\.php[^"\']*)["\']',
+        r'href=["\']([^"\']*learn_more[^"\']*)["\']',
+    ]
+    for pat in patterns:
+        matches = re.findall(pat, html, re.IGNORECASE)
+        for m in matches:
+            if m and 'learn_more' in m:
+                full_url = m if m.startswith("http") else f"https://{safe_url().split('/')[2]}{m}"
+                log(f"found learn_more.php in raw HTML: {full_url[:80]}")
+                try:
+                    safe_eval(f"window.location.href = {json.dumps(full_url)};")
+                    return full_url
+                except Exception:
+                    pass
+    return ""
+
+
+def extract_redirect_from_html(html=None):
+    """Extract redirect target URL from raw HTML when JS doesn't execute.
+    Searches for window.location assignments, meta refresh, and external links.
+    Returns the first valid external URL found, or empty string."""
+    import re
+    if html is None:
+        html = get_raw_html(8000)
+    if not html:
+        return ""
+    current_domain = ""
+    cur = safe_url()
+    if cur and '/' in cur:
+        current_domain = cur.split('/')[2]
+    loc_patterns = [
+        r'window\.location\.href\s*=\s*[\'"]([^\'"]+)[\'"]',
+        r'window\.location\.replace\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)',
+        r'window\.location\s*=\s*[\'"]([^\'"]+)[\'"]',
+        r'window\.parent\.location\.href\s*=\s*[\'"]([^\'"]+)[\'"]',
+        r'window\.top\.location\.href\s*=\s*[\'"]([^\'"]+)[\'"]',
+    ]
+    for pat in loc_patterns:
+        matches = re.findall(pat, html, re.IGNORECASE)
+        for m in matches:
+            if not m or 'learn_more' in m or 'vplink.in' in m or 'cdn-cgi' in m:
+                continue
+            if m.startswith('/') and current_domain:
+                m = f"https://{current_domain}{m}"
+            if m.startswith('http') and 'about:' not in m and 'javascript:' not in m:
+                log(f"found redirect in raw HTML: {m[:80]}")
+                return m
+    meta_match = re.search(r'<meta[^>]+http-equiv=["\']refresh["\'][^>]+content=["\'][^"\']*url=([^"\']+)["\']', html, re.IGNORECASE)
+    if meta_match:
+        url = meta_match.group(1).strip()
+        if url.startswith('/') and current_domain:
+            url = f"https://{current_domain}{url}"
+        if url.startswith('http'):
+            log(f"found meta refresh redirect: {url[:80]}")
+            return url
+    link_patterns = [
+        r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>',
+    ]
+    for pat in link_patterns:
+        matches = re.findall(pat, html, re.IGNORECASE)
+        for m in matches:
+            if not m or m.startswith('#') or m.startswith('javascript:'):
+                continue
+            if 'learn_more' in m or 'vplink.in' in m or 'cdn-cgi' in m:
+                continue
+            if 'googleadservices' in m or 'doubleclick' in m or 'propellerads' in m:
+                continue
+            if m.startswith('/') and current_domain:
+                m = f"https://{current_domain}{m}"
+            if m.startswith('http') and current_domain not in m:
+                log(f"found external link in raw HTML: {m[:80]}")
+                return m
+    return ""
 def report_proxy_failure(reason):
     global proxy_failures, proxy_blocked, proxy_punished
     if not PROXY_IP:
@@ -1012,13 +1181,39 @@ def is_destination(url):
         return False
     if _current_key and _current_key in url:
         return False
+    if looks_like_article_url(url):
+        log(f"is_destination: URL looks like article page, not destination")
+        return False
     has_article_signals = safe_eval("""
         if (document.querySelector('a[href*="learn_more.php"]')) return true;
         if (document.getElementById('block-cont-1') || document.getElementById('gcont')) return true;
         if (document.querySelector('button') && document.querySelector('[id*="time"]')) return true;
+        if (document.getElementById('tp-time') || document.getElementById('tp-wait1')) return true;
+        if (document.getElementById('ce-time') || document.getElementById('ce-wait1')) return true;
+        if (document.getElementById('link1s-wait1') || document.getElementById('startCountdownBtn')) return true;
         return false;
     """) or False
     if has_article_signals:
+        return False
+    ready_state = safe_eval("return document.readyState;") or ""
+    if ready_state != "complete":
+        return False
+    body_len = get_body_text_length()
+    height = get_page_height()
+    if body_len < 100 and height < 50:
+        log(f"is_destination: page too empty (body_len={body_len}, height={height}), not destination")
+        html = get_raw_html(3000)
+        if 'learn_more.php' in html or 'tp-snp2' in html or 'btn6' in html or 'get-link' in html:
+            log("is_destination: found VPLink HTML in source despite empty DOM — not destination")
+            return False
+        return False
+    html = get_raw_html(3000)
+    if 'learn_more.php' in html or 'tp-snp2' in html or 'btn6' in html:
+        log("is_destination: VPLink HTML found in source — not destination")
+        return False
+    global _funnel_progress
+    if _funnel_progress == 0:
+        log(f"is_destination: no funnel progress yet (_funnel_progress=0), not destination")
         return False
     from urllib.parse import urlparse
     parsed = urlparse(url)
@@ -1044,6 +1239,47 @@ def is_ad_domain(url):
     for d in AD_DOMAINS:
         if host == d or host.endswith("." + d):
             return True
+    return False
+
+
+def looks_like_article_url(url):
+    """Detect article pages by URL structure heuristics — works for ANY domain.
+    Article URLs have long paths with multiple segments and hyphenated slugs.
+    Real destination URLs are typically clean (short path or specific landing page)."""
+    if not url or not url.startswith("http"):
+        return False
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+        path = parsed.path or ""
+    except Exception:
+        return False
+    if not host or "." not in host:
+        return False
+    if path == "/" or path == "":
+        return False
+    segments = [s for s in path.strip("/").split("/") if s]
+    if len(segments) < 2:
+        return False
+    last_segment = segments[-1].lower()
+    hyphen_count = last_segment.count("-")
+    if hyphen_count >= 3:
+        return True
+    if len(last_segment) > 40:
+        return True
+    ARTICLE_KEYWORDS = [
+        "best", "top", "guide", "review", "list", "tips", "how", "what",
+        "why", "vs", "compared", "ultimate", "complete", "essential",
+        "instant", "personal", "corporate", "savings", "accounts",
+        "scholarship", "university", "college", "loan", "credit",
+    ]
+    word_count = len(last_segment.replace("-", " ").split())
+    keyword_hits = sum(1 for kw in ARTICLE_KEYWORDS if kw in last_segment)
+    if word_count >= 5 and keyword_hits >= 2:
+        return True
+    if len(segments) >= 3 and len(last_segment) > 25:
+        return True
     return False
 
 
@@ -1503,6 +1739,10 @@ def handle_tp():
     nav = navigate_learn_more()
     if nav:
         return True
+    lm_url = find_learn_more_in_html()
+    if lm_url:
+        log("navigated via learn_more.php found in raw HTML")
+        return True
     safe_eval("window.location.href = 'learn_more.php';")
     return True
 
@@ -1610,6 +1850,10 @@ def handle_ce():
     nav_ok = navigate_learn_more()
     if nav_ok:
         return True
+    lm_url = find_learn_more_in_html()
+    if lm_url:
+        log("navigated via learn_more.php found in raw HTML")
+        return True
     safe_eval("window.location.href = 'learn_more.php';")
     return True
 
@@ -1699,6 +1943,10 @@ def handle_link1s():
     """)
     if fallback:
         log("clicked learn_more.php fallback link")
+        return True
+    lm_url = find_learn_more_in_html()
+    if lm_url:
+        log("navigated via learn_more.php found in raw HTML")
         return True
     safe_eval("window.location.href = 'learn_more.php';")
     return True
@@ -2003,10 +2251,67 @@ def handle_article():
         return False
 
     human_delay(2000, 4000)
-    try:
-        WebDriverWait(driver, 10).until(lambda d: d.execute_script("return document.readyState") != "loading")
-    except Exception:
-        pass
+
+    # Wait for page to be fully loaded with actual content
+    ready, height, body_len = wait_for_page_ready(min_height=200, timeout_sec=15)
+    log(f"page ready: {ready}, height={height}, body_len={body_len}")
+
+    if not ready or height < 50:
+        lm_url = find_learn_more_in_html()
+        if lm_url:
+            log(f"found learn_more.php in raw HTML despite empty page — navigating")
+            return True
+        redirect = extract_redirect_from_html()
+        if redirect:
+            log(f"found redirect in raw HTML — navigating: {redirect[:80]}")
+            try:
+                adpt_load.set_page_load(driver)
+                driver.get(redirect)
+            except Exception:
+                adpt_load.timeout_occured()
+            human_delay(2000, 4000)
+            return True
+        log(f"page not ready (height={height}, body_len={body_len}), reloading...")
+        try:
+            adpt_load.set_page_load(driver)
+            driver.get(start_url)
+        except Exception:
+            adpt_load.timeout_occured()
+        human_delay(3000, 5000)
+        ready, height, body_len = wait_for_page_ready(min_height=200, timeout_sec=15)
+        log(f"after reload: ready={ready}, height={height}, body_len={body_len}")
+
+    # If reload also failed, try raw HTML fallback one more time
+    if not ready or height < 50:
+        lm_url = find_learn_more_in_html()
+        if lm_url:
+            log(f"found learn_more.php in raw HTML after reload — navigating")
+            return True
+        redirect = extract_redirect_from_html()
+        if redirect:
+            log(f"found redirect in raw HTML after reload — navigating: {redirect[:80]}")
+            try:
+                adpt_load.set_page_load(driver)
+                driver.get(redirect)
+            except Exception:
+                adpt_load.timeout_occured()
+            human_delay(2000, 4000)
+            return True
+
+    # Verify JS is actually working
+    js_ok = verify_js_working()
+    if not js_ok:
+        log("JS execution not working on page, reloading...")
+        try:
+            adpt_load.set_page_load(driver)
+            driver.get(start_url)
+        except Exception:
+            adpt_load.timeout_occured()
+        human_delay(3000, 5000)
+        ready, height, body_len = wait_for_page_ready(min_height=200, timeout_sec=15)
+        js_ok = verify_js_working()
+        log(f"after JS reload: ready={ready}, height={height}, body_len={body_len}, js_ok={js_ok}")
+
     human_scroll()
     close_ad_overlay()
 
@@ -2030,6 +2335,9 @@ def handle_article():
         log(f"behavioral fingerprint: type={fp.get('page_type')}, countdown={fp.get('has_countdown')}, verify={fp.get('has_verify_btn')}, continue={fp.get('has_continue_btn')}, getlink={fp.get('has_getlink')}, learn_more={fp.get('has_learn_more')}")
 
         if not fp.get("page_type") or fp["page_type"] == "unknown":
+            # Log HTML snippet for debugging
+            snippet = get_page_html_snippet(1500)
+            log(f"all-false fingerprint — page HTML snippet: {snippet[:500]}")
             log("all-false fingerprint — waiting for VPLink elements to render...")
             for w in range(15):
                 ms(1000)
@@ -2417,7 +2725,7 @@ def debug_shot(label):
 # ══════════════════════════════════════════════════════════════
 
 def main():
-    global driver, destination_url, start_time, profile, proxy_blocked, PROXY, PROXY_HOST, PROXY_IP, PROXY_PORT
+    global driver, destination_url, start_time, profile, proxy_blocked, PROXY, PROXY_HOST, PROXY_IP, PROXY_PORT, _funnel_progress
 
     _create_driver()
     monitor.install(driver)
@@ -2525,6 +2833,7 @@ def main():
                   break
           redirect_elapsed = time.time() - redirect_start
           if "vplink.in" not in safe_url():
+              _left_vplink_at = time.time()
               adpt_redirect.observe(redirect_elapsed)
               monitor.install(driver)
           debug_shot("03-after-redirect")
@@ -2581,6 +2890,22 @@ def main():
                       report_proxy_failure("vplink-no-redirect")
                   skip_main_loop = True
 
+      # Wait for redirected page to be ready before entering main loop
+      if not skip_main_loop and "vplink.in" not in safe_url():
+          cur_url = safe_url()
+          if cur_url and cur_url.startswith("http"):
+              ready, h, bl = wait_for_page_ready(min_height=100, timeout_sec=10)
+              log(f"post-redirect page ready: {ready}, height={h}, body_len={bl}")
+              if not ready or h < 50:
+                  log("redirected page empty, reloading...")
+                  try:
+                      adpt_load.set_page_load(driver)
+                      driver.get(cur_url)
+                  except Exception:
+                      adpt_load.timeout_occured()
+                  human_delay(2000, 4000)
+                  monitor.install(driver)
+
       vplink_arrivals = 0
       intermediate_stuck_count = 0
       last_base = ""
@@ -2593,10 +2918,12 @@ def main():
       url_visits = {}
       exhausted_cycles = 0
       learn_more_count = 0
+      _funnel_progress = 0
       last_action_was_learn_more = False
       total_steps_seen = 0
       last_step_info = ""
       cycle = -1
+      _left_vplink_at = 0  # timestamp when we last left vplink.in
 
       for cycle in range(30):
           if destination_url or skip_main_loop:
@@ -2696,9 +3023,20 @@ def main():
           debug_shot(f"cycle-{cycle + 1}")
 
           if is_destination(url):
-              destination_url = url
-              log("on destination URL already!")
-              break
+              # Guard: if we just left vplink.in (< 5s), give VPLink JS time to execute
+              if time.time() - _left_vplink_at < 5:
+                  log(f"is_destination but just left vplink.in ({time.time() - _left_vplink_at:.1f}s ago), waiting for VPLink JS...")
+                  human_delay(5000, 8000)
+                  # Re-check after waiting
+                  if not is_article_page(url) and is_destination(url):
+                      destination_url = url
+                      log("on destination URL already!")
+                      break
+                  # Not a destination — continue to handle_article
+              else:
+                  destination_url = url
+                  log("on destination URL already!")
+                  break
 
           if "vplink.in" in url and "cdn-cgi" not in url:
               vplink_arrivals += 1
@@ -2790,6 +3128,7 @@ def main():
 
           if is_intermediate_page(url):
               learn_more_count += 1
+              _funnel_progress = learn_more_count
               log(f"intermediate redirect page (learn_more #{learn_more_count}), waiting for auto-redirect...")
               last_action_was_learn_more = True
               intermediate_base = url_base(url)
@@ -2926,14 +3265,27 @@ def main():
               _nav_active[0] = False
 
               if not redirected:
-                  intermediate_stuck_count += 1
-                  log(f"intermediate page not redirecting (stuck #{intermediate_stuck_count})")
-                  if intermediate_stuck_count >= 3:
-                      log("intermediate stuck 3x — proxy cannot execute JS redirect, blacklisting")
-                      if PROXY:
-                          report_proxy_failure("intermediate-stuck")
-                      proxy_blocked = True
-                      break
+                  html = get_raw_html(5000)
+                  redirect = extract_redirect_from_html(html)
+                  if redirect:
+                      log(f"extracted redirect from raw HTML on intermediate page: {redirect[:80]}")
+                      full_url = redirect if redirect.startswith("http") else f"https://{safe_url().split('/')[2]}{redirect}"
+                      try:
+                          adpt_load.set_page_load(driver)
+                          driver.get(full_url)
+                      except Exception:
+                          adpt_load.timeout_occured()
+                      human_delay(1000, 2000)
+                      redirected = True
+                  else:
+                      intermediate_stuck_count += 1
+                      log(f"intermediate page not redirecting (stuck #{intermediate_stuck_count})")
+                      if intermediate_stuck_count >= 3:
+                          log("intermediate stuck 3x — proxy cannot execute JS redirect, blacklisting")
+                          if PROXY:
+                              report_proxy_failure("intermediate-stuck")
+                          proxy_blocked = True
+                          break
               else:
                   intermediate_stuck_count = 0
               last_base = url_base(safe_url())
@@ -2941,6 +3293,7 @@ def main():
 
           navigated = handle_article()
           if navigated:
+              _funnel_progress = learn_more_count
               inter_delay = rand(8000, 22000)
               log(f"inter-article delay: {inter_delay // 1000}s")
               ms(inter_delay)
@@ -3032,7 +3385,7 @@ def main():
         _revisit_with_referrer(final_url)
         if PROXY_IP and PROXY_PORT:
             mark_proxy_used(PROXY_IP, PROXY_PORT)
-    log(f"funnel stats: learn_more navigations={learn_more_count}, vplink arrivals={vplink_arrivals}, cycles={cycle + 1 if cycle >= 0 else 0}, elapsed={elapsed:.0f}s/{AUTOMATION_HARD_TIMEOUT}s")
+    log(f"funnel stats: learn_more navigations={learn_more_count}, funnel_progress={_funnel_progress}, vplink arrivals={vplink_arrivals}, cycles={cycle + 1 if cycle >= 0 else 0}, elapsed={elapsed:.0f}s/{AUTOMATION_HARD_TIMEOUT}s")
     ms(2000)
     try:
         driver.quit()

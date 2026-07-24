@@ -112,10 +112,15 @@ When template detection fails, behavioral fingerprinting kicks in:
 - `has_countdown_template()` — checks for any article template elements (TP/CE/LINK1S/getlink)
 - `is_article_page(url)` — True if page has template elements, not vplink.in, not destination
 - `is_intermediate_page(url)` — True if URL contains `learn_more.php`
-- `is_destination(url)` — True if not article/intermediate/vplink, has valid hostname
+- `is_destination(url)` — True if not article/intermediate/vplink, has valid hostname, AND funnel progress > 0
 - `is_ad_domain(url)` — checks against 14 known ad domains (googleadservices, doubleclick, propellerads, etc.)
+- `looks_like_article_url(url)` — detects article pages by URL structure heuristics (any domain)
 - `get_step_info()` — extracts step progress text from `#stick` element
 - `get_countdown()` — reads countdown timer value from any template element
+- `get_raw_html(max_len)` — gets raw HTML source from page, works even when JS doesn't execute
+- `detect_js_health()` — comprehensive JS health check (height, body_len, element_count, vplink_elements, verdict)
+- `find_learn_more_in_html()` — finds learn_more.php links in raw HTML and navigates to first one
+- `extract_redirect_from_html(html)` — extracts redirect target URL from raw HTML scripts/meta refresh
 
 ---
 
@@ -143,6 +148,53 @@ Instead of polling the DOM every second, PageMonitor uses:
 - No wasted CPU cycles on empty polls
 - Captures network activity that DOM polling misses
 - Detects redirects and navigation in real-time
+
+---
+
+## Raw HTML Fallback — When JS Fails
+
+VPLink JS sometimes fails to execute on article pages (page height=0, no template elements). This happens when proxies strip JS, headless Chrome is detected, or the page requires specific cookies. The raw HTML fallback system handles this case.
+
+### How It Works
+1. **Detect**: `detect_js_health()` checks page height, body_len, element count. Returns "broken" when page is empty.
+2. **Parse**: `get_raw_html()` gets the page source via `document.documentElement.outerHTML` — works even when JS doesn't execute.
+3. **Extract**: `find_learn_more_in_html()` regex-searches HTML for `href="...learn_more.php..."` links.
+4. **Navigate**: If found, navigates to the URL via `window.location.href`.
+5. **Fallback**: `extract_redirect_from_html()` searches for `window.location = '...'`, meta refresh, and external links.
+
+### Where It's Used
+- **`handle_article()`**: After page reload fails (height still < 50), tries raw HTML before giving up
+- **`handle_tp()`**: After `tp-snp2` never appears, tries raw HTML for learn_more.php links
+- **`handle_ce()`**: After btn7 never appears, tries raw HTML for learn_more.php links
+- **`handle_link1s()`**: After cross-snp2 never appears, tries raw HTML for learn_more.php links
+- **Intermediate page handler**: After learn_more.php page doesn't redirect, extracts redirect from raw HTML
+- **`is_destination()`**: Checks raw HTML for VPLink elements before classifying as destination
+
+### Why This Works
+The HTML source is served by the server regardless of whether JS executes. The VPLink template HTML (with `tp-snp2`, `btn6`, `learn_more.php` links) is in the source even if the JS that makes them interactive doesn't run.
+
+---
+
+## Funnel Progress Tracking
+
+The funnel progress system prevents false-positive destination detection on empty article pages.
+
+### How It Works
+- `_funnel_progress` counter tracks how many `learn_more.php` redirects we've completed
+- `_funnel_progress = 0` → We haven't entered the funnel yet
+- `_funnel_progress = N` → We've been through N redirects
+
+### Where It's Updated
+- Initialized to 0 at start of each proxy attempt
+- Incremented when `is_intermediate_page(url)` is True (we're on learn_more.php)
+- Synced to `learn_more_count` after each `handle_article()` success
+
+### Where It's Checked
+- **`is_destination()`**: Returns False if `_funnel_progress == 0` — nothing can be a destination until we've been through the funnel
+- **Final stats**: Logged for debugging
+
+### Why This Is Critical
+Without this guard, empty article pages (where VPLink JS didn't execute) get classified as destinations because they have valid hostnames. The funnel progress guard ensures we only accept a destination AFTER we've actually navigated through the VPLink funnel.
 
 ---
 
@@ -236,21 +288,26 @@ Attempt 3: New proxy → Run automation
 |----------|---------|
 | `detect_template()` | Identifies active template (TP/CE/LINK1S/getlink/unknown) |
 | `fingerprint_page()` | Behavioral fingerprinting for unknown templates |
-| `handle_tp()` | Waits for tp-snp2, navigates via parent `<a>` href |
-| `handle_ce()` | Waits for countdown, clicks btn6→btn7 |
-| `handle_link1s()` | Clicks startCountdownBtn, waits for cross-snp2 |
+| `handle_tp()` | Waits for tp-snp2, navigates via parent `<a>` href + raw HTML fallback |
+| `handle_ce()` | Waits for countdown, clicks btn6→btn7 + raw HTML fallback |
+| `handle_link1s()` | Clicks startCountdownBtn, waits for cross-snp2 + raw HTML fallback |
 | `handle_generic(fp)` | Generic handler using behavioral fingerprint + isRealButton |
 | `handle_unknown()` | Last resort: tries all known buttons by ID then by text |
 | `do_get_link()` | Fast path: extracts destination from parent `<a>` href |
-| `handle_article()` | Main article handler: detects template, dispatches to handler |
+| `handle_article()` | Main article handler: detects template, dispatches to handler + raw HTML fallback |
 | `get_countdown()` | Reads countdown timer value from any template |
 | `get_step_info()` | Extracts step progress from `#stick` |
 | `navigate_learn_more()` | Finds and navigates to learn_more.php |
+| `find_learn_more_in_html()` | Finds learn_more.php links in raw HTML source (JS fallback) |
+| `extract_redirect_from_html(html)` | Extracts redirect target from raw HTML scripts/meta refresh |
+| `get_raw_html(max_len)` | Gets raw HTML source from page (works when JS broken) |
+| `detect_js_health()` | Comprehensive JS health check (height, body_len, verdict) |
+| `looks_like_article_url(url)` | Detects article pages by URL structure heuristics (any domain) |
 | `close_ad_overlay()` | Closes ad overlays |
 | `handle_popup()` | Handles popup blocker dialogs |
 | `check_ad_hijack()` | Detects ad domain redirects, navigates back |
 | `is_ad_domain(url)` | Checks URL against 14 known ad domains |
-| `is_destination(url)` | Checks if URL is a valid destination (not article/vplink/ad) |
+| `is_destination(url)` | Checks if URL is a valid destination (requires funnel progress > 0) |
 | `is_article_page(url)` | Checks if URL has article template elements |
 | `wait_for_countdown(template, max_wait)` | Waits for countdown to reach 0 |
 | `bezier_move(x1, y1, x2, y2)` | Gradual mouse movement along bezier curve |
@@ -264,7 +321,7 @@ Attempt 3: New proxy → Run automation
 ### 1. Domain-Agnostic
 - No hardcoded article domains
 - Works with any domain VPLink uses
-- Handles domain changes automatically
+- Handles domain changes automatically via URL structure heuristics
 
 ### 2. Future-Proof
 - Behavioral fingerprinting survives element ID renames
@@ -282,18 +339,26 @@ Attempt 3: New proxy → Run automation
 - Waits for elements to appear before interacting
 - Multiple fallback paths for each template
 - Fast path destination extraction (parent `<a>` href)
+- Raw HTML fallback when VPLink JS doesn't execute
 
 ### 5. Observable
 - PageMonitor provides real-time visibility
 - Detailed logging of every action with elapsed time
 - Step progress tracking
 - Destination URL printed at end
+- JS health detection (healthy/degraded/broken)
 
 ### 6. Clean
 - Each handler does one thing: wait → click → navigate
 - No cookie injection or JS manipulation
 - Ad hijack detection with 14 known ad domains
 - Consistent return values (strings, not booleans)
+
+### 7. Resilient
+- Funnel progress guard prevents false-positive destination detection
+- Raw HTML parsing when DOM is empty (JS broken)
+- Multiple retry paths: DOM → raw HTML → reload → proxy blacklist
+- Works even when proxies strip JavaScript
 
 ---
 
@@ -305,6 +370,9 @@ Attempt 3: New proxy → Run automation
 4. **One IP per session** — Test once, use throughout
 5. **Fail gracefully** — Multiple fallback paths, never get stuck
 6. **Keep it simple** — Complex code breaks, simple code works
+7. **Funnel progress guard** — Don't classify any page as destination until we've completed at least one funnel step (learn_more.php redirect). Prevents false-positive destination detection on empty article pages.
+8. **Raw HTML fallback** — When VPLink JS doesn't execute (page height=0, no template elements), parse the raw HTML source for learn_more.php links and redirect targets. The HTML is served by the server regardless of JS execution.
+9. **Domain-agnostic** — Never hardcode article domains. VPLink changes domains weekly. Use URL structure heuristics and funnel progress tracking instead.
 
 ---
 

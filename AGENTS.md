@@ -8,9 +8,9 @@
 ## Current State
 
 - **Last updated:** 2026-07-24
-- **Latest remote commit:** `ad0f42b` (fix: raw HTML fallback + funnel progress guard for VPLink JS failures)
-- **Local codebase status:** DIRTY — uncommitted fixes for page load timeout, human_read, tp-snp2 click, dead URL tracking, Chrome session death
-- **Git status:** Local changes ready to commit
+- **Latest remote commit:** `3c9d54f` (fix: production readiness — page load timeout, human_read, tp-snp2 click, dead URL tracking, Chrome session death)
+- **Local codebase status:** CLEAN — all changes committed and pushed
+- **Git status:** Up to date with origin/main
 
 ## What Has Been Done
 

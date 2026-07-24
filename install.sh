@@ -85,10 +85,8 @@ fi
 
 # ── Create wrapper ─────────────────────────────────────
 TMPWRAPPER=$(mktemp)
-cat > "$TMPWRAPPER" << 'EOF'
-#!/bin/bash
-exec bun run "$HOME/.vplink247/tui/src/cli.tsx" "$@"
-EOF
+echo '#!/bin/bash' > "$TMPWRAPPER"
+echo 'exec bun run "$HOME/.vplink247/tui/src/cli.tsx" "$@"' >> "$TMPWRAPPER"
 chmod +x "$TMPWRAPPER"
 if [ -w "$(dirname "$TUI_BIN")" ]; then
   mv "$TMPWRAPPER" "$TUI_BIN"

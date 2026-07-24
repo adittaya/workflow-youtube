@@ -13,7 +13,6 @@
 set -euo pipefail
 
 REPO="adittaya/workflow-vplink"
-RAW="https://raw.githubusercontent.com/$REPO/main"
 VPLINK_HOME="$HOME/.vplink247"
 WEB_DIR="$VPLINK_HOME/web"
 TUI_DIR="$VPLINK_HOME/tui"
@@ -44,10 +43,20 @@ echo ""
 
 # ── Check requirements ────────────────────────────────
 command -v python3 &>/dev/null || fail "python3 required"
+command -v git &>/dev/null     || fail "git required"
+command -v curl &>/dev/null    || fail "curl required"
 ok "Python $(python3 --version 2>&1 | awk '{print $2}')"
+ok "Git $(git --version 2>&1 | awk '{print $3}')"
 
 # ── Create directories ────────────────────────────────
-mkdir -p "$VPLINK_HOME" "$WEB_DIR/server" "$WEB_DIR/client/dist" "$TUI_DIR"
+mkdir -p "$VPLINK_HOME" "$WEB_DIR" "$TUI_DIR"
+
+# ── Clone repo (shallow) ─────────────────────────────
+info "Downloading VPLink repo..."
+CLONE_DIR=$(mktemp -d)
+git clone --depth 1 --quiet "https://github.com/$REPO.git" "$CLONE_DIR" 2>/dev/null || \
+  fail "Could not clone repo"
+ok "Repository cloned"
 
 # ═══════════════════════════════════════════════════════════════
 #  PART 1: Web GUI (vplink-gui)
@@ -55,66 +64,68 @@ mkdir -p "$VPLINK_HOME" "$WEB_DIR/server" "$WEB_DIR/client/dist" "$TUI_DIR"
 if [ "$INSTALL_GUI" = true ]; then
   echo -e "\n${BOLD}── Web GUI ──${NC}"
 
-  # Download API server
-  info "Downloading API server..."
-  fetch_github() {
-    local path="$1"
-    local dest="$2"
-    local dir=$(dirname "$dest")
-    mkdir -p "$dir"
-    curl -fsSL -H "Accept: application/vnd.github.v3.raw" \
-      "https://api.github.com/repos/$REPO/contents/$path" \
-      -o "$dest" 2>/dev/null || \
-    curl -fsSL "$RAW/$path" -o "$dest" 2>/dev/null || \
-      warn "Could not download $path"
-  }
+  # Copy API server
+  info "Installing API server..."
+  mkdir -p "$WEB_DIR/server"
+  cp "$CLONE_DIR/web/server/app.py" "$WEB_DIR/server/app.py"
+  ok "API server installed"
 
-  fetch_github "web/server/app.py" "$WEB_DIR/server/app.py"
-  fetch_github "web/start.sh" "$WEB_DIR/start.sh"
-  chmod +x "$WEB_DIR/start.sh" 2>/dev/null || true
+  # Copy launcher script
+  cp "$CLONE_DIR/web/vplink-gui" "$WEB_DIR/vplink-gui"
+  chmod +x "$WEB_DIR/vplink-gui"
+  ok "Launcher script installed"
 
-  # Download pre-built frontend
-  info "Downloading frontend..."
-  fetch_github "web/client/dist/index.html" "$WEB_DIR/client/dist/index.html"
-
-  # Download CSS and JS from latest release assets or build from source
-  # Since we can't easily download dist assets from GitHub API (they're gitignored),
-  # we download the source and build if Node.js is available
-  if command -v npm &>/dev/null || command -v npx &>/dev/null; then
-    info "Building frontend from source..."
-    TMPDIR=$(mktemp -d)
-    fetch_github "web/client/package.json" "$TMPDIR/package.json"
-    fetch_github "web/client/vite.config.ts" "$TMPDIR/vite.config.ts"
-    fetch_github "web/client/tailwind.config.js" "$TMPDIR/tailwind.config.js"
-    fetch_github "web/client/postcss.config.js" "$TMPDIR/postcss.config.js"
-    fetch_github "web/client/tsconfig.json" "$TMPDIR/tsconfig.json"
-    fetch_github "web/client/index.html" "$TMPDIR/index.html"
-
-    for f in src/main.tsx src/App.tsx src/services/api.ts \
-             src/hooks/useAppState.ts src/hooks/useToast.tsx \
-             src/styles/globals.css \
-             src/pages/Dashboard.tsx src/pages/Deployments.tsx \
-             src/pages/Accounts.tsx src/pages/Settings.tsx \
-             src/pages/Analytics.tsx src/pages/Sync.tsx; do
-      fetch_github "web/client/$f" "$TMPDIR/$f"
-    done
-
-    if (cd "$TMPDIR" && npm install --silent 2>/dev/null && npx vite build --silent 2>/dev/null); then
-      cp -r "$TMPDIR/dist/"* "$WEB_DIR/client/dist/" 2>/dev/null || true
-      ok "Frontend built"
+  # Build frontend
+  if command -v npm &>/dev/null; then
+    info "Building frontend (this may take a minute)..."
+    mkdir -p "$WEB_DIR/client"
+    cp -r "$CLONE_DIR/web/client/"* "$WEB_DIR/client/" 2>/dev/null || true
+    # Remove node_modules if copied (we'll reinstall)
+    rm -rf "$WEB_DIR/client/node_modules" 2>/dev/null || true
+    if (cd "$WEB_DIR/client" && npm install --silent 2>/dev/null && npx vite build 2>/dev/null); then
+      ok "Frontend built successfully"
     else
-      warn "Frontend build failed — GUI will show placeholder"
-      echo "<html><body style='background:#0f0f23;color:white;display:flex;align-items:center;justify-content:center;height:100vh;font-family:system-ui'><div style='text-align:center'><h1>⚡ VPLink GUI</h1><p>Frontend build failed. Run manually:</p><code>cd ~/.vplink247/web/client && npm install && npx vite build</code></div></body></html>" > "$WEB_DIR/client/dist/index.html"
+      warn "Frontend build failed — using placeholder"
+      mkdir -p "$WEB_DIR/client/dist"
+      cat > "$WEB_DIR/client/dist/index.html" <<'PLACEHOLDER'
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VPLink GUI</title></head>
+<body style="background:#0f0f23;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;font-family:system-ui;margin:0">
+<div style="text-align:center;max-width:400px;padding:2rem">
+<h1 style="font-size:2rem;margin-bottom:1rem">⚡ VPLink GUI</h1>
+<p style="color:#9ca3af;margin-bottom:1.5rem">Frontend build failed. Run manually:</p>
+<code style="background:#1e1b4b;padding:0.75rem 1rem;border-radius:0.75rem;display:block;color:#818cf8;font-size:0.875rem">
+cd ~/.vplink247/web/client && npm install && npx vite build
+</code>
+</div></body></html>
+PLACEHOLDER
     fi
-    rm -rf "$TMPDIR"
   else
-    warn "npm not found — frontend placeholder only"
-    echo "<html><body style='background:#0f0f23;color:white;display:flex;align-items:center;justify-content:center;height:100vh;font-family:system-ui'><div style='text-align:center'><h1>⚡ VPLink GUI</h1><p>Install Node.js to build the frontend:</p><code>curl -fsSL https://deb.nodesource.com/setup_20.x | sudo bash - && sudo apt install -y nodejs</code></div></body></html>" > "$WEB_DIR/client/dist/index.html"
+    warn "npm not found — installing Node.js..."
+    if command -v apt-get &>/dev/null; then
+      curl -fsSL https://deb.nodesource.com/setup_20.x 2>/dev/null | bash - 2>/dev/null
+      apt-get install -y nodejs 2>/dev/null || true
+    fi
+    if command -v npm &>/dev/null; then
+      ok "Node.js $(node --version) installed"
+      info "Building frontend..."
+      mkdir -p "$WEB_DIR/client"
+      cp -r "$CLONE_DIR/web/client/"* "$WEB_DIR/client/" 2>/dev/null || true
+      rm -rf "$WEB_DIR/client/node_modules" 2>/dev/null || true
+      if (cd "$WEB_DIR/client" && npm install --silent 2>/dev/null && npx vite build 2>/dev/null); then
+        ok "Frontend built successfully"
+      else
+        warn "Frontend build failed"
+        mkdir -p "$WEB_DIR/client/dist"
+        echo '<html><body style="background:#0f0f23;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;font-family:system-ui"><div style="text-align:center"><h1>⚡ VPLink GUI</h1><p style="color:#9ca3af">Build failed. Run: cd ~/.vplink247/web/client && npm install && npx vite build</p></div></body></html>' > "$WEB_DIR/client/dist/index.html"
+      fi
+    else
+      warn "Could not install Node.js — placeholder only"
+      mkdir -p "$WEB_DIR/client/dist"
+      echo '<html><body style="background:#0f0f23;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;font-family:system-ui"><div style="text-align:center"><h1>⚡ VPLink GUI</h1><p style="color:#9ca3af">Install Node.js: curl -fsSL https://deb.nodesource.com/setup_20.x | sudo bash - && sudo apt install -y nodejs</p></div></body></html>' > "$WEB_DIR/client/dist/index.html"
+    fi
   fi
-
-  # Download launcher script
-  fetch_github "web/vplink-gui" "$WEB_DIR/vplink-gui"
-  chmod +x "$WEB_DIR/vplink-gui" 2>/dev/null || true
 
   # Create global command
   TMPWRAPPER=$(mktemp)
@@ -150,33 +161,10 @@ if [ "$INSTALL_TUI" = true ]; then
 fi
 
 if [ "$INSTALL_TUI" = true ]; then
-  info "Downloading TUI..."
-  mkdir -p "$TUI_DIR"
-  for d in src/components src/screens src/utils src/services src/hooks; do
-    mkdir -p "$TUI_DIR/$d"
-  done
-
-  fetch_tui() {
-    local path="$1"
-    local dir=$(dirname "$path")
-    mkdir -p "$TUI_DIR/$dir"
-    curl -fsSL -H "Accept: application/vnd.github.v3.raw" \
-      "https://api.github.com/repos/$REPO/contents/tui/$path" \
-      -o "$TUI_DIR/$path" 2>/dev/null || \
-    curl -fsSL "$RAW/tui/$path" -o "$TUI_DIR/$path" 2>/dev/null || \
-      warn "Could not download $path"
-  }
-
-  for f in package.json tsconfig.json \
-           src/index.tsx src/cli.tsx \
-           src/components/App.tsx src/components/Header.tsx src/components/Sidebar.tsx \
-           src/screens/Dashboard.tsx src/screens/Deployments.tsx src/screens/Accounts.tsx \
-           src/screens/Analytics.tsx src/screens/Settings.tsx src/screens/Sync.tsx \
-           src/utils/storage.ts src/services/github.ts src/services/deploy.ts \
-           src/hooks/useAppState.ts; do
-    fetch_tui "$f"
-  done
-  ok "TUI files downloaded"
+  info "Installing TUI..."
+  cp -r "$CLONE_DIR/tui/"* "$TUI_DIR/" 2>/dev/null || true
+  rm -rf "$TUI_DIR/node_modules" 2>/dev/null || true
+  ok "TUI files installed"
 
   if [ -f "$TUI_DIR/package.json" ]; then
     info "Installing TUI dependencies..."
@@ -200,6 +188,9 @@ if [ "$INSTALL_TUI" = true ]; then
     ok "Installed: $TUI_BIN"
   fi
 fi
+
+# ── Cleanup ───────────────────────────────────────────
+rm -rf "$CLONE_DIR"
 
 # ═══════════════════════════════════════════════════════════════
 #  Summary

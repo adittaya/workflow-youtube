@@ -13,8 +13,22 @@ import shutil
 from pathlib import Path
 
 PORT = int(os.environ.get("VPLINK_WEB_PORT", "5180"))
-DATA_DIR = os.environ.get("VPLINK_HOME", os.path.expanduser("~/.vplink"))
+DATA_DIR = os.environ.get("VPLINK_HOME", os.path.expanduser("~/.vplink247"))
+DIST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "client", "dist")
 GITHUB_API = "https://api.github.com"
+
+MIME_TYPES = {
+    ".html": "text/html",
+    ".js": "application/javascript",
+    ".css": "text/css",
+    ".json": "application/json",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".svg": "image/svg+xml",
+    ".ico": "image/x-icon",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+}
 
 def data_path(name):
     return os.path.join(DATA_DIR, name)
@@ -43,7 +57,10 @@ def gh_request(endpoint, token, method="GET", body=None):
         req.add_header("Content-Type", "application/json")
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read())
+            raw = resp.read()
+            if not raw:
+                return {"ok": True, "status": resp.status}
+            return json.loads(raw)
     except urllib.error.HTTPError as e:
         body_text = e.read().decode(errors="replace")
         return {"error": True, "status": e.code, "message": body_text}
@@ -51,14 +68,17 @@ def gh_request(endpoint, token, method="GET", body=None):
 def paginate_repos(token):
     all_repos = []
     page = 1
-    while True:
-        repos = gh_request(f"/user/repos?per_page=100&page={page}&type=all", token)
-        if isinstance(repos, dict) and repos.get("error"):
-            break
-        if not repos:
-            break
-        all_repos.extend(repos)
-        if len(repos) < 100:
+    while page <= 5:
+        try:
+            repos = gh_request(f"/user/repos?per_page=100&page={page}&type=all", token)
+            if isinstance(repos, dict) and repos.get("error"):
+                break
+            if not repos:
+                break
+            all_repos.extend(repos)
+            if len(repos) < 100:
+                break
+        except:
             break
         page += 1
     return all_repos
@@ -278,6 +298,37 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
             except Exception as e:
                 return self.send_json({"error": str(e)})
 
+        # ── Static file serving from dist/ ──
+        if not path.startswith("/api/"):
+            # Default to index.html for SPA routing
+            if path == "/" or path == "":
+                path = "/index.html"
+            file_path = os.path.join(DIST_DIR, path.lstrip("/"))
+            if os.path.isfile(file_path):
+                ext = os.path.splitext(file_path)[1]
+                mime = MIME_TYPES.get(ext, "application/octet-stream")
+                with open(file_path, "rb") as f:
+                    content = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", mime)
+                self.send_header("Content-Length", str(len(content)))
+                self.send_header("Cache-Control", "no-cache" if ext == ".html" else "public, max-age=31536000")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(content)
+                return
+            # SPA fallback: serve index.html for any non-file route
+            index_path = os.path.join(DIST_DIR, "index.html")
+            if os.path.isfile(index_path):
+                with open(index_path, "rb") as f:
+                    content = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+                return
+
         self.send_json({"error": "not found"}, 404)
 
     def do_POST(self):
@@ -349,66 +400,70 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
             token = acct["token"]
             owner = acct.get("username", acct["name"])
             full_name = repo_name if repo_name.startswith("vplink-") else f"vplink-{repo_name}" if repo_name else f"vplink-{int(time.time()).to_bytes(4,'big').hex()}"
-
-            create_resp = gh_request("/user/repos", token, "POST", {
-                "name": full_name,
-                "private": True,
-                "auto_init": True,
-                "description": "VPLink automation relay",
-            })
-            if isinstance(create_resp, dict) and create_resp.get("error"):
-                return self.send_json({"error": f"Create repo failed: {create_resp.get('message', '')}"})
-
-            template_dir = os.path.join(DATA_DIR, "template")
-            if not os.path.exists(template_dir):
-                subprocess.run([
-                    "git", "clone", "--depth", "1",
-                    "https://github.com/adittaya/workflow-vplink.git", template_dir
-                ], capture_output=True, timeout=120)
-
-            repo_dir = os.path.join(DATA_DIR, "repos", full_name)
-            os.makedirs(os.path.dirname(repo_dir), exist_ok=True)
-            shutil.rmtree(repo_dir, ignore_errors=True)
-            shutil.copytree(template_dir, repo_dir)
-
-            secrets = {"VPLINK_KEY": key}
-            for k in ["SUPABASE_URL", "SUPABASE_KEY", "SUPABASE_SECRET"]:
-                v = settings.get(k.lower(), "")
-                if v:
-                    secrets[k] = v
-
             try:
-                env = os.environ.copy()
-                env["GIT_ASKPASS"] = "echo"
-                token_url = f"https://{token}@github.com/{owner}/{full_name}.git"
-                subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, capture_output=True, timeout=30)
-                subprocess.run(["git", "remote", "add", "origin", token_url], cwd=repo_dir, capture_output=True, timeout=30)
-                subprocess.run(["git", "add", "-A"], cwd=repo_dir, capture_output=True, timeout=30)
-                subprocess.run(["git", "commit", "-m", "init: vplink automation relay"], cwd=repo_dir, capture_output=True, timeout=30)
-                subprocess.run(["git", "push", "--force", "origin", "main"], cwd=repo_dir, capture_output=True, timeout=60, env=env)
+                create_resp = gh_request("/user/repos", token, "POST", {
+                    "name": full_name,
+                    "private": True,
+                    "auto_init": True,
+                    "description": "VPLink automation relay",
+                })
+                if isinstance(create_resp, dict) and create_resp.get("error"):
+                    return self.send_json({"error": f"Create repo failed: {create_resp.get('message', '')}"})
+
+                template_dir = os.path.join(DATA_DIR, "template")
+                if not os.path.exists(template_dir):
+                    subprocess.run([
+                        "git", "clone", "--depth", "1",
+                        "https://github.com/adittaya/workflow-vplink.git", template_dir
+                    ], capture_output=True, timeout=120)
+
+                repo_dir = os.path.join(DATA_DIR, "repos", full_name)
+                os.makedirs(os.path.dirname(repo_dir), exist_ok=True)
+                shutil.rmtree(repo_dir, ignore_errors=True)
+                def ignore_git(dir, files):
+                    return [".git"] if ".git" in files else []
+                shutil.copytree(template_dir, repo_dir, ignore=ignore_git)
+
+                secrets = {"VPLINK_KEY": key}
+                for k in ["SUPABASE_URL", "SUPABASE_KEY", "SUPABASE_SECRET"]:
+                    v = settings.get(k.lower(), "")
+                    if v:
+                        secrets[k] = v
+
+                try:
+                    env = os.environ.copy()
+                    env["GIT_ASKPASS"] = "echo"
+                    token_url = f"https://{token}@github.com/{owner}/{full_name}.git"
+                    subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, capture_output=True, timeout=30)
+                    subprocess.run(["git", "remote", "add", "origin", token_url], cwd=repo_dir, capture_output=True, timeout=30)
+                    subprocess.run(["git", "add", "-A"], cwd=repo_dir, capture_output=True, timeout=30)
+                    subprocess.run(["git", "commit", "-m", "init: vplink automation relay"], cwd=repo_dir, capture_output=True, timeout=30)
+                    subprocess.run(["git", "push", "--force", "origin", "main"], cwd=repo_dir, capture_output=True, timeout=60, env=env)
+                except Exception:
+                    pass
+
+                wf_data = gh_request(f"/repos/{owner}/{full_name}/actions/workflows", token)
+                if isinstance(wf_data, dict) and not wf_data.get("error"):
+                    for w in wf_data.get("workflows", []):
+                        if "continuous" in w.get("path", ""):
+                            gh_request(f"/repos/{owner}/{full_name}/actions/workflows/{w['id']}/enable", token, "PUT")
+                            gh_request(f"/repos/{owner}/{full_name}/actions/workflows/{w['id']}/dispatches", token, "POST", {"ref": "main", "inputs": {"key": key}})
+                            break
+
+                dep = {
+                    "name": full_name,
+                    "key": key,
+                    "account": active_name,
+                    "repo_url": f"https://github.com/{owner}/{full_name}",
+                    "status": "deployed",
+                    "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                }
+                deps = load_json("deployments.json")
+                deps[full_name] = dep
+                save_json("deployments.json", deps)
+                return self.send_json(dep)
             except Exception as e:
-                pass
-
-            wf_data = gh_request(f"/repos/{owner}/{full_name}/actions/workflows", token)
-            if isinstance(wf_data, dict) and not wf_data.get("error"):
-                for w in wf_data.get("workflows", []):
-                    if "continuous" in w.get("path", ""):
-                        gh_request(f"/repos/{owner}/{full_name}/actions/workflows/{w['id']}/enable", token, "PUT")
-                        gh_request(f"/repos/{owner}/{full_name}/actions/workflows/{w['id']}/dispatches", token, "POST", {"ref": "main", "inputs": {"key": key}})
-                        break
-
-            dep = {
-                "name": full_name,
-                "key": key,
-                "account": active_name,
-                "repo_url": f"https://github.com/{owner}/{full_name}",
-                "status": "deployed",
-                "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            }
-            deps = load_json("deployments.json")
-            deps[full_name] = dep
-            save_json("deployments.json", deps)
-            return self.send_json(dep)
+                return self.send_json({"error": f"Deploy failed: {str(e)}"})
 
         if path == "/api/deploy/remove":
             name = body.get("name", "")
@@ -505,8 +560,17 @@ class APIHandler(http.server.BaseHTTPRequestHandler):
         path = parsed.path
         qs = dict(urllib.parse.parse_qsl(parsed.query))
 
+        # Try reading body for DELETE requests too (browsers/fetch sometimes send body)
+        body = {}
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length > 0:
+                body = json.loads(self.rfile.read(length))
+        except:
+            pass
+
         if path == "/api/accounts":
-            name = qs.get("name", "")
+            name = qs.get("name") or body.get("name", "")
             accounts = load_json("accounts.json")
             if name in accounts:
                 del accounts[name]

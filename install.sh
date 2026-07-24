@@ -84,11 +84,19 @@ if [ -f "$TUI_DIR/package.json" ]; then
 fi
 
 # ── Create wrapper ─────────────────────────────────────
-cat > "$TUI_BIN" << 'EOF'
+if [ -w "$(dirname "$TUI_BIN")" ]; then
+  cat > "$TUI_BIN" << 'EOF'
 #!/bin/bash
 exec bun run "$HOME/.vplink247/tui/src/cli.tsx" "$@"
 EOF
-chmod +x "$TUI_BIN"
+  chmod +x "$TUI_BIN"
+else
+  sudo tee "$TUI_BIN" > /dev/null << 'EOF'
+#!/bin/bash
+exec bun run "$HOME/.vplink247/tui/src/cli.tsx" "$@"
+EOF
+  sudo chmod +x "$TUI_BIN"
+fi
 ok "Installed: $TUI_BIN"
 
 mkdir -p "$HOME/.vplink247"

@@ -1,13 +1,11 @@
 import json
 import os
-import stat
 import tempfile
 import time
 from pathlib import Path
 
 CONFIG_DIR = Path.home() / ".config" / "vplink3"
 CONFIG_PATH = CONFIG_DIR / "config.json"
-PROXY_HISTORY_PATH = CONFIG_DIR / "proxy_history.json"
 PROXY_BLACKLIST_PATH = CONFIG_DIR / "proxy_blacklist.json"
 
 # Migrate from legacy path (~/.vplink3.0/) if it exists and new path doesn't
@@ -81,18 +79,6 @@ def save(config):
     return merged
 
 
-def load_proxy_history():
-    try:
-        raw = PROXY_HISTORY_PATH.read_text("utf-8")
-        return json.loads(raw)
-    except Exception:
-        return {"used": []}
-
-
-def save_proxy_history(history):
-    _write_json_secure(PROXY_HISTORY_PATH, history)
-
-
 def load_proxy_blacklist():
     twenty_four_h = 24 * 60 * 60 * 1000
     now_ms = int(time.time() * 1000)
@@ -112,49 +98,6 @@ def load_proxy_blacklist():
     except Exception:
         pass
     return []
-
-
-def save_proxy_blacklist(lst):
-    _write_json_secure(PROXY_BLACKLIST_PATH, lst)
-
-
-def add_proxy_blacklist(ip, port):
-    twenty_four_h = 24 * 60 * 60 * 1000
-    now_ms = int(time.time() * 1000)
-    key = f"{ip}:{port}"
-    try:
-        PROXY_BLACKLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        pass
-    raw_entries = []
-    try:
-        if PROXY_BLACKLIST_PATH.exists():
-            raw = PROXY_BLACKLIST_PATH.read_text("utf-8")
-            raw_entries = json.loads(raw)
-    except Exception:
-        pass
-    filtered = []
-    for entry in raw_entries:
-        if isinstance(entry, dict):
-            k = entry.get("key", "")
-        else:
-            k = str(entry)
-        if k != key:
-            filtered.append(entry)
-    filtered.append({"key": key, "ts": now_ms})
-    pruned = []
-    for entry in filtered:
-        if isinstance(entry, dict):
-            ts = entry.get("ts", 0)
-            if ts == 0 or (now_ms - ts) < twenty_four_h:
-                pruned.append(entry)
-        else:
-            pruned.append(entry)
-    save_proxy_blacklist(pruned)
-
-
-def clear_proxy_blacklist():
-    save_proxy_blacklist([])
 
 
 def is_configured():

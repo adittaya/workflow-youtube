@@ -106,7 +106,6 @@ PROXY_PORT = int(PROXY.split(":")[-1]) if PROXY and ":" in PROXY.split("//")[-1]
 proxy_failures = 0
 proxy_blocked = False
 proxy_punished = False
-proxy_restarts = 0
 MAX_PROXY_RESTARTS = 3
 
 TRAFFIC_SOURCE = os.environ.get("VPLINK_TRAFFIC_SOURCE", "youtube").lower()
@@ -1786,7 +1785,6 @@ def handle_tp():
 
 def handle_ce():
     log("template: CE (ce-time countdown)")
-    pre_url = safe_url()
     close_ad_overlay()
 
     log("waiting for ce-wait1 to become visible...")
@@ -2331,23 +2329,6 @@ def handle_article():
             log("reload also failed — proxy may be blocking this domain, returning False")
             return False
 
-    # If reload also failed, try raw HTML fallback one more time
-    if not ready or height < 50:
-        lm_url = find_learn_more_in_html()
-        if lm_url:
-            log(f"found learn_more.php in raw HTML after reload — navigating")
-            return True
-        redirect = extract_redirect_from_html()
-        if redirect:
-            log(f"found redirect in raw HTML after reload — navigating: {redirect[:80]}")
-            try:
-                adpt_load.set_page_load(driver)
-                driver.get(redirect)
-            except Exception:
-                adpt_load.timeout_occured()
-            human_delay(2000, 4000)
-            return True
-
     # Verify JS is actually working
     js_ok = verify_js_working()
     if not js_ok:
@@ -2601,7 +2582,7 @@ def do_get_link():
 
 def _create_driver():
     global driver, profile
-    from profile_generator import generate_profile
+    from profile_generator import generate_profile  # noqa: F811 — local import for clarity
     profile = generate_profile(mobile=True, youtube=True)
     log(f"profile: {profile['viewport']['width']}x{profile['viewport']['height']} {profile['locale']} {profile['timezone']} hw={profile['hardwareConcurrency']} mem={profile['deviceMemory']} dpr={profile['deviceScaleFactor']}")
 
@@ -3152,7 +3133,7 @@ def main():
                   remaining = get_countdown()
                   if remaining > 0:
                       log(f"timer at {remaining} after rewarded ad, waiting...")
-                      wait_for_countdown(None, remaining + 10)
+                      wait_for_countdown("generic", remaining + 10)
                       human_delay(500, 1000)
                   clicked = navigate_learn_more()
                   if not clicked:

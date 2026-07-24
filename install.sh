@@ -3,7 +3,8 @@ set -e
 
 INSTALL_DIR="${VPLINK_HOME:-$HOME/.vplink247}"
 REPO="adittaya/workflow-vplink"
-BIN="/usr/local/bin/vplink"
+BIN_DIR="${HOME}/.local/bin"
+BIN="${BIN_DIR}/vplink"
 
 echo "╔══════════════════════════════════════════════════════════╗"
 echo "║           V P L I N K   I N S T A L L E R              ║"
@@ -66,15 +67,12 @@ mv /tmp/vplink_proxy_rotator.py "$INSTALL_DIR/proxy_rotator.py" 2>/dev/null
 mv /tmp/vplink_requirements.txt "$INSTALL_DIR/requirements.txt" 2>/dev/null
 
 # Create wrapper script
+mkdir -p "$BIN_DIR"
 cat > "$BIN" << 'WRAPPER'
 #!/usr/bin/env bash
 exec python3 "${VPLINK_HOME:-$HOME/.vplink247}/tui.py" "$@"
 WRAPPER
 chmod +x "$BIN"
-
-# Also symlink to ~/.local/bin for user-local access
-mkdir -p "$HOME/.local/bin"
-ln -sf "$BIN" "$HOME/.local/bin/vplink"
 
 # Install TUI
 mv /tmp/vplink_tui.py "$INSTALL_DIR/tui.py"

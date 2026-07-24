@@ -1,13 +1,9 @@
-import http.client
-import http.server
 import os
 import socket
-import ssl
 import sys
 import time
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib.parse import urlparse
 
 import requests as req_lib
 
@@ -164,16 +160,6 @@ def mark_proxy_used(ip, port):
     print(f"  [Proxy] Marked {ip}:{port} as used (skip 24h)", file=sys.stderr)
 
 
-def mark_proxy_used(ip, port):
-    expires = (datetime.datetime.utcnow() + datetime.timedelta(hours=STATE_TTL_HOURS)).isoformat() + "Z"
-    data = {"ip": ip, "port": int(port), "state": "used", "expires_at": expires}
-    try:
-        supabase_fetch(STATE_TABLE, method="POST", data=data)
-    except Exception:
-        pass
-    print(f"  [Proxy] Marked {ip}:{port} as used (skip 24h)", file=sys.stderr)
-
-
 # ══════════════════════════════════════════════════════════════
 #  TCP-level tests (fast, parallel, Engine 1)
 # ══════════════════════════════════════════════════════════════
@@ -290,33 +276,9 @@ def test_proxy_selenium(proxy, timeout_s=60):
         return {"ok": False, "latency_ms": int((time.time() - start) * 1000), "error": str(e)}
 
 
-def test_proxy_batch_selenium(proxies, timeout_s=60, concurrency=10):
-    results = []
-    for i in range(0, len(proxies), concurrency):
-        chunk = proxies[i : i + concurrency]
-        with ThreadPoolExecutor(max_workers=concurrency) as pool:
-            futures = {pool.submit(test_proxy_selenium, p, timeout_s): p for p in chunk}
-            for f in as_completed(futures):
-                p = futures[f]
-                try:
-                    r = f.result(timeout=timeout_s + 10)
-                    results.append({**p, **r})
-                except Exception:
-                    results.append({**p, "ok": False, "latency_ms": 99999, "error": "timeout"})
-        done = min(i + concurrency, len(proxies))
-        for r in results[-len(chunk):]:
-            ok = "OK" if r.get("ok") else "FAIL"
-            tag = r.get("finalUrl", "")[:40] or r.get("error", "")[:40] or "?"
-            print(f"  [Engine 2] {ok} {r['latency_ms']}ms {r['ip']}:{r['port']}  {tag}", file=sys.stderr)
-    return results
-
-
 # ══════════════════════════════════════════════════════════════
 #  Main getProxy: Engine 1 (TCP alive) → Engine 2 (Selenium validate)
 # ══════════════════════════════════════════════════════════════
-
-def get_rotation_index(proxies, history):
-    return proxies[0] if proxies else None
 
 
 import random

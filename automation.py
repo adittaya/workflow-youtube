@@ -1012,6 +1012,14 @@ def is_destination(url):
         return False
     if _current_key and _current_key in url:
         return False
+    has_article_signals = safe_eval("""
+        if (document.querySelector('a[href*="learn_more.php"]')) return true;
+        if (document.getElementById('block-cont-1') || document.getElementById('gcont')) return true;
+        if (document.querySelector('button') && document.querySelector('[id*="time"]')) return true;
+        return false;
+    """) or False
+    if has_article_signals:
+        return False
     from urllib.parse import urlparse
     parsed = urlparse(url)
     if parsed.hostname and "." in parsed.hostname:
@@ -1474,6 +1482,12 @@ def handle_tp():
             if a_href:
                 log(f"navigated via tp-snp2 href: {a_href[:80]}")
                 return True
+            nav = navigate_learn_more()
+            if nav:
+                log("navigated via learn_more.php fallback (fast)")
+                return True
+            close_ad_overlay()
+            handle_popup()
             human_click("#tp-snp2")
             log("clicked tp-snp2")
             human_delay(2000, 4000)
@@ -1544,6 +1558,8 @@ def handle_ce():
         ms(1000)
 
     if btn6_visible:
+        close_ad_overlay()
+        handle_popup()
         human_click("#btn6")
         log("clicked btn6 (Verify)")
         start_url = safe_url()
@@ -2011,7 +2027,24 @@ def handle_article():
     if template == "unknown":
         debug_shot(f"unknown-{int(time.time())}")
         fp = fingerprint_page()
-        log(f"behavioral fingerprint: type={fp.get('page_type')}, countdown={fp.get('has_countdown')}, verify={fp.get('has_verify_btn')}, continue={fp.get('has_continue_btn')}, getlink={fp.get('has_getlink')}")
+        log(f"behavioral fingerprint: type={fp.get('page_type')}, countdown={fp.get('has_countdown')}, verify={fp.get('has_verify_btn')}, continue={fp.get('has_continue_btn')}, getlink={fp.get('has_getlink')}, learn_more={fp.get('has_learn_more')}")
+
+        if not fp.get("page_type") or fp["page_type"] == "unknown":
+            log("all-false fingerprint — waiting for VPLink elements to render...")
+            for w in range(15):
+                ms(1000)
+                template = detect_template()
+                if template != "unknown":
+                    log(f"element appeared after {w+1}s: {template}")
+                    fp = None
+                    break
+                fp2 = fingerprint_page()
+                if fp2.get("has_countdown") or fp2.get("has_verify_btn") or fp2.get("has_continue_btn") or fp2.get("has_getlink") or fp2.get("has_learn_more"):
+                    fp = fp2
+                    log(f"fingerprint improved after {w+1}s: type={fp.get('page_type')}")
+                    break
+            if template != "unknown":
+                fp = None
 
     countdown = get_countdown()
     read_secs = max(countdown + 5, 35) if countdown > 0 else rand(35, 55)
@@ -2073,6 +2106,17 @@ def handle_article():
             return True
         log("buttons clicked but no URL change detected, continuing")
         return False
+
+    lm = safe_eval("""
+        var links = document.querySelectorAll('a[href*="learn_more.php"]');
+        for (var i = 0; i < links.length; i++) {
+            if (links[i].offsetParent !== null) { window.location.href = links[i].href; return links[i].href; }
+        }
+        return null;
+    """)
+    if lm:
+        log(f"learn_more.php fallback: {lm[:80]}")
+        return True
 
     return False
 

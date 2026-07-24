@@ -8,7 +8,7 @@
 ## Current State
 
 - **Last updated:** 2026-07-24
-- **Latest remote commit:** `28aac05` (fix: destination capture, relay, automation.py fixes, AUTOMATION.md update)
+- **Latest remote commit:** `87e7b9c` (docs: update AGENTS.md with commit status)
 - **Local codebase status:** CLEAN — all changes committed and pushed
 - **Git status:** Up to date with origin/main
 

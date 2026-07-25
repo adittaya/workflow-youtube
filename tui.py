@@ -82,6 +82,19 @@ def get_supabase_creds(settings):
         ss = ss or legacy.get("supabase_secret", "")
     return su, sk, ss
 
+def normalize_key(val):
+    """Extract key code from URL or return as-is. Accepts:
+    - 'https://vplink.in/XXXX' → 'XXXX'
+    - 'vplink.in/XXXX' → 'XXXX'
+    - 'XXXX' → 'XXXX'
+    """
+    val = val.strip()
+    if "://" in val:
+        val = val.split("://", 1)[1]
+    if "/" in val:
+        val = val.split("/", 1)[1]
+    return val.strip().rstrip("/")
+
 # ─── GitHub API ───────────────────────────────────────────────────────────────
 
 def gh(endpoint, token, method="GET", body=None):
@@ -602,11 +615,12 @@ def screen_deploy():
     if not repo_name:
         return
     full_name = repo_name if repo_name.startswith("vplink-") else f"vplink-{repo_name}"
-    key = prompt("VPLINK_KEY")
+    key = prompt("VPLINK_KEY (raw key or full URL)")
     if not key:
         error("VPLINK_KEY is required")
         input(f"\n  Press Enter to continue...")
         return
+    key = normalize_key(key)
 
     if not confirm(f"Deploy {full_name} as @{username}?"):
         return
@@ -936,7 +950,8 @@ def screen_dispatch():
     owner = repo["owner"]["login"]
     rn = repo["name"]
 
-    key = prompt("VPLINK_KEY (leave blank for default)")
+    key = prompt("VPLINK_KEY (leave blank for default, or paste URL)")
+    key = normalize_key(key) if key else ""
     inputs = {"key": key} if key else {}
 
     if not confirm(f"Trigger workflow on {rn}?"):
@@ -1002,8 +1017,8 @@ def screen_settings():
             save_json("settings.json", settings)
             success("Saved")
         elif choice == "4":
-            val = prompt("Default VPLINK_KEY", settings.get("vplink_key"))
-            settings["vplink_key"] = val
+            val = prompt("Default VPLINK_KEY (raw key or URL)", settings.get("vplink_key"))
+            settings["vplink_key"] = normalize_key(val) if val else val
             save_json("settings.json", settings)
             success("Saved")
         elif choice == "5":

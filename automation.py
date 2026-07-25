@@ -2284,6 +2284,28 @@ def handle_article():
     ready, height, body_len = wait_for_page_ready(min_height=200, timeout_sec=15)
     log(f"page ready: {ready}, height={height}, body_len={body_len}")
 
+    # CSS shell detection: page loaded CSS (height > 500) but JS content didn't render (body_len < 100)
+    # This happens when proxy IP is blocked by the target domain — site serves empty HTML shell
+    if not ready and height > 500 and body_len < 100:
+        log(f"CSS shell detected (height={height}, body_len={body_len}) — proxy likely blocking content")
+        report_proxy_failure("content-blocked")
+        # Try raw HTML extraction one last time — might find redirect in scripts/meta
+        lm_url = find_learn_more_in_html()
+        if lm_url:
+            log(f"found learn_more.php in CSS shell raw HTML — navigating")
+            return True
+        redirect = extract_redirect_from_html()
+        if redirect:
+            log(f"found redirect in CSS shell raw HTML — navigating: {redirect[:80]}")
+            try:
+                adpt_load.set_page_load(driver)
+                driver.get(redirect)
+            except Exception:
+                adpt_load.timeout_occured()
+            human_delay(2000, 4000)
+            return True
+        return False  # Don't waste 20s on reload — same proxy will get same empty page
+
     if not ready or height < 50:
         if body_len > 200:
             log("page has content but height=0 — trying to force-render...")
@@ -2330,6 +2352,7 @@ def handle_article():
 
             if not ready or height < 50:
                 log("reload also failed — proxy may be blocking this domain, returning False")
+                report_proxy_failure("reload-failed")
                 return False
 
     # Verify JS is actually working
@@ -2892,7 +2915,23 @@ def main():
           if cur_url and cur_url.startswith("http"):
               ready, h, bl = wait_for_page_ready(min_height=100, timeout_sec=10)
               log(f"post-redirect page ready: {ready}, height={h}, body_len={bl}")
-              if not ready or h < 50:
+              # CSS shell: page has CSS height but no content — proxy blocked JS/text
+              if not ready and h > 500 and bl < 100:
+                  log(f"post-redirect CSS shell (h={h}, bl={bl}) — trying raw HTML extraction")
+                  report_proxy_failure("content-blocked")
+                  html = get_raw_html(3000)
+                  redirect = extract_redirect_from_html(html)
+                  if redirect:
+                      full_url = redirect if redirect.startswith("http") else f"https://{safe_url().split('/')[2]}{redirect}"
+                      log(f"guard page redirect found in CSS shell: {full_url[:80]}")
+                      try:
+                          adpt_load.set_page_load(driver)
+                          driver.get(full_url)
+                      except Exception:
+                          adpt_load.timeout_occured()
+                      human_delay(2000, 4000)
+                  # Don't reload — same proxy will get same empty page. Let main loop handle it.
+              elif not ready or h < 50:
                   html = get_raw_html(3000)
                   redirect = extract_redirect_from_html(html)
                   if redirect:
@@ -2911,8 +2950,8 @@ def main():
                           driver.get(cur_url)
                       except Exception:
                           adpt_load.timeout_occured()
-                      human_delay(2000, 4000)
-                  monitor.install(driver)
+                  human_delay(2000, 4000)
+              monitor.install(driver)
 
       vplink_arrivals = 0
       intermediate_stuck_count = 0
@@ -2956,8 +2995,8 @@ def main():
           if url_key in dead_urls:
               log(f"dead URL detected: {url_key[:80]} — force-navigating to vplink.in")
               exhausted_cycles += 1
-              if exhausted_cycles >= 3:
-                  log("3 consecutive dead URL bounces — breaking to final get-link")
+              if exhausted_cycles >= 5:
+                  log("5 consecutive dead URL bounces — breaking to final get-link")
                   break
               last_base = ""
               try:
@@ -3344,8 +3383,8 @@ def main():
           exhausted_cycles += 1
           dead_urls.add(url.split("?")[0].rstrip("/"))
           log(f"exhausted (x{exhausted_cycles}), force-navigating to vplink.in")
-          if exhausted_cycles >= 3:
-              log("3 consecutive exhausted cycles — breaking to final get-link")
+          if exhausted_cycles >= 5:
+              log("5 consecutive exhausted cycles — breaking to final get-link")
               break
           last_base = ""
           try:

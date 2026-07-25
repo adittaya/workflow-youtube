@@ -288,6 +288,8 @@ def deploy_new(repo_name, key, token, username, settings, step_cb=None):
 
     for cmd in [
         ["git", "init", "-b", "main"],
+        ["git", "config", "user.email", "vplink@deploy"],
+        ["git", "config", "user.name", "VPLink Deploy"],
         ["git", "remote", "add", "origin", token_url],
         ["git", "add", "-A"],
         ["git", "commit", "-m", "init: vplink automation relay"],

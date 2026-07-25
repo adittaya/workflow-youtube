@@ -657,7 +657,7 @@ def safe_eval(script, *args):
 
 def get_page_height():
     """Get page scroll height. Returns 0 if unavailable."""
-    h = safe_eval("return document.documentElement.scrollHeight - window.innerHeight;")
+    h = safe_eval("return document.documentElement.scrollHeight;")
     return int(h) if h is not None else 0
 
 
@@ -1016,11 +1016,13 @@ def human_scroll():
 
 
 def human_read(duration_sec=45, known_height=0):
+    """Simulate human reading with keyboard-only scrolling (CDP-exact behavior).
+    Real users: 123 PageDown + 24 ArrowDown, 0 mouse movements across 315 steps."""
     dur = min(duration_sec or 45, 70)
     read_start = time.time()
     start_url = safe_url()
     try:
-        max_scroll = safe_eval("document.documentElement.scrollHeight - window.innerHeight") or 0
+        max_scroll = safe_eval("document.documentElement.scrollHeight") or 0
     except Exception:
         max_scroll = 0
     if max_scroll < 200 and known_height > 200:
@@ -1030,61 +1032,44 @@ def human_read(duration_sec=45, known_height=0):
         log(f"human read: {dur}s, page height={max_scroll}px")
 
     if max_scroll < 200:
-        log("page height too small, performing quick scroll only")
+        log("page height too small, performing quick wait only")
         for _ in range(3):
             ms(1000)
         return
 
     try:
-        current_y = 0
-        iterations = rand(12, 20)
-        for i in range(iterations):
+        scroll_count = rand(15, 35)
+        for i in range(scroll_count):
             if time.time() - read_start >= dur:
                 break
             if safe_url() != start_url:
                 log("human read: page navigated, stopping")
                 break
 
-            scroll_amt = -rand(50, 200) if random.random() < 0.2 else rand(200, 600)
-            current_y = max(0, min(max_scroll or 5000, current_y + scroll_amt))
-            try:
-                safe_eval(f"window.scrollBy(0, {scroll_amt})")
-            except Exception:
-                ms(rand(1000, 3000))
-                continue
+            at_bottom = safe_eval("return (window.innerHeight + window.scrollY) >= document.documentElement.scrollHeight - 50;") or False
 
-            vp_w = profile["viewport"]["width"]
-            vp_h = profile["viewport"]["height"]
-            mx = rand(100, vp_w - 100)
-            my = rand(100, vp_h - 100)
-            try:
-                ActionChains(driver).move_by_offset(mx - vp_w // 2, my - vp_h // 2).pause(random.uniform(0.1, 0.3)).move_by_offset(-(mx - vp_w // 2), -(my - vp_h // 2)).perform()
-            except Exception:
-                ms(rand(1000, 3000))
-                continue
+            if at_bottom:
+                if random.random() < 0.3:
+                    safe_eval("window.scrollBy(0, -200);")
+                    ms(rand(800, 1500))
+                else:
+                    break
+            else:
+                if random.random() < 0.2:
+                    safe_eval("document.dispatchEvent(new KeyboardEvent('keydown', {key:'ArrowDown', keyCode:40, bubbles:true}));")
+                    ms(rand(80, 200))
+                    safe_eval("document.dispatchEvent(new KeyboardEvent('keyup', {key:'ArrowDown', keyCode:40, bubbles:true}));")
+                else:
+                    safe_eval("document.dispatchEvent(new KeyboardEvent('keydown', {key:'PageDown', keyCode:34, bubbles:true}));")
+                    ms(rand(80, 200))
+                    safe_eval("document.dispatchEvent(new KeyboardEvent('keyup', {key:'PageDown', keyCode:34, bubbles:true}));")
 
-            if random.random() < 0.2:
-                safe_eval("""
-                    var el = document.elementFromPoint(Math.random() * window.innerWidth, Math.random() * window.innerHeight);
-                    if (el) el.dispatchEvent(new MouseEvent('mouseover', {bubbles: true}));
-                """)
-
-            pause = rand(3000, 7000)
+            pause = rand(1500, 4000)
             ms(pause)
 
             if random.random() < 0.15:
-                try:
-                    safe_eval(f"window.scrollBy(0, -{rand(100, 300)})")
-                except Exception:
-                    pass
-                ms(rand(1000, 2500))
-
-            if random.random() < 0.15:
-                try:
-                    ActionChains(driver).move_by_offset(rand(-30, 30), rand(-20, 20)).perform()
-                except Exception:
-                    pass
-                ms(rand(200, 600))
+                safe_eval("window.scrollBy(0, -150);")
+                ms(rand(500, 1200))
     except Exception as e:
         log(f"human read error: {str(e)[:60]}")
     log(f"human read done ({int(time.time() - read_start)}s)")
@@ -1107,8 +1092,7 @@ def human_mouse_move(selector):
 
 
 def human_click(selector):
-    human_mouse_move(selector)
-    human_delay(200, 500)
+    human_delay(100, 300)
     try:
         el = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.CSS_SELECTOR, selector)))
         el.click()
@@ -1497,6 +1481,22 @@ def close_ad_overlay():
         }}
         return false;
     """)
+    # CDP: SafeFrame dismiss happens BEFORE gcont on subsequent pages
+    if not closed:
+        closed = safe_eval("""
+            var closeSelectors = ['#close-button > div', '#close-ad-button', '#close-button'];
+            for (var s = 0; s < closeSelectors.length; s++) {
+                var els = document.querySelectorAll(closeSelectors[s]);
+                for (var i = 0; i < els.length; i++) {
+                    var style = getComputedStyle(els[i]);
+                    if (style.display !== 'none' && style.visibility !== 'hidden') {
+                        els[i].click();
+                        return 'iframe-' + closeSelectors[s];
+                    }
+                }
+            }
+            return false;
+        """)
     if not closed:
         closed = safe_eval("""
             var gcont = document.getElementById('gcont');
@@ -1505,22 +1505,6 @@ def close_ad_overlay():
             if (style.position !== 'fixed') return false;
             var svg = gcont.querySelector('.bgcount svg');
             if (svg) {{ svg.click(); return 'gcont-svg'; }}
-            return false;
-        """)
-    # CDP step 7-8: Close SafeFrame iframe ads (#close-button, #close-ad-button)
-    if not closed:
-        closed = safe_eval("""
-            var closeSelectors = ['#close-button > div', '#close-ad-button', '#close-button'];
-            for (var s = 0; s < closeSelectors.length; s++) {
-                var els = document.querySelectorAll(closeSelectors[s]);
-                for (var i = 0; i < els.length; i++) {
-                    var style = getComputedStyle(els[i]);
-                    if (style.display !== 'none' && style.visibility !== 'hidden' && els[i].offsetParent !== null) {
-                        els[i].click();
-                        return 'iframe-' + closeSelectors[s];
-                    }
-                }
-            }
             return false;
         """)
     if closed:
@@ -1711,7 +1695,7 @@ def handle_tp():
     close_ad_overlay()
 
     log("waiting for tp-snp2 (Continue) to appear...")
-    for w in range(60):
+    for w in range(35):
         if "#goog_rewarded" in safe_url():
             log("#goog_rewarded appeared, handling ad...")
             handle_goog_rewarded()
@@ -2304,7 +2288,10 @@ def handle_article():
         if body_len > 200:
             log("page has content but height=0 — trying to force-render...")
             safe_eval("""
+                var skipIds = ['block-cont-1','gcont','goog_rewarded','close-button','close-ad-button'];
                 document.querySelectorAll('*').forEach(function(el) {
+                    if (skipIds.indexOf(el.id) >= 0) return;
+                    if (el.closest('#block-cont-1') || el.closest('#gcont') || el.closest('#goog_rewarded')) return;
                     var s = window.getComputedStyle(el);
                     if (s.display === 'none') el.style.display = '';
                     if (s.visibility === 'hidden') el.style.visibility = '';
@@ -2537,16 +2524,19 @@ def do_get_link():
             destination_url = fast_dest
             return True
 
-        # Click #get-link, retry if nothing opened (up to 5 clicks)
+        # Click #get-link — CDP shows 2 clicks needed (first activates, second navigates)
         for click_attempt in range(5):
-            human_delay(800, 2000)
-            human_mouse_move("#get-link")
-            human_delay(300, 700)
+            human_delay(500, 1200)
             pre_url = safe_url()
             pre_handles = set(driver.window_handles)
 
             log(f"clicking #get-link (attempt {click_attempt + 1})...")
             human_click("#get-link")
+
+            # CDP: first click often doesn't navigate — wait 2s then click again
+            if click_attempt == 0:
+                ms(2000)
+                human_click("#get-link")
 
             # Wait up to 5s per attempt to see if page opened
             for wait in range(5):
@@ -2574,9 +2564,17 @@ def do_get_link():
                 log(f"nothing opened after click {click_attempt + 1}, retrying...")
                 continue
 
-            # Something opened — wait 10s for full load then capture
-            log("page opened, waiting 10s for full load...")
-            ms(10000)
+            # Something opened — adaptive wait for full load
+            log("page opened, waiting for load...")
+            for load_wait in range(10):
+                ms(1000)
+                try:
+                    ready_state = driver.execute_script("return document.readyState;")
+                except Exception:
+                    ready_state = "loading"
+                if ready_state == "complete":
+                    log(f"page loaded after {load_wait + 1}s")
+                    break
 
             # Capture whatever is there
             try:

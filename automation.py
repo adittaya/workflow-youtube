@@ -1022,7 +1022,7 @@ def human_read(duration_sec=45, known_height=0):
     read_start = time.time()
     start_url = safe_url()
     try:
-        max_scroll = safe_eval("document.documentElement.scrollHeight") or 0
+        max_scroll = safe_eval("return document.documentElement.scrollHeight;") or 0
     except Exception:
         max_scroll = 0
     if max_scroll < 200 and known_height > 200:

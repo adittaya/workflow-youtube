@@ -8,10 +8,11 @@
 ## Current State
 
 - **Last updated:** 2026-07-25
-- **Latest remote commit:** `d753467` (fix: add no-proxy fallback attempt + debug VPLINK_PROXY echo)
-- **Local codebase status:** MODIFIED — CSS shell detection, proxy rotation fix, no-proxy fallback
-- **Git status:** clean. Accounts configured: main (@adittaya), second (@rtff5665)
-- **Test results:** CI SUCCESS — Attempt 1 completed 390s, all 4 templates (TP→CE→LINK1S→get-link), destination captured: capecutapk.com
+- **Latest local commit:** `fix: relay step always() to survive job timeout`
+- **Local codebase status:** MODIFIED — relay fix
+- **Git status:** modified: .github/workflows/continuous.yml. Accounts: main (@adittaya), second (@rtff5665)
+- **Test results:** CI SUCCESS — Attempt 1 completed 390s, all 4 templates, destination: capecutapk.com
+- **24/7 relay root cause:** Relay step had `if: success() || failure()` which skips on `cancelled` (job timeout). Fixed to `if: always()`
 
 ## What Has Been Done
 
@@ -384,12 +385,24 @@
 195. **continuous.yml** — Bash `timeout` per attempt increased from 580→880 seconds
 196. **automation.py** — `AUTOMATION_HARD_TIMEOUT` increased from 600→900 seconds (15 min)
 
+### Code Changes Made (This Session — 24/7 Relay Fix)
+
+197. **continuous.yml** — **CRITICAL FIX**: Relay step condition changed from `if: success() || failure()` to `if: always()`. Root cause: when job times out (15-min limit), conclusion=`cancelled`, relay step skipped (`success()||failure()` doesn't cover `cancelled`), self-relay loop breaks. Verified: vplink-ttrgg55 cancelled at 15m18s → relay skipped → only 1 run ever. vplink-bugu works because automation finishes within timeout.
+
 ### Analysis
 
 - Failed run ran 4 cycles in 580s, was on final step at 511s
 - Killed by `timeout 580` (69s before completion)
 - Direct fallback killed by step `timeout-minutes: 10` after only 4.5s
 - All three timeouts needed to increase to give automation enough room
+
+### 24/7 Relay Analysis (This Session)
+
+- vplink-ttrgg55: Only 1 run ever — automation took 14m34s, job timed out at 15m18s, `conclusion=cancelled`, relay step `skipped` (`if: success() || failure()` doesn't match `cancelled`)
+- vplink-bugu: 8 runs via relay chain — automation finishes within 15 min, relay fires on both success and failure
+- Main account (@adittaya): 1159 runs — relay chain working continuously
+- **Root cause**: GitHub Actions `cancelled` status (from job timeout) is NOT covered by `success() || failure()` — only `always()` covers all states
+- **Fix**: Changed relay condition to `if: always()` — relay now fires regardless of job outcome
 
 ## Pending / User Requests
 

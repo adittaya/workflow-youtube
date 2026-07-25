@@ -153,7 +153,7 @@ jobs:
           fi
 
       - name: Relay — trigger next run
-        if: success() || failure()
+        if: always()
         env:
           TRIGGER_TOKEN: ${{ secrets.LOOP_TRIGGER_TOKEN }}
         run: |

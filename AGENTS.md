@@ -8,7 +8,7 @@
 ## Current State
 
 - **Last updated:** 2026-07-25
-- **Latest remote commit:** `8c8d372` (feat: VPLINK_KEY now accepts raw URLs)
+- **Latest remote commit:** `66db35e` (fix: push LOOP_TRIGGER_TOKEN during deploy + force-render height=0 pages)
 - **Local codebase status:** MODIFIED — TUI deploy secrets encryption fixed, workflow dispatch added
 - **Git status:** tui.py modified. Accounts configured: main (@adittaya), second (@rtff5665)
 
@@ -334,6 +334,12 @@
 161. **tui.py** — `deploy_new()`: Added `GIT_AUTHOR_EMAIL/NAME` and `GIT_COMMITTER_EMAIL/NAME` env vars — more reliable than git config, always works regardless of host state
 162. **tui.py** — Added `normalize_key()`: extracts key code from URLs like `https://vplink.in/XXXX` → `XXXX`
 163. **tui.py** — Deploy, Settings, and Dispatch screens: VPLINK_KEY now accepts raw URLs
+
+### Code Changes Made (This Session — Deploy Loop Trigger + Force-Render)
+
+164. **tui.py** — `deploy_new()`: Added `LOOP_TRIGGER_TOKEN` to secrets_map (PAT for relay dispatch — was missing, root cause of cross-account relay failure)
+165. **automation.py** — `handle_article()`: When height=0 but body_len>200, force-reveals hidden elements by removing display:none/visibility:hidden/opacity:0 CSS before giving up
+166. **All 3 deployed repos** — Pushed LOOP_TRIGGER_TOKEN secret via API (vplink-hihguhu, vplink-tuygyg767, vplink-uhgy66)
 
 ## Pending / User Requests
 

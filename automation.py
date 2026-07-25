@@ -2413,6 +2413,25 @@ def handle_article():
             if template != "unknown":
                 fp = None
 
+            # Mid-flow guard page: page has no VPLink elements but we got here via learn_more.php
+            # Check raw HTML for the next learn_more.php link and follow it
+            if template == "unknown" and (not fp or not fp.get("page_type") or fp.get("page_type") == "unknown"):
+                if _funnel_progress > 0:
+                    lm = find_learn_more_in_html()
+                    if lm:
+                        log(f"guard page mid-flow: followed learn_more.php from raw HTML -> {lm[:80]}")
+                        return True
+                    redirect = extract_redirect_from_html()
+                    if redirect:
+                        log(f"guard page mid-flow: followed redirect from raw HTML -> {redirect[:80]}")
+                        try:
+                            adpt_load.set_page_load(driver)
+                            driver.get(redirect)
+                        except Exception:
+                            adpt_load.timeout_occured()
+                        human_delay(2000, 4000)
+                        return True
+
     countdown = get_countdown()
     read_secs = max(countdown + 5, 35) if countdown > 0 else rand(35, 55)
     human_read(min(read_secs, 65), known_height=height)
@@ -3382,6 +3401,13 @@ def main():
                   continue
           exhausted_cycles += 1
           dead_urls.add(url.split("?")[0].rstrip("/"))
+          # Before force-navigating, try raw HTML for learn_more.php (guard page mid-flow)
+          if _funnel_progress > 0:
+              lm = find_learn_more_in_html()
+              if lm:
+                  log(f"exhausted but found learn_more.php in raw HTML -> {lm[:80]}")
+                  human_delay(2000, 4000)
+                  continue
           log(f"exhausted (x{exhausted_cycles}), force-navigating to vplink.in")
           if exhausted_cycles >= 5:
               log("5 consecutive exhausted cycles — breaking to final get-link")

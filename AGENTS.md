@@ -389,6 +389,11 @@
 
 197. **continuous.yml** — **CRITICAL FIX**: Relay step condition changed from `if: success() || failure()` to `if: always()`. Root cause: when job times out (15-min limit), conclusion=`cancelled`, relay step skipped (`success()||failure()` doesn't cover `cancelled`), self-relay loop breaks. Verified: vplink-ttrgg55 cancelled at 15m18s → relay skipped → only 1 run ever. vplink-bugu works because automation finishes within timeout.
 
+### Code Changes Made (This Session — Guard Page Flow Continuation)
+
+198. **automation.py** — `handle_article()`: After all-false fingerprint wait loop, if mid-flow (`_funnel_progress > 0`), checks raw HTML for `learn_more.php` links via `find_learn_more_in_html()` and `extract_redirect_from_html()` — follows the flow instead of force-navigating back to vplink.in. Guard pages (no VPLink elements) are now treated as pass-through: extract the next redirect from HTML and keep going.
+199. **automation.py** — Main loop exhausted handler: Before force-navigating, checks raw HTML for `learn_more.php` when mid-flow (`_funnel_progress > 0`). Prevents breaking the chain when a guard page has no VPLink elements.
+
 ### Analysis
 
 - Failed run ran 4 cycles in 580s, was on final step at 511s

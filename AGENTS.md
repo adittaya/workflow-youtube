@@ -27,6 +27,7 @@
 | `config.py` | ~100 | OK | Config management (Supabase, proxy settings) |
 | `schema.sql` | - | OK | Database schema |
 | `AUTOMATION.md` | ~558 | MODIFIED | Comprehensive automation system guide — blueprint-aligned |
+| `AUTOMATION_GUIDE.md` | ~1355 | MODIFIED | General web automation blueprint — updated with VPLink lessons |
 | `AGENTS.md` | this file | MODIFIED | Session progress tracker |
 
 ## Architecture Summary

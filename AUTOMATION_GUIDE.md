@@ -175,6 +175,143 @@ WebDriverWait(driver, 30).until(
 
 **Recommendation:** Always use explicit waits. Never use `time.sleep()` for synchronization.
 
+### Raw HTML Fallback (When JS Fails)
+
+Sometimes the page's JavaScript doesn't execute — headless Chrome is detected, a proxy strips scripts, or the page requires specific cookies. The DOM is empty but the HTML source still contains the data you need.
+
+```python
+def get_raw_html(driver, max_len=5000):
+    """Get page source even when JS didn't execute."""
+    return driver.execute_script(
+        "return (document.documentElement.outerHTML || '').substring(0, arguments[0]);",
+        max_len
+    )
+
+def find_next_url_in_html(html):
+    """Extract the next navigation URL from raw HTML source."""
+    import re
+    # Look for learn_more.php links
+    m = re.search(r'href="([^"]*learn_more\.php[^"]*)"', html)
+    if m:
+        return m.group(1)
+    # Look for window.location redirects
+    m = re.search(r"window\.location(?:\.href)?\s*=\s*['\"]([^'\"]+)['\"]", html)
+    if m:
+        return m.group(1)
+    # Look for meta refresh
+    m = re.search(r'<meta[^>]*http-equiv="refresh"[^>]*content="\d+;\s*url=([^"]+)"', html, re.I)
+    if m:
+        return m.group(1)
+    return None
+```
+
+**When to use:** When `page_height == 0` or `body_text_length < 100` but the page URL suggests you should be on content. The HTML source is served by the server regardless of whether JS runs.
+
+**Real-world pattern (VPLink funnels):** Redirect chains sometimes pass through "guard pages" with no interactive elements. The next URL is embedded in the HTML source as a `learn_more.php` link. Extract it and navigate — don't break the chain by going back to the start.
+
+### Iframe and Ad Handling
+
+Modern web pages embed ads in iframes (Google SafeFrame, etc.). You need to handle both the main page and embedded content.
+
+```python
+def close_ad_overlays(driver):
+    """Close ad overlays in CDP-verified order: main page first, then iframes."""
+    # 1. Remove main page overlays
+    driver.execute_script("""
+        var el = document.getElementById('block-cont-1');
+        if (el) el.remove();
+        el = document.getElementById('gcont');
+        if (el) el.remove();
+    """)
+    
+    # 2. Handle iframe close buttons (Google SafeFrame)
+    for iframe_id in ['google_ads_frame', 'aswift_0']:
+        try:
+            driver.switch_to.frame(iframe_id)
+            close_btn = driver.find_elements(By.CSS_SELECTOR, '#close-button > div, #close-ad-button')
+            if close_btn:
+                close_btn[0].click()
+            driver.switch_to.default_content()
+        except Exception:
+            driver.switch_to.default_content()
+```
+
+**Key insight:** Dismiss ads BEFORE interacting with content, not after. CDP recordings show real users close overlays immediately — they don't scroll past ads first.
+
+### Headless Detection Bypass
+
+Sites detect headless Chrome by checking for specific signals. Here's how to bypass the most common checks:
+
+```python
+stealth_js = """
+// 1. Hide webdriver flag
+Object.defineProperty(navigator, 'webdriver', {get: () => false});
+
+// 2. Fake plugins array
+Object.defineProperty(navigator, 'plugins', {
+    get: () => [1, 2, 3, 4, 5]
+});
+
+// 3. Fake languages
+Object.defineProperty(navigator, 'languages', {
+    get: () => ['en-US', 'en']
+});
+
+// 4. Override permissions API
+const originalQuery = window.navigator.permissions.query;
+window.navigator.permissions.query = (parameters) => (
+    parameters.name === 'notifications' ?
+    Promise.resolve({ state: Notification.permission }) :
+    originalQuery(parameters)
+);
+
+// 5. Hide Chrome automation flags
+delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+
+// 6. Fake chrome.runtime
+window.chrome = { runtime: {} };
+
+// 7. Override screen dimensions (match your viewport)
+Object.defineProperty(screen, 'width', {get: () => 1920});
+Object.defineProperty(screen, 'height', {get: () => 1080});
+Object.defineProperty(screen, 'availWidth', {get: () => 1920});
+Object.defineProperty(screen, 'availHeight', {get: () => 1040});
+"""
+
+driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": stealth_js})
+```
+
+**Advanced: CSS Shell Detection**
+
+Some sites serve an empty HTML shell when they detect automation — the page has CSS (height > 500px) but no body content (text length < 100). Detect this to fail fast instead of waiting for a timeout:
+
+```python
+def is_css_shell(driver):
+    """Detect when site serves empty shell (proxy blocked or bot detected)."""
+    height = driver.execute_script("return document.body.scrollHeight;")
+    text_len = driver.execute_script("return (document.body.innerText || '').length;")
+    return height > 500 and text_len < 100
+```
+
+**Advanced: Force-Render Hidden Content**
+
+Sometimes the page loads content but hides it with CSS. Force-reveal by removing hidden styles:
+
+```python
+def force_render(driver):
+    """Remove display:none/visibility:hidden/opacity:0 from hidden elements."""
+    driver.execute_script("""
+        document.querySelectorAll('*').forEach(function(el) {
+            var s = window.getComputedStyle(el);
+            if (s.display === 'none') el.style.display = '';
+            if (s.visibility === 'hidden') el.style.visibility = '';
+            if (s.opacity === '0') el.style.opacity = '1';
+        });
+    """)
+```
+
 ### MutationObserver (Real-Time Detection)
 
 Instead of polling the DOM, watch for changes:
@@ -377,28 +514,49 @@ def human_type(element, text):
         element.send_keys(char)
         time.sleep(random.uniform(0.05, 0.15))
 
-def human_scroll():
+def human_scroll(driver):
     """Random scroll patterns."""
     scroll_amount = random.randint(100, 500)
     driver.execute_script(f"window.scrollBy(0, {scroll_amount})")
     time.sleep(random.uniform(0.5, 1.5))
 
-def human_mouse_move(element):
-    """Move mouse to element before clicking."""
+def human_click(driver, selector):
+    """Click with random offset, falls back to JS click."""
+    element = driver.find_element(By.CSS_SELECTOR, selector)
     action = ActionChains(driver)
-    action.move_to_element(element)
+    action.move_to_element_with_offset(element, random.randint(-5, 5), random.randint(-5, 5))
     action.pause(random.uniform(0.1, 0.3))
     action.click()
     action.perform()
 ```
 
+### Keyboard-Only Scrolling (CDP-Verified)
+
+**Lesson learned from CDP recording analysis:** Real users on mobile don't use mouse/trackpad scrolling — they use keyboard (PageDown/ArrowDown). CDP recordings show 0 mouse movements across 315 steps, with 259 keyboard scroll events.
+
+```python
+def human_read(driver, duration_sec):
+    """Simulate reading with keyboard scrolling — no mouse movement."""
+    end_time = time.time() + duration_sec
+    while time.time() < end_time:
+        # Scroll with keyboard events (not mouse wheel)
+        key = random.choice(["PageDown", "ArrowDown"])
+        driver.execute_script(f"""
+            var ev = new KeyboardEvent('keydown', {{key: '{key}', code: '{key}', bubbles: true}});
+            document.dispatchEvent(ev);
+        """)
+        time.sleep(random.uniform(0.3, 0.8))
+```
+
+**Why this matters:** Anti-bot systems track mouse movement patterns. If you move the mouse in bezier curves to each element but never scroll with the keyboard, you look like a bot. Real users scroll first, then interact.
+
 ### User Agent Rotation
 
 ```python
 USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/127.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/127.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/127.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
 ]
 
 def get_random_ua():
@@ -654,7 +812,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
       - run: pip install -r requirements.txt
       - run: python automation.py
         env:
@@ -691,6 +849,34 @@ app.conf.beat_schedule = {
         'args': ('https://target.com',),
     },
 }
+```
+
+### Relay Dispatch (24/7 Infinite Loop)
+
+For always-on automation, use `repository_dispatch` to chain workflow runs:
+
+```yaml
+# At the end of your workflow:
+  relay:
+    runs-on: ubuntu-latest
+    if: always()  # CRITICAL: covers success, failure, AND cancelled
+    steps:
+      - run: |
+          curl -X POST \
+            -H "Authorization: token ${{ secrets.TRIGGER_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository }}/dispatches \
+            -d '{"event_type": "relay"}'
+```
+
+**Critical lesson learned:** Use `if: always()`, NOT `if: success() || failure()`. When a job times out, GitHub Actions sets `conclusion=cancelled` — which is NOT covered by `success() || failure()`. This silently breaks the relay loop. Only `always()` covers all states.
+
+```yaml
+# WRONG — breaks on job timeout:
+    if: success() || failure()
+
+# CORRECT — covers all states including cancelled:
+    if: always()
 ```
 
 ---
@@ -1013,6 +1199,134 @@ async def scrape():
 async def scrape():
     await page.goto(url)
     await page.wait_for_selector("#btn")
+```
+
+---
+
+## Lessons Learned (Production Patterns)
+
+These patterns were discovered through real-world debugging of a VPLink funnel automation running 24/7 on GitHub Actions.
+
+### 1. Guard Page Pattern
+
+When following redirect chains, some pages have no interactive elements — they're "guard pages" that sit between content pages. Don't break the chain.
+
+```python
+# BAD: Guard page has no buttons, so go back to start
+if not has_interactive_elements(driver):
+    driver.get("https://start.com")  # Breaks the chain, wastes time
+
+# GOOD: Extract next URL from raw HTML and follow it
+if not has_interactive_elements(driver):
+    html = get_raw_html(driver)
+    next_url = find_next_url_in_html(html)
+    if next_url:
+        driver.get(next_url)  # Keeps the chain intact
+```
+
+### 2. Funnel Progress Guard
+
+Don't classify a page as a "destination" until you've actually entered the funnel. Empty article pages (where JS didn't execute) can look like destinations because they have valid hostnames.
+
+```python
+funnel_progress = 0  # Track how many funnel steps completed
+
+# In main loop:
+if is_intermediate_page(url):  # learn_more.php
+    funnel_progress += 1
+
+# When checking if we reached the destination:
+def is_destination(url, funnel_progress):
+    if funnel_progress == 0:
+        return False  # Haven't entered the funnel yet — can't be destination
+    # ... other checks ...
+```
+
+### 3. CSS Shell Detection
+
+When a proxy IP is blocked, the target site serves an empty CSS shell — the page has height (CSS loaded) but no body content (JS blocked). Detect this to fail fast:
+
+```python
+height = driver.execute_script("return document.body.scrollHeight;")
+text_len = driver.execute_script("return (document.body.innerText || '').length;")
+
+if height > 500 and text_len < 100:
+    # CSS shell — proxy is blocked, don't waste 20s on reload
+    report_proxy_failure(driver, "content-blocked")
+    return False
+```
+
+### 4. 2-Click Pattern
+
+Some buttons require 2 clicks — the first click activates/opens the element, the second click actually navigates. CDP recordings show this is normal user behavior.
+
+```python
+# First click — activates the button
+button.click()
+time.sleep(2)
+
+# Second click — actually navigates
+button.click()
+```
+
+### 5. Dead URL Tracking
+
+Track URLs that have failed to avoid infinite loops on the same dead page:
+
+```python
+dead_urls = set()
+
+def handle_url(url):
+    normalized = url.split("?")[0].rstrip("/")
+    if normalized in dead_urls:
+        # Already failed here — force-navigate away
+        driver.get("https://start.com")
+        return
+    
+    success = try_page(driver, url)
+    if not success:
+        dead_urls.add(normalized)
+```
+
+### 6. Ad Dismissal Order (CDP-Verified)
+
+Real users dismiss ALL ads BEFORE reading content — not after. CDP recordings show ad clicks at steps 4-8, content reading at steps 9-80.
+
+```python
+# GOOD: Close ads first, then read
+close_ad_overlays(driver)
+handle_popups(driver)
+read_content(driver)  # Now read
+
+# BAD: Read first, then try to close ads
+read_content(driver)
+close_ad_overlays(driver)  # Too late — ad already tracked you
+```
+
+### 7. Page Load Strategy: "none"
+
+For fine-grained control over page loads, use `driver.set_page_load_strategy("none")`. Selenium returns immediately without waiting for all resources. Handle waits manually with explicit conditions.
+
+**Why:** Pages with heavy ad scripts can stall the `load` event for 30+ seconds. With `"none"`, you control when to stop waiting.
+
+### 8. Circuit Breaker for Proxy Failures
+
+Track consecutive failures per proxy and blacklist after a threshold:
+
+```python
+class ProxyCircuitBreaker:
+    def __init__(self, threshold=3):
+        self.failures = 0
+        self.threshold = threshold
+    
+    def record_failure(self):
+        self.failures += 1
+        if self.failures >= self.threshold:
+            return True  # Should blacklist
+        return False
+    
+    def record_success(self):
+        self.failures = 0
 ```
 
 ---

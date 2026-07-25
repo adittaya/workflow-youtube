@@ -60,6 +60,28 @@ def save_json(name, data):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     _data_path(name).write_text(json.dumps(data, indent=2))
 
+def load_legacy_config():
+    """Load Supabase creds from ~/.config/vplink3/config.json as fallback."""
+    p = Path.home() / ".config" / "vplink3" / "config.json"
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text("utf-8"))
+    except Exception:
+        return {}
+
+def get_supabase_creds(settings):
+    """Get Supabase credentials from settings, falling back to legacy config."""
+    su = settings.get("supabase_url", "")
+    sk = settings.get("supabase_key", "")
+    ss = settings.get("supabase_secret", "")
+    if not su:
+        legacy = load_legacy_config()
+        su = su or legacy.get("supabase_url", "")
+        sk = sk or legacy.get("supabase_key", "")
+        ss = ss or legacy.get("supabase_secret", "")
+    return su, sk, ss
+
 # ─── GitHub API ───────────────────────────────────────────────────────────────
 
 def gh(endpoint, token, method="GET", body=None):
@@ -284,10 +306,16 @@ def deploy_new(repo_name, key, token, username, settings, step_cb=None):
     # Set secrets with encryption
     step(6, "Setting encrypted secrets...")
     secrets = {"VPLINK_KEY": key, "RELAY_TARGET_REPO": f"{username}/{full_name}"}
-    for k in ["SUPABASE_URL", "SUPABASE_KEY", "SUPABASE_SECRET"]:
-        v = settings.get(k.lower(), "")
-        if v:
-            secrets[k] = v
+    su, sk, ss = get_supabase_creds(settings)
+    if su:
+        secrets["SUPABASE_URL"] = su
+    if sk:
+        secrets["SUPABASE_KEY"] = sk
+    if ss:
+        secrets["SUPABASE_SECRET"] = ss
+    if not su:
+        warn("No Supabase URL found — proxy will not work on deployed repo!")
+        warn("Set it in Settings [1] or ~/.config/vplink3/config.json")
 
     secret_errors = []
     for sname, sval in secrets.items():

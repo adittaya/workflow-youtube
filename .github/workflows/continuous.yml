@@ -40,6 +40,9 @@ jobs:
             exit 1
           fi
           echo "VPLINK_KEY=$VPLINK_KEY"
+          if [ -z "$SUPABASE_URL" ]; then
+            echo "::warning::SUPABASE_URL is empty — proxy will not work"
+          fi
 
       - name: Setup Python
         uses: actions/setup-python@v5

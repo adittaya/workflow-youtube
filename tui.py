@@ -294,7 +294,7 @@ def deploy_new(repo_name, key, token, username, settings, step_cb=None):
     # Create repo
     step(2, f"Creating repo {full_name}...")
     create_resp = gh("/user/repos", token, "POST", {
-        "name": full_name, "private": True, "auto_init": True,
+        "name": full_name, "private": False, "auto_init": True,
         "description": "VPLink automation relay",
     })
     if isinstance(create_resp, dict) and create_resp.get("error"):

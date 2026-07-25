@@ -8,7 +8,7 @@
 ## Current State
 
 - **Last updated:** 2026-07-25
-- **Latest remote commit:** `b15f122` (fix: 3 KeyError crash guards in TUI screens)
+- **Latest remote commit:** `45d28d6` (fix: deploy now loads Supabase creds from legacy config + validates in CI)
 - **Local codebase status:** MODIFIED — TUI deploy secrets encryption fixed, workflow dispatch added
 - **Git status:** tui.py modified. Accounts configured: main (@adittaya), second (@rtff5665)
 
@@ -319,6 +319,14 @@
 152. **tui.py** — `screen_sync()`: Moved `status = "unknown"` and `dest = ""` before try block to prevent NameError when `get_runs()` throws
 153. **tui.py** — `screen_remove()`: Changed `d["status"]` to `d.get("status", "?")` to prevent KeyError on deployments missing status field
 154. **tui.py** — `screen_status()`: Changed `latest["status"]` to `latest.get("status", "unknown")` to prevent KeyError on runs missing status field
+
+### Code Changes Made (This Session — Deploy Credentials Fix)
+
+155. **tui.py** — Added `load_legacy_config()`: reads `~/.config/vplink3/config.json` for Supabase credentials
+156. **tui.py** — Added `get_supabase_creds(settings)`: returns Supabase URL/key/secret from settings with fallback to legacy config
+157. **tui.py** — `deploy_new()`: Uses `get_supabase_creds()` — now loads from legacy config if settings.json is empty. Warns user when no Supabase URL found.
+158. **continuous.yml** — Added `SUPABASE_URL` empty check in "Validate key" step (warns instead of failing)
+159. **vplink-deploy1** — Pushed SUPABASE_URL, SUPABASE_KEY, SUPABASE_SECRET secrets via API to fix running deployment
 
 ## Pending / User Requests
 

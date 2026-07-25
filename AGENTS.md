@@ -378,6 +378,19 @@
 192. **tui.py** — `screen_deploy()`: Added repo name validation before proceeding with deploy
 193. **tui.py** — Replaced all hardcoded timeouts with named constants (30s→`GH_TIMEOUT`, 60s→`GIT_TIMEOUT`, etc.)
 
+### Code Changes Made (This Session — Timeout Increase)
+
+194. **continuous.yml** — Step `timeout-minutes` increased from 10→15 (automation needs more room for 4+ cycle flows)
+195. **continuous.yml** — Bash `timeout` per attempt increased from 580→880 seconds
+196. **automation.py** — `AUTOMATION_HARD_TIMEOUT` increased from 600→900 seconds (15 min)
+
+### Analysis
+
+- Failed run ran 4 cycles in 580s, was on final step at 511s
+- Killed by `timeout 580` (69s before completion)
+- Direct fallback killed by step `timeout-minutes: 10` after only 4.5s
+- All three timeouts needed to increase to give automation enough room
+
 ## Pending / User Requests
 
 - User wants: comprehensive flow engine that handles ANY VPLink-type variation ✅ DONE

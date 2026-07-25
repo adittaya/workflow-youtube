@@ -284,6 +284,10 @@ def deploy_new(repo_name, key, token, username, settings, step_cb=None):
     step(5, "Pushing to GitHub...")
     env = os.environ.copy()
     env["GIT_ASKPASS"] = "echo"
+    env["GIT_AUTHOR_EMAIL"] = "vplink@deploy"
+    env["GIT_AUTHOR_NAME"] = "VPLink Deploy"
+    env["GIT_COMMITTER_EMAIL"] = "vplink@deploy"
+    env["GIT_COMMITTER_NAME"] = "VPLink Deploy"
     token_url = f"https://{token}@github.com/{username}/{full_name}.git"
 
     for cmd in [

@@ -8,7 +8,7 @@
 ## Current State
 
 - **Last updated:** 2026-07-25
-- **Latest remote commit:** `7c0fa53` (fix: set git identity via env vars)
+- **Latest remote commit:** `8c8d372` (feat: VPLINK_KEY now accepts raw URLs)
 - **Local codebase status:** MODIFIED — TUI deploy secrets encryption fixed, workflow dispatch added
 - **Git status:** tui.py modified. Accounts configured: main (@adittaya), second (@rtff5665)
 
@@ -332,6 +332,8 @@
 
 160. **tui.py** — `deploy_new()`: Added `git config user.email` and `git config user.name` after `git init` — works on hosts without global git config (Cloud Shell)
 161. **tui.py** — `deploy_new()`: Added `GIT_AUTHOR_EMAIL/NAME` and `GIT_COMMITTER_EMAIL/NAME` env vars — more reliable than git config, always works regardless of host state
+162. **tui.py** — Added `normalize_key()`: extracts key code from URLs like `https://vplink.in/XXXX` → `XXXX`
+163. **tui.py** — Deploy, Settings, and Dispatch screens: VPLINK_KEY now accepts raw URLs
 
 ## Pending / User Requests
 

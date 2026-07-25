@@ -8,7 +8,7 @@
 ## Current State
 
 - **Last updated:** 2026-07-25
-- **Latest remote commit:** `45d28d6` (fix: deploy now loads Supabase creds from legacy config + validates in CI)
+- **Latest remote commit:** `dc11125` (fix: set git identity in deploy_new for hosts without global config)
 - **Local codebase status:** MODIFIED — TUI deploy secrets encryption fixed, workflow dispatch added
 - **Git status:** tui.py modified. Accounts configured: main (@adittaya), second (@rtff5665)
 
@@ -327,6 +327,10 @@
 157. **tui.py** — `deploy_new()`: Uses `get_supabase_creds()` — now loads from legacy config if settings.json is empty. Warns user when no Supabase URL found.
 158. **continuous.yml** — Added `SUPABASE_URL` empty check in "Validate key" step (warns instead of failing)
 159. **vplink-deploy1** — Pushed SUPABASE_URL, SUPABASE_KEY, SUPABASE_SECRET secrets via API to fix running deployment
+
+### Code Changes Made (This Session — Git Identity Fix)
+
+160. **tui.py** — `deploy_new()`: Added `git config user.email` and `git config user.name` after `git init` — works on hosts without global git config (Cloud Shell)
 
 ## Pending / User Requests
 

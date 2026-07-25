@@ -8,10 +8,10 @@
 ## Current State
 
 - **Last updated:** 2026-07-25
-- **Latest remote commit:** `2ffe7e1` (fix: safe_eval needs return keyword in human_read scrollHeight)
-- **Local codebase status:** MODIFIED — CDP analysis rewrite, keyboard scrolling, double get-link click
+- **Latest remote commit:** `d753467` (fix: add no-proxy fallback attempt + debug VPLINK_PROXY echo)
+- **Local codebase status:** MODIFIED — CSS shell detection, proxy rotation fix, no-proxy fallback
 - **Git status:** clean. Accounts configured: main (@adittaya), second (@rtff5665)
-- **Test results:** 4/4 tests passed (366-383s, 5 cycles each) with proxy+all features
+- **Test results:** CI SUCCESS — Attempt 1 completed 390s, all 4 templates (TP→CE→LINK1S→get-link), destination captured: capecutapk.com
 
 ## What Has Been Done
 
@@ -353,6 +353,17 @@
 173. **automation.py** — `handle_tp()`: Reduced wait from 60s → 35s (CDP shows ~30s timer)
 174. **automation.py** — `human_click()`: Removed `human_mouse_move()` call (CDP shows no mouse movement before clicks)
 
+### Code Changes Made (This Session — CSS Shell Detection & Proxy Rotation Fix)
+
+175. **automation.py** — `handle_article()`: Added CSS shell detection (height>500, body_len<100) — fast-fail when proxy blocks content, skips20s reload that never works
+176. **automation.py** — `handle_article()`: Added `report_proxy_failure("content-blocked")` on CSS shell, `report_proxy_failure("reload-failed")` on reload failure
+177. **automation.py** — Post-redirect handler: Added CSS shell detection (height>500, body_len<100) — tries raw HTML extraction, skips reload
+178. **automation.py** — Main loop: Increased exhausted_cycles limit from 3 to 5 for more retry chances
+179. **continuous.yml** — **CRITICAL FIX**: Proxy rotation bug — `${{ steps.proxy.outputs.proxy }}` is expanded ONCE at step parse time, so ALL loop iterations used same proxy. Fixed by reading into shell variable `CURRENT_PROXY` before loop
+180. **continuous.yml** — Added no-proxy fallback attempt — when all proxy attempts fail, try one more run without proxy (local tests show automation works fine direct)
+181. **continuous.yml** — Added `echo "VPLINK_PROXY=$VPLINK_PROXY"` debug line before each attempt
+182. **continuous.yml** — Fixed duplicate DEST_URL capture section
+
 ## Pending / User Requests
 
 - User wants: comprehensive flow engine that handles ANY VPLink-type variation ✅ DONE
@@ -369,9 +380,9 @@
 | File | Status | Changes Made |
 |------|--------|-------------|
 | `tui.py` | MODIFIED | Fresh interactive Python TUI — 8 screens, encryption, dispatch, progress |
-| `automation.py` | OK | VPLink automation engine — raw HTML fallback, funnel progress guard, CDP analysis |
+| `automation.py` | OK | VPLink automation engine — CSS shell detection, proxy failure reporting, dead URL tolerance |
 | `proxy_rotator.py` | OK | Proxy rotation with pagination, blacklist, used tracking |
-| `.github/workflows/continuous.yml` | OK | CI workflow with destination capture, relay, per-repo concurrency |
+| `.github/workflows/continuous.yml` | OK | CI workflow — proxy rotation fix, no-proxy fallback, destination capture |
 | `config.py` | OK | Config management (Supabase, proxy settings) |
 | `schema.sql` | OK | Database schema |
 | `AGENTS.md` | MODIFIED | Session progress tracker |

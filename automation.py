@@ -2301,33 +2301,49 @@ def handle_article():
     log(f"page ready: {ready}, height={height}, body_len={body_len}")
 
     if not ready or height < 50:
-        lm_url = find_learn_more_in_html()
-        if lm_url:
-            log(f"found learn_more.php in raw HTML despite empty page — navigating")
-            return True
-        redirect = extract_redirect_from_html()
-        if redirect:
-            log(f"found redirect in raw HTML — navigating: {redirect[:80]}")
-            try:
-                adpt_load.set_page_load(driver)
-                driver.get(redirect)
-            except Exception:
-                adpt_load.timeout_occured()
-            human_delay(2000, 4000)
-            return True
-        log(f"page not ready (height={height}, body_len={body_len}), reloading...")
-        try:
-            adpt_load.set_page_load(driver)
-            driver.get(start_url)
-        except Exception:
-            adpt_load.timeout_occured()
-        human_delay(3000, 5000)
-        ready, height, body_len = wait_for_page_ready(min_height=200, timeout_sec=15)
-        log(f"after reload: ready={ready}, height={height}, body_len={body_len}")
+        if body_len > 200:
+            log("page has content but height=0 — trying to force-render...")
+            safe_eval("""
+                document.querySelectorAll('*').forEach(function(el) {
+                    var s = window.getComputedStyle(el);
+                    if (s.display === 'none') el.style.display = '';
+                    if (s.visibility === 'hidden') el.style.visibility = '';
+                    if (s.opacity === '0') el.style.opacity = '1';
+                });
+                if (document.body) { document.body.style.display = 'block'; document.body.style.visibility = 'visible'; }
+            """)
+            human_delay(2000, 3000)
+            ready, height, body_len = wait_for_page_ready(min_height=50, timeout_sec=10)
+            log(f"after force-render: ready={ready}, height={height}, body_len={body_len}")
 
         if not ready or height < 50:
-            log("reload also failed — proxy may be blocking this domain, returning False")
-            return False
+            lm_url = find_learn_more_in_html()
+            if lm_url:
+                log(f"found learn_more.php in raw HTML despite empty page — navigating")
+                return True
+            redirect = extract_redirect_from_html()
+            if redirect:
+                log(f"found redirect in raw HTML — navigating: {redirect[:80]}")
+                try:
+                    adpt_load.set_page_load(driver)
+                    driver.get(redirect)
+                except Exception:
+                    adpt_load.timeout_occured()
+                human_delay(2000, 4000)
+                return True
+            log(f"page not ready (height={height}, body_len={body_len}), reloading...")
+            try:
+                adpt_load.set_page_load(driver)
+                driver.get(start_url)
+            except Exception:
+                adpt_load.timeout_occured()
+            human_delay(3000, 5000)
+            ready, height, body_len = wait_for_page_ready(min_height=200, timeout_sec=15)
+            log(f"after reload: ready={ready}, height={height}, body_len={body_len}")
+
+            if not ready or height < 50:
+                log("reload also failed — proxy may be blocking this domain, returning False")
+                return False
 
     # Verify JS is actually working
     js_ok = verify_js_working()

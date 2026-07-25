@@ -324,7 +324,11 @@ def deploy_new(repo_name, key, token, username, settings, step_cb=None):
 
     # Set secrets with encryption
     step(6, "Setting encrypted secrets...")
-    secrets = {"VPLINK_KEY": key, "RELAY_TARGET_REPO": f"{username}/{full_name}"}
+    secrets = {
+        "VPLINK_KEY": key,
+        "RELAY_TARGET_REPO": f"{username}/{full_name}",
+        "LOOP_TRIGGER_TOKEN": token,
+    }
     su, sk, ss = get_supabase_creds(settings)
     if su:
         secrets["SUPABASE_URL"] = su

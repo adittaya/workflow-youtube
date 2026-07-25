@@ -7,8 +7,8 @@
 
 ## Current State
 
-- **Last updated:** 2026-07-24
-- **Latest remote commit:** `9216cfa` (cleanup: remove 121 lines of dead code + fix install for Cloud Shell)
+- **Last updated:** 2026-07-25
+- **Latest remote commit:** `b15f122` (fix: 3 KeyError crash guards in TUI screens)
 - **Local codebase status:** MODIFIED — TUI deploy secrets encryption fixed, workflow dispatch added
 - **Git status:** tui.py modified. Accounts configured: main (@adittaya), second (@rtff5665)
 
@@ -313,6 +313,12 @@
 149. **automation.py** — Removed unused variables `proxy_restarts` and `pre_url`
 150. **automation.py** — Fixed `wait_for_countdown(None)` → `wait_for_countdown("generic")`
 151. **install.sh** — Changed BIN to `~/.local/bin` (no sudo needed for Cloud Shell)
+
+### Code Changes Made (This Session — TUI Crash Guards)
+
+152. **tui.py** — `screen_sync()`: Moved `status = "unknown"` and `dest = ""` before try block to prevent NameError when `get_runs()` throws
+153. **tui.py** — `screen_remove()`: Changed `d["status"]` to `d.get("status", "?")` to prevent KeyError on deployments missing status field
+154. **tui.py** — `screen_status()`: Changed `latest["status"]` to `latest.get("status", "unknown")` to prevent KeyError on runs missing status field
 
 ## Pending / User Requests
 

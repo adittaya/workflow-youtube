@@ -8,7 +8,7 @@
 ## Current State
 
 - **Last updated:** 2026-07-25
-- **Latest remote commit:** `dc11125` (fix: set git identity in deploy_new for hosts without global config)
+- **Latest remote commit:** `7c0fa53` (fix: set git identity via env vars)
 - **Local codebase status:** MODIFIED — TUI deploy secrets encryption fixed, workflow dispatch added
 - **Git status:** tui.py modified. Accounts configured: main (@adittaya), second (@rtff5665)
 
@@ -331,6 +331,7 @@
 ### Code Changes Made (This Session — Git Identity Fix)
 
 160. **tui.py** — `deploy_new()`: Added `git config user.email` and `git config user.name` after `git init` — works on hosts without global git config (Cloud Shell)
+161. **tui.py** — `deploy_new()`: Added `GIT_AUTHOR_EMAIL/NAME` and `GIT_COMMITTER_EMAIL/NAME` env vars — more reliable than git config, always works regardless of host state
 
 ## Pending / User Requests
 

@@ -364,6 +364,20 @@
 181. **continuous.yml** — Added `echo "VPLINK_PROXY=$VPLINK_PROXY"` debug line before each attempt
 182. **continuous.yml** — Fixed duplicate DEST_URL capture section
 
+### Code Changes Made (This Session — TUI Bug Fixes)
+
+183. **tui.py** — Added named constants: `TEMPLATE_MAX_AGE`, `API_PER_PAGE`, `API_MAX_PAGES`, `GH_TIMEOUT`, `GIT_TIMEOUT`, `LOG_MAX_LINES`, `LOG_MAX_RUNS`, `WORKFLOW_DISCOVERY_RETRIES`, `WORKFLOW_ENABLE_DELAY`, `WORKFLOW_ENABLE_RETRIES`, `WORKFLOW_ENABLE_RETRY_DELAY`
+184. **tui.py** — Fixed template caching: `deploy_new()` now does `git pull` when template dir is >1 hour old; re-clones on pull failure
+185. **tui.py** — Fixed deploy partial failure: added `_cleanup_repo()` helper that deletes GitHub repo + local dir on failure; `deploy_new()` uses `fail()` wrapper that calls cleanup after step 2
+186. **tui.py** — Fixed token visibility: `screen_accounts()` shows `tok[:4]...tok[-4:]` (was `tok[:8]...tok[-4:]`)
+187. **tui.py** — Fixed secret visibility: `screen_settings()` shows `sk[:4]...sk[-4:]` (was `sk[:30]...`)
+188. **tui.py** — Fixed rate-limit handling: `paginate_repos()` returns `{"_rate_limited": True}` on 403; all callers (`screen_status`, `screen_logs`, `screen_dispatch`, `screen_sync`) check for rate-limiting
+189. **tui.py** — Fixed local cleanup: `remove_deployment()` and `nuke_deployments()` now clean up `repos/` directory under `DATA_DIR`
+190. **tui.py** — Added `validate_repo_name()` — regex check for alphanumeric/hyphens/underscores only
+191. **tui.py** — Added `import re` for regex validation
+192. **tui.py** — `screen_deploy()`: Added repo name validation before proceeding with deploy
+193. **tui.py** — Replaced all hardcoded timeouts with named constants (30s→`GH_TIMEOUT`, 60s→`GIT_TIMEOUT`, etc.)
+
 ## Pending / User Requests
 
 - User wants: comprehensive flow engine that handles ANY VPLink-type variation ✅ DONE

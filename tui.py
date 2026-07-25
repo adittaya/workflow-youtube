@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """VPLink Interactive TUI — account, deployment, sync, status, logs, settings."""
 
-import base64, json, os, shutil, subprocess, sys, time, urllib.request, urllib.error, zipfile, io
+import base64, json, os, re, shutil, subprocess, sys, time, urllib.request, urllib.error, zipfile, io
 from pathlib import Path
 
 try:
@@ -23,6 +23,17 @@ DATA_DIR = Path(os.environ.get("VPLINK_HOME", os.path.expanduser("~/.vplink247")
 GITHUB_API = "https://api.github.com"
 TEMPLATE_REPO = "adittaya/workflow-vplink"
 DEPLOY_TIMEOUT = 120
+TEMPLATE_MAX_AGE = 3600  # re-pull template if older than 1 hour
+API_PER_PAGE = 100
+API_MAX_PAGES = 5
+GH_TIMEOUT = 30
+GIT_TIMEOUT = 60
+LOG_MAX_LINES = 80
+LOG_MAX_RUNS = 10
+WORKFLOW_DISCOVERY_RETRIES = 5
+WORKFLOW_ENABLE_DELAY = 5
+WORKFLOW_ENABLE_RETRIES = 5
+WORKFLOW_ENABLE_RETRY_DELAY = 3
 
 # ─── ANSI Colors ──────────────────────────────────────────────────────────────
 
@@ -95,6 +106,10 @@ def normalize_key(val):
         val = val.split("/", 1)[1]
     return val.strip().rstrip("/")
 
+def validate_repo_name(name):
+    """Validate GitHub repo name (alphanumeric, hyphens, underscores only)."""
+    return bool(re.match(r'^[a-zA-Z0-9_-]+$', name))
+
 # ─── GitHub API ───────────────────────────────────────────────────────────────
 
 def gh(endpoint, token, method="GET", body=None):
@@ -107,7 +122,7 @@ def gh(endpoint, token, method="GET", body=None):
     if body:
         req.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=GH_TIMEOUT) as resp:
             raw = resp.read()
             scopes = resp.headers.get("X-OAuth-Scopes", "")
             if not raw:
@@ -124,19 +139,23 @@ def gh_user(token):
 
 def paginate_repos(token):
     all_repos = []
-    for page in range(1, 6):
-        repos = gh(f"/user/repos?per_page=100&page={page}&type=all", token)
+    for page in range(1, API_MAX_PAGES + 1):
+        repos = gh(f"/user/repos?per_page={API_PER_PAGE}&page={page}&type=all", token)
         if isinstance(repos, dict) and repos.get("error"):
+            if repos.get("status") == 403:
+                return {"_rate_limited": True}
             break
         if not repos:
             break
         all_repos.extend(repos)
-        if len(repos) < 100:
+        if len(repos) < API_PER_PAGE:
             break
     return all_repos
 
 def get_vplink_repos(token):
     repos = paginate_repos(token)
+    if isinstance(repos, dict) and repos.get("_rate_limited"):
+        return repos
     return [r for r in repos if r["name"].startswith("vplink-")]
 
 def get_workflow(owner, repo, token):
@@ -161,7 +180,7 @@ def extract_destination(token, owner, repo, run_id):
     req.add_header("Accept", "application/vnd.github.v3+json")
     req.add_header("User-Agent", "vplink-tui/3.0")
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=GH_TIMEOUT) as resp:
             zf = zipfile.ZipFile(io.BytesIO(resp.read()))
             found_dest_line = False
             for name in zf.namelist():
@@ -189,7 +208,7 @@ def get_run_logs(token, owner, repo, run_id):
     req.add_header("Accept", "application/vnd.github.v3+json")
     req.add_header("User-Agent", "vplink-tui/3.0")
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=GH_TIMEOUT) as resp:
             zf = zipfile.ZipFile(io.BytesIO(resp.read()))
             logs = {}
             for name in sorted(zf.namelist()):
@@ -255,10 +274,16 @@ def set_repo_secret(owner, repo, token, secret_name, secret_value):
 def deploy_new(repo_name, key, token, username, settings, step_cb=None):
     """Deploy a new VPLink instance. step_cb(step_num, msg) for progress."""
     full_name = repo_name if repo_name.startswith("vplink-") else f"vplink-{repo_name}"
+    repo_created = False
 
     def step(n, msg):
         if step_cb:
             step_cb(n, msg)
+
+    def fail(msg):
+        if repo_created:
+            _cleanup_repo(username, full_name, token)
+        return None, msg
 
     # Check if repo already exists
     step(1, f"Checking if {full_name} exists...")
@@ -274,17 +299,37 @@ def deploy_new(repo_name, key, token, username, settings, step_cb=None):
     })
     if isinstance(create_resp, dict) and create_resp.get("error"):
         return None, f"Create repo failed: {create_resp.get('message', '')}"
+    repo_created = True
 
-    # Clone template
+    # Clone/update template
     step(3, "Cloning template repo...")
     template_dir = str(DATA_DIR / "template")
-    if not Path(template_dir).exists():
+    template_path = Path(template_dir)
+    if template_path.exists():
+        # Update if stale
+        age = time.time() - template_path.stat().st_mtime
+        if age > TEMPLATE_MAX_AGE:
+            step(3, "Updating template repo...")
+            r = subprocess.run(
+                ["git", "-C", template_dir, "pull", "--ff-only", "-q"],
+                capture_output=True, timeout=DEPLOY_TIMEOUT,
+            )
+            if r.returncode != 0:
+                # Re-clone on pull failure
+                shutil.rmtree(template_dir, ignore_errors=True)
+                r = subprocess.run(
+                    ["git", "clone", "--depth", "1", f"https://github.com/{TEMPLATE_REPO}.git", template_dir],
+                    capture_output=True, timeout=DEPLOY_TIMEOUT,
+                )
+                if r.returncode != 0:
+                    return fail(f"Clone template failed: {r.stderr.decode(errors='replace')}")
+    else:
         r = subprocess.run(
             ["git", "clone", "--depth", "1", f"https://github.com/{TEMPLATE_REPO}.git", template_dir],
             capture_output=True, timeout=DEPLOY_TIMEOUT,
         )
         if r.returncode != 0:
-            return None, f"Clone template failed: {r.stderr.decode(errors='replace')}"
+            return fail(f"Clone template failed: {r.stderr.decode(errors='replace')}")
 
     # Copy template to new dir
     step(4, "Copying template files...")
@@ -312,15 +357,15 @@ def deploy_new(repo_name, key, token, username, settings, step_cb=None):
         ["git", "commit", "-m", "init: vplink automation relay"],
         ["git", "push", "--force", "origin", "main"],
     ]:
-        r = subprocess.run(cmd, cwd=repo_dir, capture_output=True, timeout=60, env=env)
+        r = subprocess.run(cmd, cwd=repo_dir, capture_output=True, timeout=GIT_TIMEOUT, env=env)
         if r.returncode != 0:
             err = (r.stderr or r.stdout).decode(errors="replace").strip().replace(token, "***")
             if cmd[1] == "push":
-                return None, f"Git push failed: {err}"
+                return fail(f"Git push failed: {err}")
             elif cmd[1] == "commit" and "nothing to commit" in err:
                 pass
             else:
-                return None, f"Git {cmd[1]} failed: {err}"
+                return fail(f"Git {cmd[1]} failed: {err}")
 
     # Set secrets with encryption
     step(6, "Setting encrypted secrets...")
@@ -347,17 +392,17 @@ def deploy_new(repo_name, key, token, username, settings, step_cb=None):
             secret_errors.append(f"{sname}: {err}")
 
     if secret_errors:
-        return None, f"Failed to set secrets: {'; '.join(secret_errors)}"
+        return fail(f"Failed to set secrets: {'; '.join(secret_errors)}")
 
     # Enable + dispatch workflow
     step(7, "Enabling workflow...")
-    time.sleep(5)
+    time.sleep(WORKFLOW_ENABLE_DELAY)
     wf = None
-    for _attempt in range(5):
+    for _attempt in range(WORKFLOW_ENABLE_RETRIES):
         wf = get_workflow(username, full_name, token)
         if wf:
             break
-        time.sleep(3)
+        time.sleep(WORKFLOW_ENABLE_RETRY_DELAY)
     if wf:
         gh(f"/repos/{username}/{full_name}/actions/workflows/{wf['id']}/enable", token, "PUT")
         step(8, "Dispatching workflow...")
@@ -377,6 +422,16 @@ def deploy_new(repo_name, key, token, username, settings, step_cb=None):
     save_json("deployments.json", deps)
     return dep, None
 
+def _cleanup_repo(owner, name, token):
+    """Delete a GitHub repo if it was partially created during deploy."""
+    try:
+        gh(f"/repos/{owner}/{name}", token, "DELETE")
+    except Exception:
+        pass
+    repo_dir = DATA_DIR / "repos" / name
+    if repo_dir.exists():
+        shutil.rmtree(repo_dir, ignore_errors=True)
+
 def remove_deployment(name):
     deps = load_json("deployments.json")
     dep = deps.get(name)
@@ -389,6 +444,10 @@ def remove_deployment(name):
         resp = gh(f"/repos/{owner}/{name}", acct.get("token", ""), "DELETE")
         if isinstance(resp, dict) and resp.get("error"):
             return False, f"GitHub API error: {resp.get('message', '')}"
+    # Clean up local repo directory
+    repo_dir = DATA_DIR / "repos" / name
+    if repo_dir.exists():
+        shutil.rmtree(repo_dir, ignore_errors=True)
     del deps[name]
     save_json("deployments.json", deps)
     return True, None
@@ -407,6 +466,10 @@ def nuke_deployments():
                 errors += 1
             else:
                 deleted += 1
+        # Clean up local repo directory
+        repo_dir = DATA_DIR / "repos" / name
+        if repo_dir.exists():
+            shutil.rmtree(repo_dir, ignore_errors=True)
     save_json("deployments.json", {})
     return deleted, errors
 
@@ -514,7 +577,7 @@ def screen_accounts():
                 tok = a.get("token", "")
                 n_deps = sum(1 for d in deps.values() if d.get("account") == acct_name)
                 print(f"  {marker} {C_BOLD}{acct_name}{C_RESET} "
-                      f"{C_DIM}@{user}  {tok[:8]}...{tok[-4:]}{C_RESET}  "
+                      f"{C_DIM}@{user}  {tok[:4]}...{tok[-4:]}{C_RESET}  "
                       f"{C_DIM}{n_deps} deployments{C_RESET}")
             print()
         print(f"  {C_BOLD}[1]{C_RESET} Add account")
@@ -618,6 +681,10 @@ def screen_deploy():
     repo_name = prompt("Repo name (will create vplink-{name})")
     if not repo_name:
         return
+    if not validate_repo_name(repo_name.replace("vplink-", "", 1)):
+        error("Invalid repo name — use only letters, numbers, hyphens, underscores")
+        input(f"\n  Press Enter to continue...")
+        return
     full_name = repo_name if repo_name.startswith("vplink-") else f"vplink-{repo_name}"
     key = prompt("VPLINK_KEY (raw key or full URL)")
     if not key:
@@ -710,8 +777,12 @@ def screen_status():
 
     loading("Fetching deployments from GitHub")
     repos = get_vplink_repos(token)
+    if isinstance(repos, dict) and repos.get("_rate_limited"):
+        error("Rate-limited by GitHub API. Try again later.")
+        input(f"\n  Press Enter to continue...")
+        return
     if not repos:
-        print(f"\n  {C_DIM}No vplink-* repos found on this account.{C_RESET}")
+        print(f"\n  {C_DIM}No vplink-* repos found.{C_RESET}")
         input(f"\n  Press Enter to continue...")
         return
 
@@ -761,6 +832,10 @@ def screen_logs():
         return
 
     repos = get_vplink_repos(token)
+    if isinstance(repos, dict) and repos.get("_rate_limited"):
+        error("Rate-limited by GitHub API. Try again later.")
+        input(f"\n  Press Enter to continue...")
+        return
     if not repos:
         print(f"\n  {C_DIM}No vplink-* repos found.{C_RESET}")
         input(f"\n  Press Enter to continue...")
@@ -829,9 +904,9 @@ def screen_logs():
         print(f"  {C_BOLD}{name}{C_RESET}")
         print(f"  {C_CYAN}{'─' * 56}{C_RESET}")
         lines = content.split("\n")
-        for line in lines[-80:]:
+        for line in lines[-LOG_MAX_LINES:]:
             print(f"  {C_DIM}{line}{C_RESET}")
-        if len(lines) > 80:
+        if len(lines) > LOG_MAX_LINES:
             print(f"  {C_DIM}... ({len(lines) - 80} lines hidden){C_RESET}")
 
     input(f"\n  Press Enter to continue...")
@@ -863,6 +938,9 @@ def screen_sync():
         loading(f"Scanning @{acct.get('username', name)}")
         try:
             repos = paginate_repos(tok)
+            if isinstance(repos, dict) and repos.get("_rate_limited"):
+                errors.append(f"@{name}: rate-limited by GitHub API")
+                continue
             vplink = [r for r in repos if r["name"].startswith("vplink-")]
             owner = vplink[0]["owner"]["login"] if vplink else acct.get("username", name)
             acct["username"] = owner
@@ -991,8 +1069,8 @@ def screen_settings():
         vk = settings.get("vplink_key", "")
 
         print(f"  {C_DIM}Supabase URL:{C_RESET}   {su or f'{C_YELLOW}not set{C_RESET}'}")
-        print(f"  {C_DIM}Supabase Key:{C_RESET}   {sk[:30]}{'...' if len(sk) > 30 else '' if sk else ''}")
-        print(f"  {C_DIM}Supabase Secret:{C_RESET} {ss[:30]}{'...' if len(ss) > 30 else '' if ss else ''}")
+        print(f"  {C_DIM}Supabase Key:{C_RESET}   {sk[:4]}...{sk[-4:] if len(sk) > 4 else ''}" if sk else f"  {C_DIM}Supabase Key:{C_RESET}   {C_YELLOW}not set{C_RESET}")
+        print(f"  {C_DIM}Supabase Secret:{C_RESET} {ss[:4]}...{ss[-4:] if len(ss) > 4 else ''}" if ss else f"  {C_DIM}Supabase Secret:{C_RESET} {C_YELLOW}not set{C_RESET}")
         print(f"  {C_DIM}VPLINK_KEY:{C_RESET}     {vk or f'{C_YELLOW}not set{C_RESET}'}")
         print()
         print(f"  {C_BOLD}[1]{C_RESET} Set Supabase URL")

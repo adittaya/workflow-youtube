@@ -8,9 +8,10 @@
 ## Current State
 
 - **Last updated:** 2026-07-25
-- **Latest remote commit:** `66db35e` (fix: push LOOP_TRIGGER_TOKEN during deploy + force-render height=0 pages)
-- **Local codebase status:** MODIFIED — TUI deploy secrets encryption fixed, workflow dispatch added
-- **Git status:** tui.py modified. Accounts configured: main (@adittaya), second (@rtff5665)
+- **Latest remote commit:** `2ffe7e1` (fix: safe_eval needs return keyword in human_read scrollHeight)
+- **Local codebase status:** MODIFIED — CDP analysis rewrite, keyboard scrolling, double get-link click
+- **Git status:** clean. Accounts configured: main (@adittaya), second (@rtff5665)
+- **Test results:** 4/4 tests passed (366-383s, 5 cycles each) with proxy+all features
 
 ## What Has Been Done
 
@@ -340,6 +341,17 @@
 164. **tui.py** — `deploy_new()`: Added `LOOP_TRIGGER_TOKEN` to secrets_map (PAT for relay dispatch — was missing, root cause of cross-account relay failure)
 165. **automation.py** — `handle_article()`: When height=0 but body_len>200, force-reveals hidden elements by removing display:none/visibility:hidden/opacity:0 CSS before giving up
 166. **All 3 deployed repos** — Pushed LOOP_TRIGGER_TOKEN secret via API (vplink-hihguhu, vplink-tuygyg767, vplink-uhgy66)
+
+### Code Changes Made (This Session — CDP Recording Analysis & Automation Rewrite)
+
+167. **automation.py** — `human_read()`: Rewrote from scratch — keyboard-only scrolling (PageDown/ArrowDown dispatch events), removed all mouse movement/bezier curves (CDP shows 0 mouse movements across 315 steps)
+168. **automation.py** — `get_page_height()`: Changed from `scrollHeight - innerHeight` to `scrollHeight` directly (fixes height=0 on short pages)
+169. **automation.py** — `do_get_link()`: Added 2nd click with 2s delay (CDP shows `#get-link` requires 2 clicks to navigate)
+170. **automation.py** — `do_get_link()`: Removed `human_mouse_move()` before click, adaptive wait after page opens (polls `readyState` instead of fixed 10s)
+171. **automation.py** — `close_ad_overlay()`: Reordered to CDP-exact sequence: block-cont-1 → SafeFrame iframe → gcont. Removed `offsetParent !== null` check (fails for position:fixed elements)
+172. **automation.py** — `handle_article()`: Force-render now skips overlay elements (`#block-cont-1`, `#gcont`, `#goog_rewarded`) when removing display:none
+173. **automation.py** — `handle_tp()`: Reduced wait from 60s → 35s (CDP shows ~30s timer)
+174. **automation.py** — `human_click()`: Removed `human_mouse_move()` call (CDP shows no mouse movement before clicks)
 
 ## Pending / User Requests
 

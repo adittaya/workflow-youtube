@@ -82,7 +82,7 @@ jobs:
 
       - name: Run automation (with proxy retry)
         id: automate
-        timeout-minutes: 10
+        timeout-minutes: 15
         env:
           CHROMIUM_PATH: /usr/bin/google-chrome
         run: |
@@ -101,7 +101,7 @@ jobs:
             echo "=== Attempt $attempt/$MAX_ATTEMPTS (proxy: $PROXY) ==="
             echo "VPLINK_PROXY=$VPLINK_PROXY"
             START=$(date +%s)
-            timeout 580 python3 automation.py "$VPLINK_KEY" 2>&1 || true
+            timeout 880 python3 automation.py "$VPLINK_KEY" 2>&1 || true
             END=$(date +%s)
             ELAPSED=$((END - START))
 
@@ -128,7 +128,7 @@ jobs:
           if [ -z "$DEST_URL" ]; then
             echo "=== Trying without proxy (direct connection) ==="
             unset VPLINK_PROXY
-            timeout 580 python3 automation.py "$VPLINK_KEY" 2>&1 || true
+            timeout 880 python3 automation.py "$VPLINK_KEY" 2>&1 || true
             if [ -f destination_url.txt ]; then
               DEST_URL=$(cat destination_url.txt | tr -d '[:space:]')
             fi

@@ -88,8 +88,9 @@ jobs:
         run: |
           MAX_ATTEMPTS=3
           MIN_RUNTIME=120
+          CURRENT_PROXY="${{ steps.proxy.outputs.proxy }}"
           for attempt in $(seq 1 $MAX_ATTEMPTS); do
-            PROXY="${{ steps.proxy.outputs.proxy }}"
+            PROXY="$CURRENT_PROXY"
             if [ -z "$PROXY" ]; then
               echo "No proxy available, running direct..."
               unset VPLINK_PROXY
@@ -112,9 +113,9 @@ jobs:
             if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
               echo "Ran only ${ELAPSED}s (< ${MIN_RUNTIME}s) — proxy likely blocked, rotating..."
               blacklisted="$PROXY"
-              PROXY=$(python3 proxy_rotator.py premium | tail -1)
-              echo "New proxy: $PROXY (blacklisted: $blacklisted)"
-              echo "proxy=$PROXY" >> $GITHUB_OUTPUT
+              NEW_PROXY=$(python3 proxy_rotator.py premium | tail -1)
+              echo "New proxy: $NEW_PROXY (blacklisted: $blacklisted)"
+              CURRENT_PROXY="$NEW_PROXY"
             fi
           done
           echo "status=success" >> $GITHUB_OUTPUT

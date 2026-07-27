@@ -14,3 +14,12 @@ node_modules/
 template/
 client_secrets.json
 *.log
+
+# Config files — each deployment creates these from GitHub Secrets
+channels.json
+settings.json
+shortlink_keys.json
+state.json
+accounts.json
+github_accounts.json
+deployments.json

@@ -12,11 +12,6 @@ on:
         type: choice
         options: ['false', 'true']
 
-env:
-  YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
-  YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
-  YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
-
 jobs:
   mirror:
     runs-on: ubuntu-latest
@@ -25,16 +20,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GH_PAT }}
+          token: ${{ secrets.GH_PAT || github.token }}
 
       - name: Validate credentials
         run: |
-          if [ -z "$YT_CLIENT_ID" ] || [ -z "$YT_CLIENT_SECRET" ] || [ -z "$YT_REFRESH_TOKEN" ]; then
-            echo "::error::YouTube credentials not configured"
-            echo "Add YT_CLIENT_ID, YT_CLIENT_SECRET, YT_REFRESH_TOKEN as GitHub Secrets"
+          MISSING=""
+          [ -z "$YT_CLIENT_ID" ] && MISSING="$MISSING YT_CLIENT_ID"
+          [ -z "$YT_CLIENT_SECRET" ] && MISSING="$MISSING YT_CLIENT_SECRET"
+          [ -z "$YT_REFRESH_TOKEN" ] && MISSING="$MISSING YT_REFRESH_TOKEN"
+          [ -z "$CHANNELS" ] && MISSING="$MISSING CHANNELS"
+          if [ -n "$MISSING" ]; then
+            echo "::error::Missing secrets:$MISSING"
+            echo "Required GitHub Secrets:"
+            echo "  YT_CLIENT_ID, YT_CLIENT_SECRET, YT_REFRESH_TOKEN"
+            echo "  CHANNELS (JSON dict of channels to monitor)"
+            echo "  SETTINGS (JSON, optional)"
+            echo "  SHORTLINK_KEYS (JSON, optional)"
+            echo "  GH_PAT (optional, for state push)"
             exit 1
           fi
-          echo "YouTube credentials OK"
+          echo "All required secrets configured"
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -47,27 +52,88 @@ jobs:
           pip install --break-system-packages -q yt-dlp 2>/dev/null || pip install -q yt-dlp
           pip install --break-system-packages -q -r requirements.txt 2>/dev/null || pip install -q -r requirements.txt
 
+      - name: Build config from secrets
+        run: |
+          mkdir -p ~/.yt-mirror
+
+          # channels.json — REQUIRED from secret
+          echo "$CHANNELS" > ~/.yt-mirror/channels.json
+
+          # settings.json — optional override
+          if [ -n "$SETTINGS" ]; then
+            echo "$SETTINGS" > ~/.yt-mirror/settings.json
+          else
+            cat > ~/.yt-mirror/settings.json << 'EOF'
+          {
+            "privacy_status": "public",
+            "category_id": "22",
+            "check_interval_minutes": 15,
+            "max_per_cycle": 3,
+            "comment_moderation": "heldForReview",
+            "shortener_provider": "vplink"
+          }
+          EOF
+          fi
+
+          # shortlink_keys.json — optional
+          if [ -n "$SHORTLINK_KEYS" ]; then
+            echo "$SHORTLINK_KEYS" > ~/.yt-mirror/shortlink_keys.json
+          else
+            echo "{}" > ~/.yt-mirror/shortlink_keys.json
+          fi
+
+          # state.json — restore from repo or start fresh
+          if [ -f state.json ]; then
+            cp state.json ~/.yt-mirror/state.json
+          else
+            echo '{"processed":{},"stats":{"total_mirrored":0,"total_comments":0,"total_shortened":0}}' > ~/.yt-mirror/state.json
+          fi
+
+          # accounts.json — built from YouTube secrets
+          python3 -c "
+          import json, time
+          accounts = {
+              'main': {
+                  'client_id': '''$YT_CLIENT_ID''',
+                  'client_secret': '''$YT_CLIENT_SECRET''',
+                  'refresh_token': '''$YT_REFRESH_TOKEN''',
+                  'channel_id': '',
+                  'channel_name': 'main',
+                  'added_at': time.strftime('%Y-%m-%dT%H:%M:%SZ'),
+              }
+          }
+          with open('$HOME/.yt-mirror/accounts.json', 'w') as f:
+              json.dump(accounts, f, indent=2)
+          "
+
+          echo "Config built:"
+          echo "  channels: $(wc -c < ~/.yt-mirror/channels.json) bytes"
+          echo "  settings: $(wc -c < ~/.yt-mirror/settings.json) bytes"
+          echo "  shortlink_keys: $(wc -c < ~/.yt-mirror/shortlink_keys.json) bytes"
+          echo "  state: $(wc -c < ~/.yt-mirror/state.json) bytes"
+
       - name: Run mirror
         id: mirror
         run: |
-          # Set up data directory with repo config
-          mkdir -p ~/.yt-mirror
-          for f in channels.json settings.json state.json shortlink_keys.json accounts.json; do
-            [ -f "$f" ] && cp "$f" ~/.yt-mirror/ || [ -f ~/.yt-mirror/"$f" ] || echo "{}" > ~/.yt-mirror/"$f"
-          done
+          cd ~/.yt-mirror
 
           # Dry run if requested
           if [ "${{ inputs.dry_run }}" = "true" ]; then
-            python3 -c "import config; s=config.load_tui_settings(); s['dry_run']=True; config._write_json(config.SETTINGS_PATH, s)"
+            python3 -c "
+          import json
+          s = json.loads(open('settings.json').read())
+          s['dry_run'] = True
+          open('settings.json', 'w').write(json.dumps(s, indent=2))
+          "
           fi
 
-          python3 mirror.py 2>&1 | tee /tmp/mirror_output.txt
+          python3 $GITHUB_WORKSPACE/mirror.py 2>&1 | tee /tmp/mirror_output.txt
           EXIT_CODE=${PIPESTATUS[0]}
 
-          # Persist state back to repo for next run
-          cp ~/.yt-mirror/state.json state.json 2>/dev/null || true
+          # Copy state back for persist
+          cp ~/.yt-mirror/state.json $GITHUB_WORKSPACE/state.json 2>/dev/null || true
 
-          # Extract stats from output
+          # Extract stats
           if [ -f /tmp/mirror_output.txt ]; then
             LAST=$(grep 'cycle done' /tmp/mirror_output.txt | tail -1 || true)
             MIRRORED=$(echo "$LAST" | grep -oP '\K\d+(?= mirrored)' || echo "0")
@@ -87,7 +153,7 @@ jobs:
           git config user.email "yt-mirror[bot]@users.noreply.github.com"
           cp ~/.yt-mirror/state.json state.json 2>/dev/null || true
           git add state.json
-          git diff --cached --quiet || git commit -m "state: update mirror state [skip ci]" && git push || true
+          git diff --cached --quiet || git commit -m "state: update [skip ci]" && git push || true
 
       - name: Summary
         if: always()

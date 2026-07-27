@@ -16,6 +16,13 @@ jobs:
   mirror:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+      YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+      YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+      CHANNELS: ${{ secrets.CHANNELS }}
+      SETTINGS: ${{ secrets.SETTINGS }}
+      SHORTLINK_KEYS: ${{ secrets.SHORTLINK_KEYS }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4

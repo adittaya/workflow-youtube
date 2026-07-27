@@ -4,55 +4,46 @@ import tempfile
 import time
 from pathlib import Path
 
-CONFIG_DIR = Path.home() / ".config" / "vplink3"
-CONFIG_PATH = CONFIG_DIR / "config.json"
-PROXY_BLACKLIST_PATH = CONFIG_DIR / "proxy_blacklist.json"
-
-# Migrate from legacy path (~/.vplink3.0/) if it exists and new path doesn't
-_LEGACY_DIR = Path.home() / ".vplink3.0"
-_LEGACY_CONFIG = _LEGACY_DIR / "config.json"
-if _LEGACY_CONFIG.exists() and not CONFIG_PATH.exists():
-    try:
-        _LEGACY_DIR.rename(CONFIG_DIR)
-    except OSError:
-        pass
+DATA_DIR = Path(os.environ.get("YT_DATA_DIR", os.path.expanduser("~/.yt-mirror")))
+CONFIG_PATH = DATA_DIR / "config.json"
+CHANNELS_PATH = DATA_DIR / "channels.json"
+STATE_PATH = DATA_DIR / "state.json"
+ACCOUNTS_PATH = DATA_DIR / "accounts.json"
+SETTINGS_PATH = DATA_DIR / "settings.json"
 
 DEFAULTS = {
-    "supabase_url": "",
-    "supabase_key": "",
-    "supabase_secret": "",
-    "proxy_enabled": False,
-    "proxy_tier": "premium",
-    "youtube_traffic": False,
-    "mobile_profile": False,
-    "random_urls": [],
-    "vnc_port": 5900,
-    "views": 1,
+    "yt_client_id": "",
+    "yt_client_secret": "",
+    "yt_refresh_token": "",
+    "shortener_provider": "none",
+    "shortener_api_key": "",
+    "shortener_api_url": "",
+    "check_interval_minutes": 15,
+    "mirror_title_prefix": "",
+    "mirror_description_suffix": "",
+    "comment_text": "Download link: {url}",
+    "privacy_status": "public",
+    "category_id": "22",
+    "dry_run": False,
 }
 
 
 def _ensure_dir():
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     try:
-        CONFIG_DIR.chmod(0o700)
+        DATA_DIR.chmod(0o700)
     except Exception:
         pass
 
 
-def _write_json_secure(filepath, value):
+def _write_json(filepath, value):
     _ensure_dir()
-    fd, tmp = tempfile.mkstemp(
-        dir=str(CONFIG_DIR), prefix=f"{filepath.name}.", suffix=".tmp"
-    )
+    fd, tmp = tempfile.mkstemp(dir=str(DATA_DIR), prefix=f"{filepath.name}.", suffix=".tmp")
     try:
         os.write(fd, json.dumps(value, indent=2).encode("utf-8"))
         os.close(fd)
         os.chmod(tmp, 0o600)
         os.rename(tmp, str(filepath))
-        try:
-            filepath.chmod(0o600)
-        except Exception:
-            pass
     except Exception:
         try:
             os.unlink(tmp)
@@ -75,34 +66,159 @@ def load():
 def save(config):
     existing = load()
     merged = {**existing, **config}
-    _write_json_secure(CONFIG_PATH, merged)
+    _write_json(CONFIG_PATH, merged)
     return merged
 
 
-def load_proxy_blacklist():
-    twenty_four_h = 24 * 60 * 60 * 1000
-    now_ms = int(time.time() * 1000)
+def load_channels():
+    _ensure_dir()
     try:
-        if PROXY_BLACKLIST_PATH.exists():
-            raw = PROXY_BLACKLIST_PATH.read_text("utf-8")
-            lst = json.loads(raw)
-            filtered = []
-            for entry in lst:
-                if isinstance(entry, dict):
-                    ts = entry.get("ts", 0)
-                    if ts == 0 or (now_ms - ts) < twenty_four_h:
-                        filtered.append(entry.get("key", ""))
-                else:
-                    filtered.append(str(entry))
-            return filtered
+        return json.loads(CHANNELS_PATH.read_text("utf-8"))
     except Exception:
-        pass
-    return []
+        return {}
+
+
+def save_channels(channels):
+    _ensure_dir()
+    _write_json(CHANNELS_PATH, channels)
+
+
+def load_state():
+    _ensure_dir()
+    try:
+        return json.loads(STATE_PATH.read_text("utf-8"))
+    except Exception:
+        return {"processed": {}, "stats": {"total_mirrored": 0, "total_comments": 0, "total_shortened": 0}}
+
+
+def save_state(state):
+    _ensure_dir()
+    _write_json(STATE_PATH, state)
+
+
+def load_accounts():
+    _ensure_dir()
+    try:
+        return json.loads(ACCOUNTS_PATH.read_text("utf-8"))
+    except Exception:
+        return {}
+
+
+def save_accounts(accounts):
+    _ensure_dir()
+    _write_json(ACCOUNTS_PATH, accounts)
+
+
+def load_tui_settings():
+    defaults = {
+        "active_account": "",
+        "comment_text": "Download link: {url}",
+        "mirror_title_prefix": "",
+        "mirror_description_suffix": "",
+        "privacy_status": "public",
+        "category_id": "22",
+        "shortener_api_key": "",
+        "shortener_api_url": "",
+        "check_interval_minutes": 15,
+        "max_per_cycle": 3,
+    }
+    _ensure_dir()
+    try:
+        saved = json.loads(SETTINGS_PATH.read_text("utf-8"))
+        return {**defaults, **saved}
+    except Exception:
+        return defaults
+
+
+def get_yt_credentials():
+    env_client_id = os.environ.get("YT_CLIENT_ID", "")
+    env_client_secret = os.environ.get("YT_CLIENT_SECRET", "")
+    env_refresh_token = os.environ.get("YT_REFRESH_TOKEN", "")
+    if env_client_id and env_client_secret and env_refresh_token:
+        return {
+            "client_id": env_client_id,
+            "client_secret": env_client_secret,
+            "refresh_token": env_refresh_token,
+        }
+    accounts = load_accounts()
+    tui_settings = load_tui_settings()
+    active = tui_settings.get("active_account")
+    if active and active in accounts:
+        acct = accounts[active]
+        return {
+            "client_id": acct["client_id"],
+            "client_secret": acct["client_secret"],
+            "refresh_token": acct["refresh_token"],
+        }
+    cfg = load()
+    return {
+        "client_id": cfg.get("yt_client_id", ""),
+        "client_secret": cfg.get("yt_client_secret", ""),
+        "refresh_token": cfg.get("yt_refresh_token", ""),
+    }
+
+
+def get_active_account_name():
+    tui_settings = load_tui_settings()
+    return tui_settings.get("active_account", "")
 
 
 def is_configured():
-    cfg = load()
-    return bool(cfg.get("supabase_url") and cfg.get("supabase_key") and cfg.get("supabase_secret"))
+    creds = get_yt_credentials()
+    return bool(creds["client_id"] and creds["client_secret"] and creds["refresh_token"])
+
+
+def add_channel(url, alias=""):
+    channels = load_channels()
+    channel_id = _extract_channel_id(url)
+    if not channel_id:
+        return False, "Invalid channel URL — use @handle or channel ID"
+    if channel_id in channels:
+        return False, "Channel already tracked"
+    channels[channel_id] = {
+        "url": url,
+        "alias": alias or channel_id,
+        "added_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "enabled": True,
+    }
+    save_channels(channels)
+    return True, channel_id
+
+
+def remove_channel(channel_id):
+    channels = load_channels()
+    if channel_id not in channels:
+        return False, "Channel not found"
+    del channels[channel_id]
+    save_channels(channels)
+    return True, None
+
+
+def _extract_channel_id(url):
+    url = url.strip()
+    if "/channel/" in url:
+        return url.split("/channel/")[-1].split("/")[0].split("?")[0]
+    if "@" in url:
+        handle = url.split("@")[-1].split("/")[0].split("?")[0]
+        return f"@{handle}"
+    if url.startswith("UC") and len(url) > 20:
+        return url
+    if "youtube.com" in url and "/c/" in url:
+        return url.split("/c/")[-1].split("/")[0].split("?")[0]
+    return url
+
+
+def log(msg):
+    elapsed = time.time() - _start_time if _start_time else 0
+    print(f"  [{elapsed:.1f}s] {msg}")
+
+
+_start_time = time.time()
+
+
+def set_start_time(t):
+    global _start_time
+    _start_time = t
 
 
 if __name__ == "__main__":
@@ -110,25 +226,21 @@ if __name__ == "__main__":
     args = sys.argv[1:]
     if len(args) == 2 and args[0] == "--get":
         cfg = load()
-        val = cfg.get(args[1], "")
-        print(val if val is not None else "")
+        print(cfg.get(args[1], ""))
     elif len(args) >= 3 and args[0] == "--set":
         key = args[1]
-        val_str = " ".join(args[2:])
-        if val_str == "true":
+        val = " ".join(args[2:])
+        if val == "true":
             val = True
-        elif val_str == "false":
+        elif val == "false":
             val = False
-        elif val_str.isdigit():
-            val = int(val_str)
-        else:
-            val = val_str
+        elif val.isdigit():
+            val = int(val)
         save({key: val})
     elif len(args) == 1 and args[0] == "--check":
         print("configured" if is_configured() else "unconfigured")
     elif len(args) == 0:
-        cfg = load()
-        print(json.dumps(cfg, indent=2))
+        print(json.dumps(load(), indent=2))
     else:
-        print(f"Usage: python3 config.py [--get KEY|--set KEY VALUE|--check]", file=sys.stderr)
+        print("Usage: python3 config.py [--get KEY|--set KEY VALUE|--check]")
         sys.exit(1)

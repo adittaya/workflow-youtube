@@ -1,0 +1,103 @@
+name: YouTube Mirror Bot
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (no upload)'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+
+env:
+  YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+  YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+  YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+  SHORTENER_API_KEY: ${{ secrets.SHORTENER_API_KEY }}
+  SHORTENER_API_URL: ${{ secrets.SHORTENER_API_URL }}
+  VPLINK_API_KEY: ${{ secrets.VPLINK_API_KEY }}
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate credentials
+        run: |
+          if [ -z "$YT_CLIENT_ID" ] || [ -z "$YT_CLIENT_SECRET" ] || [ -z "$YT_REFRESH_TOKEN" ]; then
+            echo "::error::YouTube credentials not configured"
+            echo "Run get_refresh_token.py locally to get credentials"
+            echo "Then add YT_CLIENT_ID, YT_CLIENT_SECRET, YT_REFRESH_TOKEN as GitHub Secrets"
+            exit 1
+          fi
+          echo "YouTube credentials OK"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install yt-dlp
+        run: |
+          pip install --break-system-packages -q yt-dlp 2>/dev/null || pip install -q yt-dlp
+
+      - name: Install Python dependencies
+        run: |
+          pip install --break-system-packages -q -r requirements.txt 2>/dev/null || pip install -q -r requirements.txt
+
+      - name: Run mirror
+        id: mirror
+        run: |
+          DRY_RUN="${{ inputs.dry_run || 'false' }}"
+          if [ "$DRY_RUN" = "true" ]; then
+            python3 config.py --set dry_run true
+          fi
+
+          # Set up channels from env or config
+          if [ -n "${{ github.event.inputs.channels }}" ]; then
+            echo '${{ github.event.inputs.channels }}' | while read -r line; do
+              python3 -c "import config; config.add_channel('$line')" 2>/dev/null || true
+            done
+          fi
+
+          python3 mirror.py 2>&1 | tee /tmp/mirror_output.txt
+          EXIT_CODE=${PIPESTATUS[0]}
+
+          # Extract stats from output
+          if [ -f /tmp/mirror_output.txt ]; then
+            MIRRORED=$(grep -oP 'mirrored: \K\d+' /tmp/mirror_output.txt | tail -1 || echo "0")
+            COMMENTS=$(grep -oP 'comments: \K\d+' /tmp/mirror_output.txt | tail -1 || echo "0")
+            echo "mirrored=$MIRRORED" >> $GITHUB_OUTPUT
+            echo "comments=$COMMENTS" >> $GITHUB_OUTPUT
+          fi
+
+          exit $EXIT_CODE
+
+      - name: Relay — trigger next run
+        if: always()
+        run: |
+          if [ -z "${{ secrets.LOOP_TRIGGER_TOKEN }}" ]; then
+            echo "No relay token — skipping relay"
+            exit 0
+          fi
+
+          curl -s -o /dev/null -w "%{http_code}" -X POST \
+            -H "Authorization: token ${{ secrets.LOOP_TRIGGER_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/dispatches" \
+            -d '{"event_type":"relay","client_payload":{}}'
+
+      - name: Summary
+        if: always()
+        run: |
+          MIRRORED="${{ steps.mirror.outputs.mirrored || '0' }}"
+          COMMENTS="${{ steps.mirror.outputs.comments || '0' }}"
+          echo "## YouTube Mirror Result" >> $GITHUB_STEP_SUMMARY
+          echo "Mirrored: $MIRRORED | Comments: $COMMENTS" >> $GITHUB_STEP_SUMMARY

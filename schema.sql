@@ -1,53 +1,39 @@
--- VPLink Proxy State — shared blacklist for used/dead proxies
--- Run this in Supabase SQL Editor to create the proxy_state table.
+-- YouTube Mirror Bot — state tracking tables
+-- Run in Supabase SQL Editor if using remote state
 
-CREATE TABLE IF NOT EXISTS proxy_state (
+CREATE TABLE IF NOT EXISTS mirror_state (
   id BIGSERIAL PRIMARY KEY,
-  ip TEXT NOT NULL,
-  port INTEGER NOT NULL,
-  state TEXT NOT NULL CHECK (state IN ('used', 'dead')),
-  expires_at TIMESTAMPTZ NOT NULL DEFAULT (now() + interval '24 hours'),
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  channel_id TEXT NOT NULL,
+  video_id TEXT NOT NULL,
+  new_video_id TEXT,
+  original_title TEXT,
+  mirrored_at TIMESTAMPTZ DEFAULT now(),
+  comment_id TEXT,
+  shortened_url TEXT,
+  status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'mirrored', 'failed', 'skipped')),
+  error_msg TEXT,
+  UNIQUE(channel_id, video_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_proxy_state_lookup
-  ON proxy_state (ip, port, state, expires_at);
-CREATE INDEX IF NOT EXISTS idx_proxy_state_cleanup
-  ON proxy_state (expires_at);
+CREATE INDEX IF NOT EXISTS idx_mirror_state_channel ON mirror_state (channel_id, mirrored_at DESC);
+CREATE INDEX IF NOT EXISTS idx_mirror_state_status ON mirror_state (status);
 
--- Auto-cleanup function: delete expired rows
-CREATE OR REPLACE FUNCTION cleanup_proxy_state()
-RETURNS void AS $$
-  DELETE FROM proxy_state WHERE expires_at < now();
-$$ LANGUAGE sql;
+CREATE TABLE IF NOT EXISTS mirror_channels (
+  id BIGSERIAL PRIMARY KEY,
+  channel_id TEXT UNIQUE NOT NULL,
+  alias TEXT,
+  url TEXT,
+  enabled BOOLEAN DEFAULT true,
+  added_at TIMESTAMPTZ DEFAULT now(),
+  last_checked TIMESTAMPTZ
+);
 
--- Cleanup trigger: auto-clean on every INSERT
-CREATE OR REPLACE FUNCTION trigger_cleanup_proxy_state()
-RETURNS TRIGGER AS $$
-BEGIN
-  DELETE FROM proxy_state WHERE expires_at < now();
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS auto_cleanup_proxy_state ON proxy_state;
-CREATE TRIGGER auto_cleanup_proxy_state
-  AFTER INSERT ON proxy_state
-  FOR EACH STATEMENT
-  EXECUTE FUNCTION trigger_cleanup_proxy_state();
-
--- RLS policies
-ALTER TABLE proxy_state ENABLE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS "service_role_all_proxy_state" ON proxy_state;
-CREATE POLICY "service_role_all_proxy_state"
-  ON proxy_state FOR ALL
-  TO service_role
-  USING (true)
-  WITH CHECK (true);
-
-DROP POLICY IF EXISTS "anon_read_proxy_state" ON proxy_state;
-CREATE POLICY "anon_read_proxy_state"
-  ON proxy_state FOR SELECT
-  TO anon
-  USING (true);
+CREATE TABLE IF NOT EXISTS mirror_stats (
+  id BIGSERIAL PRIMARY KEY,
+  date DATE DEFAULT CURRENT_DATE,
+  mirrored_count INT DEFAULT 0,
+  comments_count INT DEFAULT 0,
+  shortened_count INT DEFAULT 0,
+  errors_count INT DEFAULT 0,
+  UNIQUE(date)
+);

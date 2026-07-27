@@ -1,39 +1,43 @@
 #!/usr/bin/env python3
-"""VPLink Interactive TUI — account, deployment, sync, status, logs, settings."""
+"""YouTube Mirror Bot — Full management TUI (accounts, channels, deploy, logs, settings)."""
 
-import base64, json, os, re, shutil, subprocess, sys, time, urllib.request, urllib.error, zipfile, io
+import json, os, re, shutil, subprocess, sys, time, http.server, threading, urllib.request, urllib.parse
 from pathlib import Path
 
 try:
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
-    HAS_CRYPTO = True
+    from google.oauth2.credentials import Credentials
+    from googleapiclient.discovery import build
+    HAS_GAPI = True
+    HAS_GAPI_CLIENT = True
 except ImportError:
-    HAS_CRYPTO = False
+    HAS_GAPI = False
+    HAS_GAPI_CLIENT = False
 
 try:
-    import nacl.public
-    HAS_NACL = True
+    import github_api
+    HAS_GH = True
 except ImportError:
-    HAS_NACL = False
+    HAS_GH = False
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 
-DATA_DIR = Path(os.environ.get("VPLINK_HOME", os.path.expanduser("~/.vplink247")))
-GITHUB_API = "https://api.github.com"
-TEMPLATE_REPO = "adittaya/workflow-vplink"
-DEPLOY_TIMEOUT = 120
-TEMPLATE_MAX_AGE = 3600  # re-pull template if older than 1 hour
-API_PER_PAGE = 100
-API_MAX_PAGES = 5
-GH_TIMEOUT = 30
-GIT_TIMEOUT = 60
+DATA_DIR = Path(os.environ.get("YT_DATA_DIR", os.path.expanduser("~/.yt-mirror")))
+ACCOUNTS_PATH = DATA_DIR / "accounts.json"
+GITHUB_ACCOUNTS_PATH = DATA_DIR / "github_accounts.json"
+CHANNELS_PATH = DATA_DIR / "channels.json"
+SETTINGS_PATH = DATA_DIR / "settings.json"
+DEPLOYMENTS_PATH = DATA_DIR / "deployments.json"
+STATUS_CACHE_PATH = DATA_DIR / "status_cache.json"
+SHORTLINK_KEYS_PATH = DATA_DIR / "shortlink_keys.json"
+
+SCOPES = [
+    "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/youtube.force-ssl",
+    "https://www.googleapis.com/auth/youtube",
+]
+
+TEMPLATE_REPO = "adittaya/workflow-shorturl-yt"
 LOG_MAX_LINES = 80
-LOG_MAX_RUNS = 10
-WORKFLOW_DISCOVERY_RETRIES = 5
-WORKFLOW_ENABLE_DELAY = 5
-WORKFLOW_ENABLE_RETRIES = 5
-WORKFLOW_ENABLE_RETRY_DELAY = 3
 
 # ─── ANSI Colors ──────────────────────────────────────────────────────────────
 
@@ -55,453 +59,88 @@ C_BOLDWHITE = "\033[1;37m"
 
 # ─── Data Layer ───────────────────────────────────────────────────────────────
 
-def _data_path(name):
-    return DATA_DIR / name
-
-def load_json(name):
-    p = _data_path(name)
-    if not p.exists():
-        return {}
-    try:
-        return json.loads(p.read_text())
-    except Exception:
-        return {}
-
-def save_json(name, data):
+def _ensure_dir():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    _data_path(name).write_text(json.dumps(data, indent=2))
 
-def load_legacy_config():
-    """Load Supabase creds from ~/.config/vplink3/config.json as fallback."""
-    p = Path.home() / ".config" / "vplink3" / "config.json"
-    if not p.exists():
-        return {}
+def _read_json(path):
+    _ensure_dir()
     try:
-        return json.loads(p.read_text("utf-8"))
+        return json.loads(path.read_text("utf-8"))
     except Exception:
         return {}
 
-def get_supabase_creds(settings):
-    """Get Supabase credentials from settings, falling back to legacy config."""
-    su = settings.get("supabase_url", "")
-    sk = settings.get("supabase_key", "")
-    ss = settings.get("supabase_secret", "")
-    if not su:
-        legacy = load_legacy_config()
-        su = su or legacy.get("supabase_url", "")
-        sk = sk or legacy.get("supabase_key", "")
-        ss = ss or legacy.get("supabase_secret", "")
-    return su, sk, ss
+def _write_json(path, data):
+    _ensure_dir()
+    path.write_text(json.dumps(data, indent=2))
 
-def normalize_key(val):
-    """Extract key code from URL or return as-is. Accepts:
-    - 'https://vplink.in/XXXX' → 'XXXX'
-    - 'vplink.in/XXXX' → 'XXXX'
-    - 'XXXX' → 'XXXX'
-    """
-    val = val.strip()
-    if "://" in val:
-        val = val.split("://", 1)[1]
-    if "/" in val:
-        val = val.split("/", 1)[1]
-    return val.strip().rstrip("/")
+def load_accounts():
+    return _read_json(ACCOUNTS_PATH)
 
-def validate_repo_name(name):
-    """Validate GitHub repo name (alphanumeric, hyphens, underscores only)."""
-    return bool(re.match(r'^[a-zA-Z0-9_-]+$', name))
+def save_accounts(data):
+    _write_json(ACCOUNTS_PATH, data)
 
-# ─── GitHub API ───────────────────────────────────────────────────────────────
+def load_github_accounts():
+    return _read_json(GITHUB_ACCOUNTS_PATH)
 
-def gh(endpoint, token, method="GET", body=None):
-    url = endpoint if endpoint.startswith("http") else f"{GITHUB_API}{endpoint}"
-    data = json.dumps(body).encode() if body else None
-    req = urllib.request.Request(url, data=data, method=method)
-    req.add_header("Authorization", f"token {token}")
-    req.add_header("Accept", "application/vnd.github.v3+json")
-    req.add_header("User-Agent", "vplink-tui/3.0")
-    if body:
-        req.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(req, timeout=GH_TIMEOUT) as resp:
-            raw = resp.read()
-            scopes = resp.headers.get("X-OAuth-Scopes", "")
-            if not raw:
-                return {"ok": True, "status": resp.status, "_scopes": scopes}
-            result = json.loads(raw)
-            if isinstance(result, dict):
-                result["_scopes"] = scopes
-            return result
-    except urllib.error.HTTPError as e:
-        return {"error": True, "status": e.code, "message": e.read().decode(errors="replace")}
+def save_github_accounts(data):
+    _write_json(GITHUB_ACCOUNTS_PATH, data)
 
-def gh_user(token):
-    return gh("/user", token)
+def load_channels():
+    return _read_json(CHANNELS_PATH)
 
-def paginate_repos(token):
-    all_repos = []
-    for page in range(1, API_MAX_PAGES + 1):
-        repos = gh(f"/user/repos?per_page={API_PER_PAGE}&page={page}&type=all", token)
-        if isinstance(repos, dict) and repos.get("error"):
-            if repos.get("status") == 403:
-                return {"_rate_limited": True}
-            break
-        if not repos:
-            break
-        all_repos.extend(repos)
-        if len(repos) < API_PER_PAGE:
-            break
-    return all_repos
+def save_channels(data):
+    _write_json(CHANNELS_PATH, data)
 
-def get_vplink_repos(token):
-    repos = paginate_repos(token)
-    if isinstance(repos, dict) and repos.get("_rate_limited"):
-        return repos
-    return [r for r in repos if r["name"].startswith("vplink-")]
-
-def get_workflow(owner, repo, token):
-    data = gh(f"/repos/{owner}/{repo}/actions/workflows", token)
-    if isinstance(data, dict) and data.get("error"):
-        return None
-    for w in data.get("workflows", []):
-        if "continuous" in w.get("path", "") or "vplink" in w.get("name", "").lower():
-            return w
-    return data.get("workflows", [None])[0] if data.get("workflows") else None
-
-def get_runs(owner, repo, token, per=5):
-    data = gh(f"/repos/{owner}/{repo}/actions/runs?per_page={per}", token)
-    if isinstance(data, dict) and data.get("error"):
-        return []
-    return data.get("workflow_runs", [])
-
-def extract_destination(token, owner, repo, run_id):
-    url = f"/repos/{owner}/{repo}/actions/runs/{run_id}/logs"
-    req = urllib.request.Request(f"{GITHUB_API}{url}")
-    req.add_header("Authorization", f"token {token}")
-    req.add_header("Accept", "application/vnd.github.v3+json")
-    req.add_header("User-Agent", "vplink-tui/3.0")
-    try:
-        with urllib.request.urlopen(req, timeout=GH_TIMEOUT) as resp:
-            zf = zipfile.ZipFile(io.BytesIO(resp.read()))
-            found_dest_line = False
-            for name in zf.namelist():
-                if not name.endswith(".txt"):
-                    continue
-                for line in zf.read(name).decode(errors="replace").split("\n"):
-                    s = line.strip()
-                    if "DESTINATION URL:" in s or "Destination:" in s:
-                        val = s.split(":", 1)[-1].strip()
-                        if val.startswith("http"):
-                            return val
-                        found_dest_line = True
-                    elif found_dest_line and s.startswith("http"):
-                        return s
-                    else:
-                        found_dest_line = False
-    except Exception:
-        pass
-    return ""
-
-def get_run_logs(token, owner, repo, run_id):
-    url = f"/repos/{owner}/{repo}/actions/runs/{run_id}/logs"
-    req = urllib.request.Request(f"{GITHUB_API}{url}")
-    req.add_header("Authorization", f"token {token}")
-    req.add_header("Accept", "application/vnd.github.v3+json")
-    req.add_header("User-Agent", "vplink-tui/3.0")
-    try:
-        with urllib.request.urlopen(req, timeout=GH_TIMEOUT) as resp:
-            zf = zipfile.ZipFile(io.BytesIO(resp.read()))
-            logs = {}
-            for name in sorted(zf.namelist()):
-                if name.endswith(".txt"):
-                    logs[name] = zf.read(name).decode(errors="replace")
-            return logs
-    except Exception:
-        return {}
-
-# ─── Secret Encryption ────────────────────────────────────────────────────────
-
-def encrypt_secret(public_key_b64, plaintext):
-    """Encrypt a secret value using the repo's public key (RSA or NaCl box)."""
-    raw = base64.b64decode(public_key_b64)
-
-    # GitHub uses NaCl box (X25519) for newer repos, RSA for older ones
-    # Detect by key size: 32 bytes = X25519, larger = RSA
-    if len(raw) == 32 and HAS_NACL:
-        recipient = nacl.public.PublicKey(raw)
-        sealed = nacl.public.SealedBox(recipient)
-        encrypted = sealed.encrypt(plaintext.encode("utf-8"))
-        return base64.b64encode(encrypted).decode("utf-8")
-    elif HAS_CRYPTO and len(raw) != 32:
-        der = raw
-        pub = serialization.load_der_public_key(der)
-        encrypted = pub.encrypt(
-            plaintext.encode("utf-8"),
-            asym_padding.OAEP(
-                mgf=asym_padding.MGF1(algorithm=hashes.SHA1()),
-                algorithm=hashes.SHA1(),
-                label=None,
-            ),
-        )
-        return base64.b64encode(encrypted).decode("utf-8")
-    else:
-        return None
-
-def set_repo_secret(owner, repo, token, secret_name, secret_value):
-    """Set a GitHub Actions secret with proper RSA-OAEP encryption."""
-    key_data = gh(f"/repos/{owner}/{repo}/actions/secrets/public-key", token)
-    if isinstance(key_data, dict) and key_data.get("error"):
-        return False, f"Failed to get public key: {key_data.get('message', '')}"
-
-    pub_key = key_data.get("key", "")
-    key_id = key_data.get("key_id", "")
-    if not pub_key or not key_id:
-        return False, "No public key returned"
-
-    encrypted = encrypt_secret(pub_key, secret_value)
-    if not encrypted:
-        return False, "Encryption failed"
-
-    result = gh(f"/repos/{owner}/{repo}/actions/secrets/{secret_name}", token, "PUT", {
-        "encrypted_value": encrypted,
-        "key_id": key_id,
-    })
-    if isinstance(result, dict) and result.get("error"):
-        return False, f"Failed to set secret: {result.get('message', '')}"
-    return True, None
-
-# ─── Deploy / Remove ──────────────────────────────────────────────────────────
-
-def deploy_new(repo_name, key, token, username, settings, step_cb=None):
-    """Deploy a new VPLink instance. step_cb(step_num, msg) for progress."""
-    full_name = repo_name if repo_name.startswith("vplink-") else f"vplink-{repo_name}"
-    repo_created = False
-
-    def step(n, msg):
-        if step_cb:
-            step_cb(n, msg)
-
-    def fail(msg):
-        if repo_created:
-            _cleanup_repo(username, full_name, token)
-        return None, msg
-
-    # Check if repo already exists
-    step(1, f"Checking if {full_name} exists...")
-    check = gh(f"/repos/{username}/{full_name}", token)
-    if not (isinstance(check, dict) and check.get("error")):
-        return None, f"Repo {full_name} already exists on @{username}"
-
-    # Create repo
-    step(2, f"Creating repo {full_name}...")
-    create_resp = gh("/user/repos", token, "POST", {
-        "name": full_name, "private": False, "auto_init": True,
-        "description": "VPLink automation relay",
-    })
-    if isinstance(create_resp, dict) and create_resp.get("error"):
-        return None, f"Create repo failed: {create_resp.get('message', '')}"
-    repo_created = True
-
-    # Clone/update template
-    step(3, "Cloning template repo...")
-    template_dir = str(DATA_DIR / "template")
-    template_path = Path(template_dir)
-    if template_path.exists():
-        # Update if stale
-        age = time.time() - template_path.stat().st_mtime
-        if age > TEMPLATE_MAX_AGE:
-            step(3, "Updating template repo...")
-            r = subprocess.run(
-                ["git", "-C", template_dir, "pull", "--ff-only", "-q"],
-                capture_output=True, timeout=DEPLOY_TIMEOUT,
-            )
-            if r.returncode != 0:
-                # Re-clone on pull failure
-                shutil.rmtree(template_dir, ignore_errors=True)
-                r = subprocess.run(
-                    ["git", "clone", "--depth", "1", f"https://github.com/{TEMPLATE_REPO}.git", template_dir],
-                    capture_output=True, timeout=DEPLOY_TIMEOUT,
-                )
-                if r.returncode != 0:
-                    return fail(f"Clone template failed: {r.stderr.decode(errors='replace')}")
-    else:
-        r = subprocess.run(
-            ["git", "clone", "--depth", "1", f"https://github.com/{TEMPLATE_REPO}.git", template_dir],
-            capture_output=True, timeout=DEPLOY_TIMEOUT,
-        )
-        if r.returncode != 0:
-            return fail(f"Clone template failed: {r.stderr.decode(errors='replace')}")
-
-    # Copy template to new dir
-    step(4, "Copying template files...")
-    repo_dir = str(DATA_DIR / "repos" / full_name)
-    Path(repo_dir).parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["rm", "-rf", repo_dir], capture_output=True)
-    shutil.copytree(template_dir, repo_dir, ignore=lambda d, files: [".git"] if ".git" in files else [])
-
-    # Push to new repo
-    step(5, "Pushing to GitHub...")
-    env = os.environ.copy()
-    env["GIT_ASKPASS"] = "echo"
-    env["GIT_AUTHOR_EMAIL"] = "vplink@deploy"
-    env["GIT_AUTHOR_NAME"] = "VPLink Deploy"
-    env["GIT_COMMITTER_EMAIL"] = "vplink@deploy"
-    env["GIT_COMMITTER_NAME"] = "VPLink Deploy"
-    token_url = f"https://{token}@github.com/{username}/{full_name}.git"
-
-    for cmd in [
-        ["git", "init", "-b", "main"],
-        ["git", "config", "user.email", "vplink@deploy"],
-        ["git", "config", "user.name", "VPLink Deploy"],
-        ["git", "remote", "add", "origin", token_url],
-        ["git", "add", "-A"],
-        ["git", "commit", "-m", "init: vplink automation relay"],
-        ["git", "push", "--force", "origin", "main"],
-    ]:
-        r = subprocess.run(cmd, cwd=repo_dir, capture_output=True, timeout=GIT_TIMEOUT, env=env)
-        if r.returncode != 0:
-            err = (r.stderr or r.stdout).decode(errors="replace").strip().replace(token, "***")
-            if cmd[1] == "push":
-                return fail(f"Git push failed: {err}")
-            elif cmd[1] == "commit" and "nothing to commit" in err:
-                pass
-            else:
-                return fail(f"Git {cmd[1]} failed: {err}")
-
-    # Set secrets with encryption
-    step(6, "Setting encrypted secrets...")
-    secrets = {
-        "VPLINK_KEY": key,
-        "RELAY_TARGET_REPO": f"{username}/{full_name}",
-        "LOOP_TRIGGER_TOKEN": token,
+def load_settings():
+    defaults = {
+        "active_account": "",
+        "active_github": "",
+        "comment_text": "Download link: {url}\n\nSubscribe for more!",
+        "mirror_title_prefix": "",
+        "mirror_description_suffix": "Original video link in pinned comment.",
+        "privacy_status": "public",
+        "category_id": "22",
+        "check_interval_minutes": 15,
+        "max_per_cycle": 3,
+        "shortener_provider": "vplink",
+        "shortener_api_key": "",
+        "shortener_api_url": "",
+        "comment_moderation": "heldForReview",
     }
-    su, sk, ss = get_supabase_creds(settings)
-    if su:
-        secrets["SUPABASE_URL"] = su
-    if sk:
-        secrets["SUPABASE_KEY"] = sk
-    if ss:
-        secrets["SUPABASE_SECRET"] = ss
-    if not su:
-        warn("No Supabase URL found — proxy will not work on deployed repo!")
-        warn("Set it in Settings [1] or ~/.config/vplink3/config.json")
+    saved = _read_json(SETTINGS_PATH)
+    return {**defaults, **saved}
 
-    secret_errors = []
-    for sname, sval in secrets.items():
-        ok, err = set_repo_secret(username, full_name, token, sname, sval)
-        if not ok:
-            secret_errors.append(f"{sname}: {err}")
+def save_settings(data):
+    _write_json(SETTINGS_PATH, data)
 
-    if secret_errors:
-        return fail(f"Failed to set secrets: {'; '.join(secret_errors)}")
+def load_deployments():
+    return _read_json(DEPLOYMENTS_PATH)
 
-    # Enable + dispatch workflow
-    step(7, "Enabling workflow...")
-    time.sleep(WORKFLOW_ENABLE_DELAY)
-    wf = None
-    for _attempt in range(WORKFLOW_ENABLE_RETRIES):
-        wf = get_workflow(username, full_name, token)
-        if wf:
-            break
-        time.sleep(WORKFLOW_ENABLE_RETRY_DELAY)
-    if wf:
-        gh(f"/repos/{username}/{full_name}/actions/workflows/{wf['id']}/enable", token, "PUT")
-        step(8, "Dispatching workflow...")
-        gh(f"/repos/{username}/{full_name}/actions/workflows/{wf['id']}/dispatches", token, "POST",
-           {"ref": "main", "inputs": {"key": key}})
-    else:
-        step(8, "Warning: no workflow found to enable")
+def save_deployments(data):
+    _write_json(DEPLOYMENTS_PATH, data)
 
-    # Save deployment locally
-    dep = {
-        "name": full_name, "key": key, "account": username,
-        "repo_url": f"https://github.com/{username}/{full_name}",
-        "status": "deployed", "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-    }
-    deps = load_json("deployments.json")
-    deps[full_name] = dep
-    save_json("deployments.json", deps)
-    return dep, None
+def load_shortlink_keys():
+    return _read_json(SHORTLINK_KEYS_PATH)
 
-def _cleanup_repo(owner, name, token):
-    """Delete a GitHub repo if it was partially created during deploy."""
-    try:
-        gh(f"/repos/{owner}/{name}", token, "DELETE")
-    except Exception:
-        pass
-    repo_dir = DATA_DIR / "repos" / name
-    if repo_dir.exists():
-        shutil.rmtree(repo_dir, ignore_errors=True)
+def save_shortlink_keys(data):
+    _write_json(SHORTLINK_KEYS_PATH, data)
 
-def remove_deployment(name):
-    deps = load_json("deployments.json")
-    dep = deps.get(name)
-    if not dep:
-        return False, "Deployment not found"
-    accounts = load_json("accounts.json")
-    acct = accounts.get(dep.get("account", ""))
-    if acct:
-        owner = acct.get("username", dep.get("account", ""))
-        resp = gh(f"/repos/{owner}/{name}", acct.get("token", ""), "DELETE")
-        if isinstance(resp, dict) and resp.get("error"):
-            return False, f"GitHub API error: {resp.get('message', '')}"
-    # Clean up local repo directory
-    repo_dir = DATA_DIR / "repos" / name
-    if repo_dir.exists():
-        shutil.rmtree(repo_dir, ignore_errors=True)
-    del deps[name]
-    save_json("deployments.json", deps)
-    return True, None
+def load_status_cache():
+    return _read_json(STATUS_CACHE_PATH)
 
-def nuke_deployments():
-    deps = load_json("deployments.json")
-    accounts = load_json("accounts.json")
-    deleted = 0
-    errors = 0
-    for name, dep in list(deps.items()):
-        acct = accounts.get(dep.get("account", ""))
-        if acct:
-            owner = acct.get("username", dep.get("account", ""))
-            resp = gh(f"/repos/{owner}/{name}", acct.get("token", ""), "DELETE")
-            if isinstance(resp, dict) and resp.get("error"):
-                errors += 1
-            else:
-                deleted += 1
-        # Clean up local repo directory
-        repo_dir = DATA_DIR / "repos" / name
-        if repo_dir.exists():
-            shutil.rmtree(repo_dir, ignore_errors=True)
-    save_json("deployments.json", {})
-    return deleted, errors
+def save_status_cache(data):
+    _write_json(STATUS_CACHE_PATH, data)
 
 # ─── UI Helpers ───────────────────────────────────────────────────────────────
 
 def clear():
-    subprocess.run(["clear"] if os.name != "nt" else ["cls"], capture_output=True)
+    os.system("clear" if os.name != "nt" else "cls")
 
 def banner():
     print(f"""
 {C_CYAN}{C_BOLD}╔══════════════════════════════════════════════════════════╗
-║                V P L I N K   C O N T R O L              ║
+║         Y O U T U B E   M I R R O R   B O T              ║
 ╚══════════════════════════════════════════════════════════╝{C_RESET}""")
-
-def status_line():
-    accounts = load_json("accounts.json")
-    settings = load_json("settings.json")
-    active = settings.get("active_account")
-    deps = load_json("deployments.json")
-    n_acct = len(accounts)
-    n_dep = len(deps)
-    if active and active in accounts:
-        user = accounts[active].get("username", active)
-        print(f"  {C_DIM}Account:{C_RESET} {C_GREEN}{user}{C_RESET}  "
-              f"{C_DIM}Accounts:{C_RESET} {n_acct}  "
-              f"{C_DIM}Deployments:{C_RESET} {n_dep}")
-    elif n_acct == 0:
-        print(f"  {C_YELLOW}No accounts configured{C_RESET}")
-    else:
-        print(f"  {C_DIM}Active:{C_RESET} {C_YELLOW}none{C_RESET}  "
-              f"{C_DIM}Accounts:{C_RESET} {n_acct}  "
-              f"{C_DIM}Deployments:{C_RESET} {n_dep}")
 
 def divider():
     print(f"  {C_DIM}{'─' * 56}{C_RESET}")
@@ -530,60 +169,79 @@ def warn(msg):
 def loading(msg):
     print(f"  {C_DIM}⏳ {msg}...{C_RESET}")
 
-def progress(num, total, msg):
-    print(f"  {C_BOLD}[{num}/{total}]{C_RESET} {msg}")
-
-def get_active_token():
-    accounts = load_json("accounts.json")
-    settings = load_json("settings.json")
+def get_active_youtube():
+    accounts = load_accounts()
+    settings = load_settings()
     active = settings.get("active_account")
     if active and active in accounts:
-        return accounts[active].get("token", ""), active
+        return accounts[active]
+    return None
+
+def get_active_github():
+    accounts = load_github_accounts()
+    settings = load_settings()
+    active = settings.get("active_github")
+    if active and active in accounts:
+        return accounts[active]
+    return None
+
+def get_active_github_token():
+    acct = get_active_github()
+    return acct.get("token", "") if acct else ""
+
+# ─── YouTube Channel Info ─────────────────────────────────────────────────────
+
+def _fetch_youtube_channel_info(refresh_token, client_id, client_secret):
+    if not HAS_GAPI_CLIENT:
+        return None, None
+    try:
+        creds = Credentials(
+            token=None,
+            refresh_token=refresh_token,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=client_id,
+            client_secret=client_secret,
+        )
+        yt = build("youtube", "v3", credentials=creds, cache_discovery=False)
+        resp = yt.channels().list(part="id,snippet", mine=True).execute()
+        items = resp.get("items", [])
+        if items:
+            return items[0]["id"], items[0]["snippet"]["title"]
+    except Exception:
+        pass
     return None, None
 
-def get_account_for_repo(repo_name):
-    """Find which local account owns a given deployment."""
-    deps = load_json("deployments.json")
-    accounts = load_json("accounts.json")
-    dep = deps.get(repo_name)
-    if dep:
-        acct_name = dep.get("account", "")
-        acct = accounts.get(acct_name, {})
-        return acct_name, acct
-    return None, None
-
-# ─── Screen: Accounts ─────────────────────────────────────────────────────────
+# ─── Screen: YouTube Accounts ─────────────────────────────────────────────────
 
 def screen_accounts():
     while True:
         clear()
         banner()
-        print(f"\n  {C_BOLDWHITE}ACCOUNTS{C_RESET}")
+        print(f"\n  {C_BOLDWHITE}YOUTUBE ACCOUNTS{C_RESET}")
         divider()
-        accounts = load_json("accounts.json")
-        settings = load_json("settings.json")
+
+        accounts = load_accounts()
+        settings = load_settings()
         active = settings.get("active_account")
-        accts = list(accounts.values())
+        accts = list(accounts.keys())
+
         if not accts:
-            print(f"\n  {C_DIM}No accounts configured yet.{C_RESET}")
-            print(f"  {C_DIM}Add a GitHub account to get started.{C_RESET}\n")
+            print(f"\n  {C_DIM}No YouTube accounts configured yet.{C_RESET}")
+            print(f"  {C_DIM}Add a YouTube account to get started.{C_RESET}\n")
         else:
-            deps = load_json("deployments.json")
-            for key, a in accounts.items():
-                acct_name = a.get("name", key)
-                is_active = acct_name == active
+            for name, a in accounts.items():
+                is_active = name == active
                 marker = f"{C_GREEN}●{C_RESET}" if is_active else f"{C_DIM}○{C_RESET}"
-                user = a.get("username", "?")
-                tok = a.get("token", "")
-                n_deps = sum(1 for d in deps.values() if d.get("account") == acct_name)
-                print(f"  {marker} {C_BOLD}{acct_name}{C_RESET} "
-                      f"{C_DIM}@{user}  {tok[:4]}...{tok[-4:]}{C_RESET}  "
-                      f"{C_DIM}{n_deps} deployments{C_RESET}")
+                ch_name = a.get("channel_name", "?")
+                ch_id = a.get("channel_id", "?")[:12]
+                print(f"  {marker} {C_BOLD}{name}{C_RESET}  "
+                      f"{C_DIM}@{ch_name} ({ch_id}...){C_RESET}")
             print()
-        print(f"  {C_BOLD}[1]{C_RESET} Add account")
+
+        print(f"  {C_BOLD}[1]{C_RESET} Add account (OAuth login)")
         print(f"  {C_BOLD}[2]{C_RESET} Remove account")
         if accts:
-            print(f"  {C_BOLD}[3]{C_RESET} Switch active")
+            print(f"  {C_BOLD}[3]{C_RESET} Switch active account")
             print(f"  {C_BOLD}[4]{C_RESET} Validate token")
         print(f"  {C_BOLD}[0]{C_RESET} Back\n")
 
@@ -591,146 +249,719 @@ def screen_accounts():
         if choice == "0":
             return
         elif choice == "1":
-            name = prompt("Account name (e.g. main)")
-            if not name:
-                continue
-            token = prompt("GitHub Personal Access Token")
-            if not token:
-                continue
-            if name in accounts:
-                error("Account name already exists")
-                continue
-            loading("Validating token")
-            user_data = gh_user(token)
-            if isinstance(user_data, dict) and user_data.get("login"):
-                username = user_data["login"]
-                scopes = user_data.get("_scopes", "")
-                scope_list = [s.strip() for s in scopes.split(",") if s.strip()]
-                accounts[name] = {"name": name, "token": token, "username": username}
-                save_json("accounts.json", accounts)
-                if not active:
-                    settings["active_account"] = name
-                    save_json("settings.json", settings)
-                success(f"Added @{username}")
-                if not any("repo" in s for s in scope_list):
-                    warn("Token missing 'repo' scope")
-                if not any("workflow" in s for s in scope_list):
-                    warn("Token missing 'workflow' scope")
-            else:
-                error("Invalid token")
+            _add_youtube_account()
         elif choice == "2" and accts:
-            name = prompt("Account name to remove")
-            if name and name in accounts:
-                if confirm(f"Remove '{name}'?"):
-                    del accounts[name]
-                    save_json("accounts.json", accounts)
-                    if active == name:
-                        settings["active_account"] = None
-                        save_json("settings.json", settings)
-                    success(f"Removed '{name}'")
-            elif name:
-                error("Account not found")
+            _remove_youtube_account(accounts, settings)
         elif choice == "3" and accts:
-            name = prompt("Account name to activate")
-            if name and name in accounts:
-                settings["active_account"] = name
-                save_json("settings.json", settings)
-                success(f"Activated '{name}'")
-            elif name:
-                error("Account not found")
+            _switch_youtube_account(accounts, settings)
         elif choice == "4" and accts:
-            name = prompt("Account name to validate")
-            if name and name in accounts:
-                loading(f"Validating token for '{name}'")
-                user_data = gh_user(accounts[name].get("token", ""))
-                if isinstance(user_data, dict) and user_data.get("login"):
-                    accounts[name]["username"] = user_data["login"]
-                    save_json("accounts.json", accounts)
-                    scopes = user_data.get("_scopes", "")
-                    success(f"@{user_data['login']} — scopes: {scopes or 'none'}")
-                else:
-                    error(f"Token invalid or expired: {user_data.get('message', '')}")
+            _validate_youtube_account(accounts)
+
+def _add_youtube_account():
+    clear()
+    banner()
+    print(f"\n  {C_BOLDWHITE}ADD YOUTUBE ACCOUNT{C_RESET}")
+    divider()
+
+    if not HAS_GAPI:
+        error("Google API libraries not installed")
+        info("Run: pip install google-auth-oauthlib google-api-python-client")
+        input(f"\n  Press Enter to continue...")
+        return
+
+    name = prompt("Account name (e.g. main)")
+    if not name:
+        return
+    accounts = load_accounts()
+    if name in accounts:
+        error("Account name already exists")
+        input(f"\n  Press Enter to continue...")
+        return
+
+    client_id = prompt("Google Client ID")
+    if not client_id:
+        return
+    client_secret = prompt("Google Client Secret")
+    if not client_secret:
+        return
+
+    import hashlib, base64 as b64, secrets as _sec, socket
+
+    code_verifier = b64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode()
+    code_challenge = b64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode()).digest()).rstrip(b"=").decode()
+
+    scopes = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.force-ssl https://www.googleapis.com/auth/youtube"
+    params = {
+        "client_id": client_id,
+        "redirect_uri": "http://127.0.0.1:8085",
+        "response_type": "code",
+        "scope": scopes,
+        "access_type": "offline",
+        "prompt": "consent",
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+    }
+    auth_url = "https://accounts.google.com/o/oauth2/auth?" + urllib.parse.urlencode(params)
+
+    _oauth_result = {"code": None}
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            p = urllib.parse.urlparse(self.path)
+            qs = urllib.parse.parse_qs(p.query)
+            code = qs.get("code", [None])[0]
+            if code:
+                _oauth_result["code"] = code
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                self.wfile.write(b"<html><body><h2>Done! Close this tab.</h2></body></html>")
+            else:
+                self.send_response(400)
+                self.end_headers()
+        def log_message(self, format, *args):
+            pass
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", 8085))
+    sock.close()
+
+    server = http.server.HTTPServer(("127.0.0.1", 8085), _Handler)
+    server.timeout = 300
+    t = threading.Thread(target=server.serve_forever)
+    t.daemon = True
+    t.start()
+
+    print(f"\n  {C_CYAN}Open this URL in your browser:{C_RESET}\n")
+    print(f"  {C_BLUE}{auth_url}{C_RESET}\n")
+    print(f"  {C_DIM}After approving, the page will show an error — that's normal.{C_RESET}")
+    print(f"  {C_DIM}The callback will be captured automatically.{C_RESET}\n")
+
+    start_time = time.time()
+    while _oauth_result["code"] is None and time.time() - start_time < 300:
+        time.sleep(0.5)
+
+    server.shutdown()
+
+    if not _oauth_result["code"]:
+        error("No code received — timed out")
+        input(f"\n  Press Enter to continue...")
+        return
+
+    loading("Exchanging code for tokens...")
+    try:
+        token_data = urllib.parse.urlencode({
+            "code": _oauth_result["code"],
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uri": "http://127.0.0.1:8085",
+            "grant_type": "authorization_code",
+            "code_verifier": code_verifier,
+        }).encode()
+        req = urllib.request.Request("https://oauth2.googleapis.com/token", data=token_data, method="POST")
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            tokens = json.loads(resp.read())
+            refresh_token = tokens.get("refresh_token", "")
+            if not refresh_token:
+                error("No refresh token returned")
                 input(f"\n  Press Enter to continue...")
-            elif name:
-                error("Account not found")
+                return
+    except Exception as e:
+        error(f"Token exchange failed: {e}")
+        input(f"\n  Press Enter to continue...")
+        return
+
+    loading("Fetching channel info...")
+    ch_id, ch_name = _fetch_youtube_channel_info(refresh_token, client_id, client_secret)
+    if not ch_id:
+        error("Could not fetch channel info — token may be invalid")
+        input(f"\n  Press Enter to continue...")
+        return
+
+    accounts[name] = {
+        "name": name,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "refresh_token": refresh_token,
+        "channel_id": ch_id,
+        "channel_name": ch_name,
+        "added_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    save_accounts(accounts)
+
+    settings = load_settings()
+    if not settings.get("active_account"):
+        settings["active_account"] = name
+        save_settings(settings)
+
+    print()
+    success(f"Account '{name}' added!")
+    info(f"Channel: @{ch_name} ({ch_id})")
+    input(f"\n  Press Enter to continue...")
+
+def _remove_youtube_account(accounts, settings):
+    names = list(accounts.keys())
+    print()
+    for i, n in enumerate(names, 1):
+        ch = accounts[n].get("channel_name", "?")
+        print(f"  {C_BOLD}{i}.{C_RESET} {n}  {C_DIM}@{ch}{C_RESET}")
+    print(f"\n  {C_BOLD}[0]{C_RESET} Cancel\n")
+
+    choice = prompt("Account number to remove")
+    if not choice or choice == "0" or not choice.isdigit():
+        return
+    idx = int(choice) - 1
+    if idx < 0 or idx >= len(names):
+        return
+    name = names[idx]
+    if confirm(f"Remove '{name}'?"):
+        del accounts[name]
+        save_accounts(accounts)
+        if settings.get("active_account") == name:
+            settings["active_account"] = list(accounts.keys())[0] if accounts else ""
+            save_settings(settings)
+        success(f"Removed '{name}'")
+        input(f"\n  Press Enter to continue...")
+
+def _switch_youtube_account(accounts, settings):
+    names = list(accounts.keys())
+    print()
+    for i, n in enumerate(names, 1):
+        marker = f"{C_GREEN}●{C_RESET}" if n == settings.get("active_account") else f"{C_DIM}○{C_RESET}"
+        ch = accounts[n].get("channel_name", "?")
+        print(f"  {marker} {C_BOLD}{i}.{C_RESET} {n}  {C_DIM}@{ch}{C_RESET}")
+    print(f"\n  {C_BOLD}[0]{C_RESET} Cancel\n")
+
+    choice = prompt("Account number to activate")
+    if not choice or choice == "0" or not choice.isdigit():
+        return
+    idx = int(choice) - 1
+    if idx < 0 or idx >= len(names):
+        return
+    name = names[idx]
+    settings["active_account"] = name
+    save_settings(settings)
+    success(f"Activated '{name}'")
+    input(f"\n  Press Enter to continue...")
+
+def _validate_youtube_account(accounts):
+    names = list(accounts.keys())
+    print()
+    for i, n in enumerate(names, 1):
+        print(f"  {C_BOLD}{i}.{C_RESET} {n}")
+    print(f"\n  {C_BOLD}[0]{C_RESET} Cancel\n")
+
+    choice = prompt("Account number to validate")
+    if not choice or choice == "0" or not choice.isdigit():
+        return
+    idx = int(choice) - 1
+    if idx < 0 or idx >= len(names):
+        return
+    name = names[idx]
+    acct = accounts[name]
+
+    loading(f"Validating '{name}'...")
+    ch_id, ch_name = _fetch_youtube_channel_info(acct["refresh_token"], acct["client_id"], acct["client_secret"])
+    if ch_name:
+        accounts[name]["channel_name"] = ch_name
+        accounts[name]["channel_id"] = ch_id
+        save_accounts(accounts)
+        success(f"@{ch_name} ({ch_id}) — token valid")
+    else:
+        error("Token invalid or expired — re-add the account")
+    input(f"\n  Press Enter to continue...")
+
+# ─── Screen: GitHub Accounts ──────────────────────────────────────────────────
+
+def screen_github_accounts():
+    while True:
+        clear()
+        banner()
+        print(f"\n  {C_BOLDWHITE}GITHUB ACCOUNTS{C_RESET}")
+        divider()
+
+        accounts = load_github_accounts()
+        settings = load_settings()
+        active = settings.get("active_github")
+        accts = list(accounts.keys())
+
+        if not accts:
+            print(f"\n  {C_DIM}No GitHub accounts configured yet.{C_RESET}")
+            print(f"  {C_DIM}Add a GitHub PAT to manage deployments.{C_RESET}\n")
+        else:
+            for name, a in accounts.items():
+                is_active = name == active
+                marker = f"{C_GREEN}●{C_RESET}" if is_active else f"{C_DIM}○{C_RESET}"
+                user = a.get("username", "?")
+                tok = a.get("token", "")
+                masked = f"{tok[:4]}...{tok[-4:]}" if len(tok) > 8 else "****"
+                print(f"  {marker} {C_BOLD}{name}{C_RESET}  "
+                      f"{C_DIM}@{user}  {masked}{C_RESET}")
+            print()
+
+        print(f"  {C_BOLD}[1]{C_RESET} Add GitHub account (PAT)")
+        print(f"  {C_BOLD}[2]{C_RESET} Remove account")
+        if accts:
+            print(f"  {C_BOLD}[3]{C_RESET} Switch active account")
+            print(f"  {C_BOLD}[4]{C_RESET} Validate token")
+        print(f"  {C_BOLD}[0]{C_RESET} Back\n")
+
+        choice = prompt("Choice")
+        if choice == "0":
+            return
+        elif choice == "1":
+            _add_github_account()
+        elif choice == "2" and accts:
+            _remove_github_account(accounts, settings)
+        elif choice == "3" and accts:
+            _switch_github_account(accounts, settings)
+        elif choice == "4" and accts:
+            _validate_github_account(accounts)
+
+def _add_github_account():
+    clear()
+    banner()
+    print(f"\n  {C_BOLDWHITE}ADD GITHUB ACCOUNT{C_RESET}")
+    divider()
+
+    print(f"  {C_DIM}You need a GitHub Personal Access Token.{C_RESET}")
+    print(f"  {C_DIM}1. Go to github.com → Settings → Developer settings{C_RESET}")
+    print(f"  {C_DIM}2. Personal access tokens → Fine-grained or Classic{C_RESET}")
+    print(f"  {C_DIM}3. Scope: repo, workflow{C_RESET}\n")
+
+    name = prompt("Account name (e.g. main)")
+    if not name:
+        return
+    accounts = load_github_accounts()
+    if name in accounts:
+        error("Account name already exists")
+        input(f"\n  Press Enter to continue...")
+        return
+
+    token = prompt("GitHub Personal Access Token")
+    if not token:
+        return
+
+    loading("Validating token...")
+    user_data = github_api.gh_user(token)
+    if isinstance(user_data, dict) and user_data.get("login"):
+        username = user_data["login"]
+        scopes = user_data.get("_scopes", "")
+        accounts[name] = {
+            "name": name,
+            "token": token,
+            "username": username,
+            "added_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        save_github_accounts(accounts)
+
+        settings = load_settings()
+        if not settings.get("active_github"):
+            settings["active_github"] = name
+            save_settings(settings)
+
+        print()
+        success(f"Added @{username}")
+        scope_list = [s.strip() for s in scopes.split(",") if s.strip()]
+        if not any("repo" in s for s in scope_list):
+            warn("Token missing 'repo' scope")
+        if not any("workflow" in s for s in scope_list):
+            warn("Token missing 'workflow' scope")
+    else:
+        error(f"Invalid token: {user_data.get('message', '')}")
+    input(f"\n  Press Enter to continue...")
+
+def _remove_github_account(accounts, settings):
+    names = list(accounts.keys())
+    print()
+    for i, n in enumerate(names, 1):
+        user = accounts[n].get("username", "?")
+        print(f"  {C_BOLD}{i}.{C_RESET} {n}  {C_DIM}@{user}{C_RESET}")
+    print(f"\n  {C_BOLD}[0]{C_RESET} Cancel\n")
+
+    choice = prompt("Account number to remove")
+    if not choice or choice == "0" or not choice.isdigit():
+        return
+    idx = int(choice) - 1
+    if idx < 0 or idx >= len(names):
+        return
+    name = names[idx]
+    if confirm(f"Remove '{name}'?"):
+        del accounts[name]
+        save_github_accounts(accounts)
+        if settings.get("active_github") == name:
+            settings["active_github"] = list(accounts.keys())[0] if accounts else ""
+            save_settings(settings)
+        success(f"Removed '{name}'")
+        input(f"\n  Press Enter to continue...")
+
+def _switch_github_account(accounts, settings):
+    names = list(accounts.keys())
+    print()
+    for i, n in enumerate(names, 1):
+        marker = f"{C_GREEN}●{C_RESET}" if n == settings.get("active_github") else f"{C_DIM}○{C_RESET}"
+        user = accounts[n].get("username", "?")
+        print(f"  {marker} {C_BOLD}{i}.{C_RESET} {n}  {C_DIM}@{user}{C_RESET}")
+    print(f"\n  {C_BOLD}[0]{C_RESET} Cancel\n")
+
+    choice = prompt("Account number to activate")
+    if not choice or choice == "0" or not choice.isdigit():
+        return
+    idx = int(choice) - 1
+    if idx < 0 or idx >= len(names):
+        return
+    name = names[idx]
+    settings["active_github"] = name
+    save_settings(settings)
+    success(f"Activated '{name}'")
+    input(f"\n  Press Enter to continue...")
+
+def _validate_github_account(accounts):
+    names = list(accounts.keys())
+    print()
+    for i, n in enumerate(names, 1):
+        print(f"  {C_BOLD}{i}.{C_RESET} {n}")
+    print(f"\n  {C_BOLD}[0]{C_RESET} Cancel\n")
+
+    choice = prompt("Account number to validate")
+    if not choice or choice == "0" or not choice.isdigit():
+        return
+    idx = int(choice) - 1
+    if idx < 0 or idx >= len(names):
+        return
+    name = names[idx]
+    acct = accounts[name]
+
+    loading(f"Validating '{name}'...")
+    user_data = github_api.gh_user(acct["token"])
+    if isinstance(user_data, dict) and user_data.get("login"):
+        accounts[name]["username"] = user_data["login"]
+        save_github_accounts(accounts)
+        scopes = user_data.get("_scopes", "")
+        success(f"@{user_data['login']} — scopes: {scopes or 'none'}")
+    else:
+        error(f"Token invalid or expired: {user_data.get('message', '')}")
+    input(f"\n  Press Enter to continue...")
+
+# ─── Screen: Channels ─────────────────────────────────────────────────────────
+
+def screen_channels():
+    while True:
+        clear()
+        banner()
+        print(f"\n  {C_BOLDWHITE}MONITORED CHANNELS{C_RESET}")
+        divider()
+
+        channels = load_channels()
+        ch_list = list(channels.keys())
+
+        if not ch_list:
+            print(f"\n  {C_DIM}No channels to monitor.{C_RESET}")
+            print(f"  {C_DIM}Add a YouTube channel URL to start mirroring.{C_RESET}\n")
+        else:
+            for i, cid in enumerate(ch_list, 1):
+                c = channels[cid]
+                alias = c.get("alias", cid)
+                url = c.get("url", "")
+                enabled = c.get("enabled", True)
+                marker = f"{C_GREEN}●{C_RESET}" if enabled else f"{C_RED}○{C_RESET}"
+                print(f"  {marker} {C_BOLD}{i}.{C_RESET} {alias}  {C_DIM}{url[:50]}{C_RESET}")
+            print()
+
+        print(f"  {C_BOLD}[1]{C_RESET} Add channel")
+        print(f"  {C_BOLD}[2]{C_RESET} Remove channel")
+        print(f"  {C_BOLD}[3]{C_RESET} Toggle enabled/disabled")
+        print(f"  {C_BOLD}[4]{C_RESET} Bulk add (one URL per line, Ctrl+D when done)")
+        print(f"  {C_BOLD}[0]{C_RESET} Back\n")
+
+        choice = prompt("Choice")
+        if choice == "0":
+            return
+        elif choice == "1":
+            _add_channel_flow(channels)
+        elif choice == "2" and ch_list:
+            _remove_channel_flow(channels)
+        elif choice == "3" and ch_list:
+            _toggle_channel_flow(channels)
+        elif choice == "4":
+            _bulk_add_channels_flow(channels)
+
+def _add_channel_flow(channels):
+    print()
+    url = prompt("YouTube channel URL or @handle")
+    if not url:
+        return
+
+    channel_id = _extract_channel_id(url)
+    if not channel_id:
+        error("Invalid channel URL — use @handle or full URL")
+        input(f"\n  Press Enter to continue...")
+        return
+
+    if channel_id in channels:
+        error("Channel already monitored")
+        input(f"\n  Press Enter to continue...")
+        return
+
+    alias = prompt("Alias (optional, for display)", channel_id.lstrip("@"))
+
+    channels[channel_id] = {
+        "url": url if url.startswith("http") else f"https://www.youtube.com/{channel_id}",
+        "alias": alias,
+        "enabled": True,
+        "added_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    save_channels(channels)
+    success(f"Added: {alias} ({channel_id})")
+    input(f"\n  Press Enter to continue...")
+
+def _remove_channel_flow(channels):
+    ch_list = list(channels.keys())
+    print()
+    for i, cid in enumerate(ch_list, 1):
+        alias = channels[cid].get("alias", cid)
+        print(f"  {C_BOLD}{i}.{C_RESET} {alias}")
+    print(f"\n  {C_BOLD}[0]{C_RESET} Cancel\n")
+
+    choice = prompt("Channel number to remove")
+    if not choice or choice == "0" or not choice.isdigit():
+        return
+    idx = int(choice) - 1
+    if idx < 0 or idx >= len(ch_list):
+        return
+    cid = ch_list[idx]
+    alias = channels[cid].get("alias", cid)
+    if confirm(f"Remove '{alias}'?"):
+        del channels[cid]
+        save_channels(channels)
+        success(f"Removed '{alias}'")
+        input(f"\n  Press Enter to continue...")
+
+def _toggle_channel_flow(channels):
+    ch_list = list(channels.keys())
+    print()
+    for i, cid in enumerate(ch_list, 1):
+        c = channels[cid]
+        enabled = c.get("enabled", True)
+        marker = f"{C_GREEN}ON{C_RESET}" if enabled else f"{C_RED}OFF{C_RESET}"
+        alias = c.get("alias", cid)
+        print(f"  {C_BOLD}{i}.{C_RESET} {alias}  [{marker}]")
+    print(f"\n  {C_BOLD}[0]{C_RESET} Cancel\n")
+
+    choice = prompt("Channel number to toggle")
+    if not choice or choice == "0" or not choice.isdigit():
+        return
+    idx = int(choice) - 1
+    if idx < 0 or idx >= len(ch_list):
+        return
+    cid = ch_list[idx]
+    current = channels[cid].get("enabled", True)
+    channels[cid]["enabled"] = not current
+    save_channels(channels)
+    state = "enabled" if not current else "disabled"
+    success(f"{channels[cid].get('alias', cid)} {state}")
+    input(f"\n  Press Enter to continue...")
+
+def _bulk_add_channels_flow(channels):
+    print(f"\n  {C_DIM}Paste channel URLs (one per line). Press Ctrl+D when done.{C_RESET}\n")
+    added = 0
+    try:
+        while True:
+            line = input("  ").strip()
+            if not line:
+                continue
+            cid = _extract_channel_id(line)
+            if cid and cid not in channels:
+                channels[cid] = {
+                    "url": line if line.startswith("http") else f"https://www.youtube.com/{cid}",
+                    "alias": cid.lstrip("@"),
+                    "enabled": True,
+                    "added_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                }
+                added += 1
+                success(f"Added: {cid}")
+    except EOFError:
+        pass
+    if added:
+        save_channels(channels)
+        print(f"\n  {C_GREEN}Added {added} channel(s){C_RESET}")
+    input(f"\n  Press Enter to continue...")
+
+def _extract_channel_id(url):
+    url = url.strip()
+    if "/channel/" in url:
+        return url.split("/channel/")[-1].split("/")[0].split("?")[0]
+    if "@" in url:
+        handle = url.split("@")[-1].split("/")[0].split("?")[0]
+        return f"@{handle}"
+    if url.startswith("UC") and len(url) > 20:
+        return url
+    if "/c/" in url:
+        return url.split("/c/")[-1].split("/")[0].split("?")[0]
+    if url and not url.startswith("http"):
+        return f"@{url.lstrip('@')}"
+    return None
 
 # ─── Screen: Deploy ───────────────────────────────────────────────────────────
 
 def screen_deploy():
     clear()
     banner()
-    print(f"\n  {C_BOLDWHITE}DEPLOY NEW INSTANCE{C_RESET}")
+    print(f"\n  {C_BOLDWHITE}DEPLOY TO GITHUB ACTIONS{C_RESET}")
     divider()
 
-    if not HAS_CRYPTO and not HAS_NACL:
-        warn("Neither 'cryptography' nor 'nacl' library installed — secrets cannot be encrypted")
-        warn("Install with: pip install cryptography pynacl")
-        if not confirm("Continue anyway (secrets won't work)?"):
-            return
-
-    token, acct_name = get_active_token()
-    if not token:
-        error("No active account. Go to Accounts first.")
+    if not HAS_GH:
+        error("github_api module not found")
         input(f"\n  Press Enter to continue...")
         return
 
-    accounts = load_json("accounts.json")
-    settings = load_json("settings.json")
-    username = accounts[acct_name].get("username", acct_name)
+    token = get_active_github_token()
+    if not token:
+        error("No active GitHub account — add one in GitHub Accounts first")
+        input(f"\n  Press Enter to continue...")
+        return
 
-    repo_name = prompt("Repo name (will create vplink-{name})")
+    yt_acct = get_active_youtube()
+    if not yt_acct:
+        error("No active YouTube account — add one in YouTube Accounts first")
+        input(f"\n  Press Enter to continue...")
+        return
+
+    settings = load_settings()
+    username = get_active_github().get("username", "?")
+
+    print(f"  {C_DIM}GitHub:{C_RESET}   @{username}")
+    print(f"  {C_DIM}YouTube:{C_RESET}  @{yt_acct.get('channel_name', '?')}")
+    print()
+
+    repo_name = prompt("Repo name", f"workflow-shorturl-yt")
     if not repo_name:
         return
-    if not validate_repo_name(repo_name.replace("vplink-", "", 1)):
-        error("Invalid repo name — use only letters, numbers, hyphens, underscores")
-        input(f"\n  Press Enter to continue...")
-        return
-    full_name = repo_name if repo_name.startswith("vplink-") else f"vplink-{repo_name}"
-    key = prompt("VPLINK_KEY (raw key or full URL)")
-    if not key:
-        error("VPLINK_KEY is required")
-        input(f"\n  Press Enter to continue...")
-        return
-    key = normalize_key(key)
 
-    if not confirm(f"Deploy {full_name} as @{username}?"):
+    full_name = repo_name if repo_name.startswith("workflow-") else f"workflow-{repo_name}"
+
+    print(f"\n  {C_DIM}This will:{C_RESET}")
+    print(f"  {C_DIM}1. Create repo @{username}/{full_name}{C_RESET}")
+    print(f"  {C_DIM}2. Push code from local to GitHub{C_RESET}")
+    print(f"  {C_DIM}3. Set encrypted secrets (YT_CLIENT_ID, etc.){C_RESET}")
+    print(f"  {C_DIM}4. Enable the youtube.yml workflow{C_RESET}")
+    print()
+
+    if not confirm(f"Deploy @{username}/{full_name}?"):
         return
 
     print()
-    TOTAL = 8
-    def show_step(n, msg):
+    TOTAL = 7
+
+    def step(n, msg):
         print(f"  {C_BOLD}[{n}/{TOTAL}]{C_RESET} {msg}")
 
-    dep, err = deploy_new(repo_name, key, token, username, settings, step_cb=show_step)
-    print()
-    if err:
-        error(err)
+    # Step 1: Check if repo exists
+    step(1, f"Checking if {full_name} exists...")
+    check = github_api.get_repo(username, full_name, token)
+    repo_exists = not (isinstance(check, dict) and check.get("error"))
+
+    if repo_exists:
+        warn(f"Repo @{username}/{full_name} already exists")
+        if not confirm("Use existing repo and just update secrets + enable workflow?"):
+            return
+        remote_url = f"https://{token}@github.com/{username}/{full_name}.git"
     else:
-        success(f"Deployed: {dep['name']}")
-        info(f"Repo: {dep['repo_url']}")
-        info("Workflow will run automatically within ~1 minute")
+        # Step 2: Create repo
+        step(2, f"Creating repo {full_name}...")
+        create_resp = github_api.create_repo(token, full_name, "YouTube Mirror Bot")
+        if isinstance(create_resp, dict) and create_resp.get("error"):
+            error(f"Create repo failed: {create_resp.get('message', '')}")
+            input(f"\n  Press Enter to continue...")
+            return
+        remote_url = f"https://{token}@github.com/{username}/{full_name}.git"
+
+        # Step 3: Push code
+        step(3, "Pushing code to GitHub...")
+        src_dir = str(Path(__file__).parent)
+        ok, err = github_api.git_push(src_dir, remote_url)
+        if not ok:
+            error(f"Git push failed: {err}")
+            input(f"\n  Press Enter to continue...")
+            return
+
+    # Step 4: Set secrets
+    step(4, "Setting encrypted secrets...")
+    secrets = {
+        "YT_CLIENT_ID": yt_acct.get("client_id", ""),
+        "YT_CLIENT_SECRET": yt_acct.get("client_secret", ""),
+        "YT_REFRESH_TOKEN": yt_acct.get("refresh_token", ""),
+    }
+    sk = settings.get("shortener_api_key", "")
+    su = settings.get("shortener_api_url", "")
+    if sk:
+        secrets["SHORTENER_API_KEY"] = sk
+    if su:
+        secrets["SHORTENER_API_URL"] = su
+    prov = settings.get("shortener_provider", "none")
+    if prov == "vplink" and sk:
+        secrets["VPLINK_API_KEY"] = sk
+
+    secret_errors = github_api.set_all_secrets(username, full_name, token, secrets)
+    if secret_errors:
+        for e in secret_errors:
+            warn(e)
+
+    # Step 5: Find workflow
+    step(5, "Finding workflow...")
+    wf = github_api.get_mirror_workflow(username, full_name, token)
+    if not wf:
+        warn("No youtube.yml workflow found — make sure code was pushed")
+    else:
+        # Step 6: Enable workflow
+        step(6, "Enabling workflow...")
+        github_api.enable_workflow(username, full_name, wf["id"], token)
+
+        # Step 7: Save deployment locally
+        step(7, "Saving deployment record...")
+        dep = {
+            "name": full_name,
+            "account": settings.get("active_github", ""),
+            "youtube_account": settings.get("active_account", ""),
+            "repo_url": f"https://github.com/{username}/{full_name}",
+            "status": "deployed",
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        deps = load_deployments()
+        deps[full_name] = dep
+        save_deployments(deps)
+
+    print()
+    success(f"Deployed: @{username}/{full_name}")
+    info(f"Repo: https://github.com/{username}/{full_name}")
+    info("Workflow will run automatically within ~1 minute")
     input(f"\n  Press Enter to continue...")
 
-# ─── Screen: Remove ───────────────────────────────────────────────────────────
+# ─── Screen: Remove Deployment ────────────────────────────────────────────────
 
-def screen_remove():
+def screen_remove_deployment():
     while True:
         clear()
         banner()
         print(f"\n  {C_BOLDWHITE}REMOVE DEPLOYMENT{C_RESET}")
         divider()
-        deps = load_json("deployments.json")
+
+        deps = load_deployments()
         dep_list = list(deps.values())
+
         if not dep_list:
             print(f"\n  {C_DIM}No deployments to remove.{C_RESET}\n")
             input(f"  Press Enter to continue...")
             return
+
         for i, d in enumerate(dep_list, 1):
-            dep_status = d.get("status", "?")
-            status_color = C_GREEN if dep_status == "success" else C_YELLOW if dep_status == "deployed" else C_RED
+            status = d.get("status", "?")
+            sc = C_GREEN if status == "deployed" else C_YELLOW if status == "unknown" else C_RED
+            acct = d.get("account", "?")
             print(f"  {C_BOLD}{i}.{C_RESET} {d['name']}  "
-                  f"{status_color}{dep_status}{C_RESET}  "
-                  f"{C_DIM}{d.get('account', '?')}{C_RESET}")
+                  f"{sc}{status}{C_RESET}  {C_DIM}@{acct}{C_RESET}")
         print(f"\n  {C_BOLD}[N]{C_RESET} Remove deployment N")
         print(f"  {C_BOLD}[a]{C_RESET} Nuke ALL deployments")
         print(f"  {C_BOLD}[0]{C_RESET} Back\n")
@@ -740,8 +971,25 @@ def screen_remove():
             return
         elif choice == "a":
             if confirm(f"DELETE ALL {len(dep_list)} DEPLOYMENTS? This removes GitHub repos too!"):
-                loading("Nuking all deployments")
-                deleted, errors = nuke_deployments()
+                loading("Nuking all deployments...")
+                deleted = 0
+                errors = 0
+                for d in dep_list:
+                    acct_name = d.get("account", "")
+                    gh_accounts = load_github_accounts()
+                    acct = gh_accounts.get(acct_name, {})
+                    token = acct.get("token", "")
+                    owner = acct.get("username", acct_name)
+                    if token:
+                        resp = github_api.delete_repo(owner, d["name"], token)
+                        if isinstance(resp, dict) and resp.get("error"):
+                            errors += 1
+                        else:
+                            deleted += 1
+                    repo_dir = DATA_DIR / "repos" / d["name"]
+                    if repo_dir.exists():
+                        shutil.rmtree(repo_dir, ignore_errors=True)
+                save_deployments({})
                 if errors:
                     warn(f"Nuked {deleted} deployments ({errors} failed)")
                 else:
@@ -753,71 +1001,102 @@ def screen_remove():
             if 0 <= idx < len(dep_list):
                 d = dep_list[idx]
                 if confirm(f"Remove '{d['name']}'? (deletes GitHub repo)"):
-                    loading(f"Removing {d['name']}")
-                    ok, err = remove_deployment(d["name"])
-                    if ok:
-                        success(f"Removed {d['name']}")
-                    else:
-                        error(err)
+                    loading(f"Removing {d['name']}...")
+                    acct_name = d.get("account", "")
+                    gh_accounts = load_github_accounts()
+                    acct = gh_accounts.get(acct_name, {})
+                    token = acct.get("token", "")
+                    owner = acct.get("username", acct_name)
+                    if token:
+                        resp = github_api.delete_repo(owner, d["name"], token)
+                        if isinstance(resp, dict) and resp.get("error"):
+                            error(f"GitHub API error: {resp.get('message', '')}")
+                        else:
+                            success(f"Deleted GitHub repo")
+                    repo_dir = DATA_DIR / "repos" / d["name"]
+                    if repo_dir.exists():
+                        shutil.rmtree(repo_dir, ignore_errors=True)
+                    deps = load_deployments()
+                    deps.pop(d["name"], None)
+                    save_deployments(deps)
+                    success(f"Removed {d['name']}")
                     input(f"\n  Press Enter to continue...")
 
-# ─── Screen: Status ───────────────────────────────────────────────────────────
+# ─── Screen: Sync from GitHub ─────────────────────────────────────────────────
 
-def screen_status():
+def screen_sync():
     clear()
     banner()
-    print(f"\n  {C_BOLDWHITE}DEPLOYMENT STATUS{C_RESET}")
+    print(f"\n  {C_BOLDWHITE}SYNC FROM GITHUB{C_RESET}")
     divider()
 
-    token, _ = get_active_token()
-    if not token:
-        error("No active account")
+    gh_accounts = load_github_accounts()
+    if not gh_accounts:
+        error("No GitHub accounts configured")
         input(f"\n  Press Enter to continue...")
         return
 
-    loading("Fetching deployments from GitHub")
-    repos = get_vplink_repos(token)
-    if isinstance(repos, dict) and repos.get("_rate_limited"):
-        error("Rate-limited by GitHub API. Try again later.")
-        input(f"\n  Press Enter to continue...")
-        return
-    if not repos:
-        print(f"\n  {C_DIM}No vplink-* repos found.{C_RESET}")
-        input(f"\n  Press Enter to continue...")
-        return
+    existing = load_deployments()
+    new_repos = []
+    updated_repos = []
+    errors = []
 
-    cache = load_json("status_cache.json")
+    for name, acct in gh_accounts.items():
+        tok = acct.get("token", "")
+        if not tok:
+            errors.append(f"@{name}: no token")
+            continue
+        loading(f"Scanning @{acct.get('username', name)}...")
+        try:
+            repos = github_api.get_mirror_repos(tok)
+            if isinstance(repos, dict) and repos.get("_rate_limited"):
+                errors.append(f"@{name}: rate-limited by GitHub API")
+                continue
+            for repo in repos:
+                rn = repo["name"]
+                owner = repo["owner"]["login"]
+                status = "unknown"
+                try:
+                    runs = github_api.get_runs(owner, rn, tok, per=1)
+                    last = runs[0] if runs else None
+                    status = (last.get("conclusion") or last.get("status", "unknown")) if last else "no_runs"
+                except Exception as e:
+                    errors.append(f"{rn}: {str(e)[:40]}")
+
+                if rn in existing:
+                    existing[rn]["status"] = status
+                    existing[rn]["account"] = name
+                    updated_repos.append(rn)
+                else:
+                    existing[rn] = {
+                        "name": rn,
+                        "account": name,
+                        "repo_url": repo["html_url"],
+                        "status": status,
+                        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    }
+                    new_repos.append(rn)
+        except Exception as e:
+            errors.append(f"@{name}: {str(e)[:40]}")
+
+    save_deployments(existing)
+
     print()
-    for repo in repos:
-        rn = repo["name"]
-        owner = repo["owner"]["login"]
-        c = cache.get(rn, {})
-        dest = c.get("destination", "")
-        consec_fails = c.get("consecutive_fails", 0)
-        total_ok = c.get("total_successes", 0)
+    if new_repos or updated_repos:
+        success("Sync complete")
+    else:
+        info("Nothing new found")
+    print(f"  {C_DIM}New:{C_RESET} {len(new_repos)}  "
+          f"{C_DIM}Updated:{C_RESET} {len(updated_repos)}  "
+          f"{C_DIM}Total:{C_RESET} {len(existing)}")
+    if new_repos:
+        print(f"  {C_GREEN}New repos:{C_RESET} {', '.join(new_repos)}")
+    if errors:
+        for e in errors:
+            warn(e)
+    input(f"\n  Press Enter to continue...")
 
-        runs = get_runs(owner, rn, token, per=1)
-        if runs:
-            latest = runs[0]
-            status = latest.get("conclusion") or latest.get("status", "unknown")
-            created = latest.get("created_at", "")[:16].replace("T", " ")
-        else:
-            status = "no_runs"
-            created = "never"
-
-        sc = C_GREEN if status == "success" else C_RED if status == "failure" else C_YELLOW
-        print(f"  {C_BOLD}{rn}{C_RESET}  {C_DIM}(@{owner}){C_RESET}")
-        print(f"    {C_DIM}Status:{C_RESET} {sc}{status}{C_RESET}  "
-              f"{C_DIM}Last:{C_RESET} {created}  "
-              f"{C_DIM}OK:{C_RESET} {total_ok}  "
-              f"{C_DIM}Fails:{C_RESET} {consec_fails}")
-        if dest:
-            print(f"    {C_DIM}Destination:{C_RESET} {C_BRGREEN}{dest}{C_RESET}")
-        print()
-
-    input(f"  Press Enter to continue...")
-
-# ─── Screen: Logs ─────────────────────────────────────────────────────────────
+# ─── Screen: View Logs ────────────────────────────────────────────────────────
 
 def screen_logs():
     clear()
@@ -825,20 +1104,20 @@ def screen_logs():
     print(f"\n  {C_BOLDWHITE}VIEW WORKFLOW LOGS{C_RESET}")
     divider()
 
-    token, _ = get_active_token()
+    token = get_active_github_token()
     if not token:
-        error("No active account")
+        error("No active GitHub account")
         input(f"\n  Press Enter to continue...")
         return
 
-    repos = get_vplink_repos(token)
+    repos = github_api.get_mirror_repos(token)
     if isinstance(repos, dict) and repos.get("_rate_limited"):
         error("Rate-limited by GitHub API. Try again later.")
         input(f"\n  Press Enter to continue...")
         return
     if not repos:
-        print(f"\n  {C_DIM}No vplink-* repos found.{C_RESET}")
-        input(f"\n  Press Enter to continue...")
+        print(f"\n  {C_DIM}No workflow-* repos found.{C_RESET}")
+        input(f"  Press Enter to continue...")
         return
 
     print()
@@ -858,21 +1137,22 @@ def screen_logs():
     owner = repo["owner"]["login"]
     rn = repo["name"]
 
-    loading(f"Fetching runs for {rn}")
-    runs = get_runs(owner, rn, token, per=10)
+    loading(f"Fetching runs for {rn}...")
+    runs = github_api.get_runs(owner, rn, token, per=10)
     if not runs:
         print(f"\n  {C_DIM}No workflow runs found.{C_RESET}")
-        input(f"\n  Press Enter to continue...")
+        input(f"  Press Enter to continue...")
         return
 
     print()
     print(f"  {C_BOLD}Recent runs for {rn}:{C_RESET}")
     print()
     for i, run in enumerate(runs, 1):
-        sc = C_GREEN if run.get("conclusion") == "success" else C_RED if run.get("conclusion") == "failure" else C_YELLOW
+        conclusion = run.get("conclusion") or run.get("status", "unknown")
+        sc = C_GREEN if conclusion == "success" else C_RED if conclusion == "failure" else C_YELLOW
         created = run.get("created_at", "")[:16].replace("T", " ")
         print(f"  {C_BOLD}{i:2d}.{C_RESET} #{run['number']:4d}  "
-              f"{sc}{run.get('conclusion', run['status']):10s}{C_RESET}  {created}")
+              f"{sc}{conclusion:10s}{C_RESET}  {created}")
     print(f"\n  {C_BOLD}[0]{C_RESET} Back\n")
 
     choice2 = prompt("Select run")
@@ -885,18 +1165,12 @@ def screen_logs():
 
     run = runs[idx2]
     print()
-    loading(f"Fetching logs for run #{run['number']}")
+    loading(f"Fetching logs for run #{run['number']}...")
 
-    dest = extract_destination(token, owner, rn, run["id"])
-    if dest:
-        success(f"Destination: {dest}")
-    else:
-        info("No destination found in this run")
-
-    logs = get_run_logs(token, owner, rn, run["id"])
+    logs = github_api.get_run_logs(owner, rn, run["id"], token)
     if not logs:
         print(f"\n  {C_DIM}No logs available.{C_RESET}")
-        input(f"\n  Press Enter to continue...")
+        input(f"  Press Enter to continue...")
         return
 
     for name, content in logs.items():
@@ -907,95 +1181,11 @@ def screen_logs():
         for line in lines[-LOG_MAX_LINES:]:
             print(f"  {C_DIM}{line}{C_RESET}")
         if len(lines) > LOG_MAX_LINES:
-            print(f"  {C_DIM}... ({len(lines) - 80} lines hidden){C_RESET}")
+            print(f"  {C_DIM}... ({len(lines) - LOG_MAX_LINES} lines hidden){C_RESET}")
 
     input(f"\n  Press Enter to continue...")
 
-# ─── Screen: Sync ─────────────────────────────────────────────────────────────
-
-def screen_sync():
-    clear()
-    banner()
-    print(f"\n  {C_BOLDWHITE}SYNC FROM GITHUB{C_RESET}")
-    divider()
-
-    accounts = load_json("accounts.json")
-    if not accounts:
-        error("No accounts configured")
-        input(f"\n  Press Enter to continue...")
-        return
-
-    existing = load_json("deployments.json")
-    new_repos = []
-    updated_repos = []
-    errors = []
-
-    for name, acct in accounts.items():
-        tok = acct.get("token", "")
-        if not tok:
-            errors.append(f"@{name}: no token")
-            continue
-        loading(f"Scanning @{acct.get('username', name)}")
-        try:
-            repos = paginate_repos(tok)
-            if isinstance(repos, dict) and repos.get("_rate_limited"):
-                errors.append(f"@{name}: rate-limited by GitHub API")
-                continue
-            vplink = [r for r in repos if r["name"].startswith("vplink-")]
-            owner = vplink[0]["owner"]["login"] if vplink else acct.get("username", name)
-            acct["username"] = owner
-            for repo in vplink:
-                rn = repo["name"]
-                status = "unknown"
-                dest = ""
-                try:
-                    runs = get_runs(owner, rn, tok, per=1)
-                    last = runs[0] if runs else None
-                    status = (last.get("conclusion") or last.get("status", "unknown")) if last else "no_runs"
-
-                    dest = ""
-                    if last and last.get("conclusion") == "success":
-                        dest = extract_destination(tok, owner, rn, last["id"])
-                except Exception as e:
-                    status = "unknown"
-                    errors.append(f"{rn}: {str(e)[:40]}")
-
-                if rn in existing:
-                    existing[rn]["status"] = status
-                    existing[rn]["account"] = name
-                    if dest:
-                        existing[rn]["destination"] = dest
-                    updated_repos.append(rn)
-                else:
-                    existing[rn] = {
-                        "name": rn, "key": "?", "account": name,
-                        "repo_url": repo["html_url"], "status": status,
-                        "destination": dest,
-                        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    }
-                    new_repos.append(rn)
-        except Exception as e:
-            errors.append(f"@{name}: {str(e)[:40]}")
-
-    save_json("accounts.json", accounts)
-    save_json("deployments.json", existing)
-
-    print()
-    if new_repos or updated_repos:
-        success(f"Sync complete")
-    else:
-        info("Nothing new found")
-    print(f"  {C_DIM}New:{C_RESET} {len(new_repos)}  "
-          f"{C_DIM}Updated:{C_RESET} {len(updated_repos)}  "
-          f"{C_DIM}Total:{C_RESET} {len(existing)}")
-    if new_repos:
-        print(f"  {C_GREEN}New repos:{C_RESET} {', '.join(new_repos)}")
-    if errors:
-        for e in errors:
-            warn(e)
-    input(f"\n  Press Enter to continue...")
-
-# ─── Screen: Dispatch ─────────────────────────────────────────────────────────
+# ─── Screen: Trigger Workflow ─────────────────────────────────────────────────
 
 def screen_dispatch():
     clear()
@@ -1003,16 +1193,20 @@ def screen_dispatch():
     print(f"\n  {C_BOLDWHITE}MANUALLY TRIGGER WORKFLOW{C_RESET}")
     divider()
 
-    token, _ = get_active_token()
+    token = get_active_github_token()
     if not token:
-        error("No active account")
+        error("No active GitHub account")
         input(f"\n  Press Enter to continue...")
         return
 
-    repos = get_vplink_repos(token)
-    if not repos:
-        print(f"\n  {C_DIM}No vplink-* repos found.{C_RESET}")
+    repos = github_api.get_mirror_repos(token)
+    if isinstance(repos, dict) and repos.get("_rate_limited"):
+        error("Rate-limited by GitHub API")
         input(f"\n  Press Enter to continue...")
+        return
+    if not repos:
+        print(f"\n  {C_DIM}No workflow-* repos found.{C_RESET}")
+        input(f"  Press Enter to continue...")
         return
 
     print()
@@ -1032,27 +1226,141 @@ def screen_dispatch():
     owner = repo["owner"]["login"]
     rn = repo["name"]
 
-    key = prompt("VPLINK_KEY (leave blank for default, or paste URL)")
-    key = normalize_key(key) if key else ""
-    inputs = {"key": key} if key else {}
+    dry_run = prompt("Dry run? (no upload)", "false")
+    inputs = {"dry_run": dry_run}
 
     if not confirm(f"Trigger workflow on {rn}?"):
         return
 
-    loading(f"Dispatching workflow on {rn}")
-    wf = get_workflow(owner, rn, token)
+    loading(f"Dispatching workflow on {rn}...")
+    wf = github_api.get_mirror_workflow(owner, rn, token)
     if not wf:
         error("No workflow found")
         input(f"\n  Press Enter to continue...")
         return
 
-    resp = gh(f"/repos/{owner}/{rn}/actions/workflows/{wf['id']}/dispatches", token, "POST",
-              {"ref": "main", "inputs": inputs})
+    resp = github_api.dispatch_workflow(owner, rn, wf["id"], token, inputs=inputs)
     if isinstance(resp, dict) and resp.get("error"):
         error(f"Dispatch failed: {resp.get('message', '')}")
     else:
         success(f"Workflow triggered on {rn}")
     input(f"\n  Press Enter to continue...")
+
+# ─── Screen: Status ───────────────────────────────────────────────────────────
+
+def screen_status():
+    clear()
+    banner()
+    print(f"\n  {C_BOLDWHITE}STATUS{C_RESET}")
+    divider()
+
+    yt_accounts = load_accounts()
+    gh_accounts = load_github_accounts()
+    channels = load_channels()
+    settings = load_settings()
+    active_yt = settings.get("active_account")
+    active_gh = settings.get("active_github")
+
+    # YouTube account
+    print(f"  {C_DIM}YouTube accounts:{C_RESET} {len(yt_accounts)}")
+    if active_yt and active_yt in yt_accounts:
+        ch = yt_accounts[active_yt].get("channel_name", "?")
+        print(f"  {C_DIM}Active YouTube:{C_RESET}   {C_GREEN}{active_yt}{C_RESET} (@{ch})")
+    elif yt_accounts:
+        print(f"  {C_DIM}Active YouTube:{C_RESET}   {C_YELLOW}none selected{C_RESET}")
+    else:
+        print(f"  {C_DIM}Active YouTube:{C_RESET}   {C_RED}no accounts{C_RESET}")
+
+    # GitHub account
+    print(f"  {C_DIM}GitHub accounts:{C_RESET}  {len(gh_accounts)}")
+    if active_gh and active_gh in gh_accounts:
+        user = gh_accounts[active_gh].get("username", "?")
+        print(f"  {C_DIM}Active GitHub:{C_RESET}    {C_GREEN}{active_gh}{C_RESET} (@{user})")
+    elif gh_accounts:
+        print(f"  {C_DIM}Active GitHub:{C_RESET}    {C_YELLOW}none selected{C_RESET}")
+    else:
+        print(f"  {C_DIM}Active GitHub:{C_RESET}    {C_RED}no accounts{C_RESET}")
+
+    enabled_ch = sum(1 for c in channels.values() if c.get("enabled", True))
+    print(f"  {C_DIM}Channels:{C_RESET}        {len(channels)} ({enabled_ch} enabled)")
+    print(f"  {C_DIM}Interval:{C_RESET}        {settings.get('check_interval_minutes', 15)} min")
+    print()
+
+    # YouTube stats
+    if active_yt and active_yt in yt_accounts:
+        acct = yt_accounts[active_yt]
+        if HAS_GAPI_CLIENT:
+            try:
+                creds = Credentials(
+                    token=None,
+                    refresh_token=acct["refresh_token"],
+                    token_uri="https://oauth2.googleapis.com/token",
+                    client_id=acct["client_id"],
+                    client_secret=acct["client_secret"],
+                )
+                yt = build("youtube", "v3", credentials=creds, cache_discovery=False)
+                resp = yt.channels().list(part="statistics,snippet", mine=True).execute()
+                items = resp.get("items", [])
+                if items:
+                    stats = items[0].get("statistics", {})
+                    print(f"  {C_DIM}YouTube channel:{C_RESET}")
+                    print(f"    Videos:      {stats.get('videoCount', '?')}")
+                    print(f"    Subscribers: {stats.get('subscriberCount', '?')}")
+                    print(f"    Views:       {stats.get('viewCount', '?')}")
+                    print()
+            except Exception as e:
+                warn(f"Could not fetch YouTube stats: {e}")
+
+    # Mirror stats
+    state_path = DATA_DIR / "state.json"
+    if state_path.exists():
+        try:
+            state = json.loads(state_path.read_text("utf-8"))
+            stats = state.get("stats", {})
+            processed = state.get("processed", {})
+            print(f"  {C_DIM}Mirror stats:{C_RESET}")
+            print(f"    Mirrored:  {stats.get('total_mirrored', 0)}")
+            print(f"    Comments:  {stats.get('total_comments', 0)}")
+            print(f"    Shortened: {stats.get('total_shortened', 0)}")
+            print(f"    Tracked:   {len(processed)} videos")
+        except Exception:
+            pass
+    else:
+        print(f"  {C_DIM}Mirror stats:{C_RESET} (no runs yet)")
+
+    # Deployment status
+    deps = load_deployments()
+    if deps:
+        print()
+        print(f"  {C_DIM}Deployments:{C_RESET}")
+        for name, d in deps.items():
+            status = d.get("status", "?")
+            sc = C_GREEN if status == "deployed" else C_YELLOW if status == "unknown" else C_RED
+            print(f"    {name}  {sc}{status}{C_RESET}")
+
+        # Check latest workflow runs
+        token = get_active_github_token()
+        if token:
+            print()
+            print(f"  {C_DIM}Latest workflow runs:{C_RESET}")
+            for name, d in deps.items():
+                repo_url = d.get("repo_url", "")
+                parts = repo_url.replace("https://github.com/", "").split("/")
+                if len(parts) >= 2:
+                    owner, rn = parts[0], parts[1]
+                    try:
+                        runs = github_api.get_runs(owner, rn, token, per=1)
+                        if runs:
+                            run = runs[0]
+                            conclusion = run.get("conclusion") or run.get("status", "?")
+                            sc = C_GREEN if conclusion == "success" else C_RED if conclusion == "failure" else C_YELLOW
+                            created = run.get("created_at", "")[:16].replace("T", " ")
+                            print(f"    {rn}  {sc}{conclusion}{C_RESET}  {C_DIM}{created}{C_RESET}")
+                    except Exception:
+                        pass
+
+    print()
+    input(f"  Press Enter to continue...")
 
 # ─── Screen: Settings ─────────────────────────────────────────────────────────
 
@@ -1062,51 +1370,305 @@ def screen_settings():
         banner()
         print(f"\n  {C_BOLDWHITE}SETTINGS{C_RESET}")
         divider()
-        settings = load_json("settings.json")
-        su = settings.get("supabase_url", "")
-        sk = settings.get("supabase_key", "")
-        ss = settings.get("supabase_secret", "")
-        vk = settings.get("vplink_key", "")
 
-        print(f"  {C_DIM}Supabase URL:{C_RESET}   {su or f'{C_YELLOW}not set{C_RESET}'}")
-        print(f"  {C_DIM}Supabase Key:{C_RESET}   {sk[:4]}...{sk[-4:] if len(sk) > 4 else ''}" if sk else f"  {C_DIM}Supabase Key:{C_RESET}   {C_YELLOW}not set{C_RESET}")
-        print(f"  {C_DIM}Supabase Secret:{C_RESET} {ss[:4]}...{ss[-4:] if len(ss) > 4 else ''}" if ss else f"  {C_DIM}Supabase Secret:{C_RESET} {C_YELLOW}not set{C_RESET}")
-        print(f"  {C_DIM}VPLINK_KEY:{C_RESET}     {vk or f'{C_YELLOW}not set{C_RESET}'}")
+        s = load_settings()
+        prov = s.get("shortener_provider", "none")
+        prov_label = {"vplink": "VPLink", "cleanuri": "CleanURI", "tinyurl": "TinyURL", "generic": "Generic"}.get(prov, "none")
+        mod = s.get("comment_moderation", "heldForReview")
+        mod_label = "View-only (owner only)" if mod == "heldForReview" else "Public (everyone sees)"
+        print(f"  {C_DIM}Comment text:{C_RESET}    {s.get('comment_text', '')[:50]}")
+        print(f"  {C_DIM}Comment mode:{C_RESET}    {mod_label}")
+        print(f"  {C_DIM}Title prefix:{C_RESET}    {s.get('mirror_title_prefix', '') or '(none)'}")
+        print(f"  {C_DIM}Desc suffix:{C_RESET}     {(s.get('mirror_description_suffix', '') or '(none)')[:50]}")
+        print(f"  {C_DIM}Privacy:{C_RESET}        {s.get('privacy_status', 'public')}")
+        print(f"  {C_DIM}Category:{C_RESET}       {s.get('category_id', '22')}")
+        print(f"  {C_DIM}Interval:{C_RESET}       {s.get('check_interval_minutes', 15)} min")
+        print(f"  {C_DIM}Max/cycle:{C_RESET}      {s.get('max_per_cycle', 3)}")
+        print(f"  {C_DIM}Shortener:{C_RESET}      {prov_label} (manage in [L] Shortlink keys)")
         print()
-        print(f"  {C_BOLD}[1]{C_RESET} Set Supabase URL")
-        print(f"  {C_BOLD}[2]{C_RESET} Set Supabase Key")
-        print(f"  {C_BOLD}[3]{C_RESET} Set Supabase Secret")
-        print(f"  {C_BOLD}[4]{C_RESET} Set default VPLINK_KEY")
-        print(f"  {C_BOLD}[5]{C_RESET} Clear all settings")
+
+        print(f"  {C_BOLD}[1]{C_RESET} Comment text (use {url} for link)")
+        print(f"  {C_BOLD}[2]{C_RESET} Comment mode (view-only / public)")
+        print(f"  {C_BOLD}[3]{C_RESET} Title prefix")
+        print(f"  {C_BOLD}[4]{C_RESET} Description suffix")
+        print(f"  {C_BOLD}[5]{C_RESET} Privacy status (public/unlisted/private)")
+        print(f"  {C_BOLD}[6]{C_RESET} Category ID")
+        print(f"  {C_BOLD}[7]{C_RESET} Check interval (minutes)")
+        print(f"  {C_BOLD}[8]{C_RESET} Max videos per cycle")
         print(f"  {C_BOLD}[0]{C_RESET} Back\n")
 
         choice = prompt("Choice")
         if choice == "0":
             return
         elif choice == "1":
-            val = prompt("Supabase URL", settings.get("supabase_url"))
-            settings["supabase_url"] = val
-            save_json("settings.json", settings)
-            success("Saved")
+            val = prompt("Comment text (use {url} for link)", s.get("comment_text"))
+            if val:
+                s["comment_text"] = val
+                save_settings(s)
+                success("Saved")
         elif choice == "2":
-            val = prompt("Supabase Key", settings.get("supabase_key"))
-            settings["supabase_key"] = val
-            save_json("settings.json", settings)
-            success("Saved")
+            print(f"\n  {C_DIM}Comment moderation:{C_RESET}")
+            print(f"  {C_BOLD}[1]{C_RESET} View-only — only you see comments (heldForReview)")
+            print(f"  {C_BOLD}[2]{C_RESET} Public — everyone sees comments (published)\n")
+            mod_choice = prompt("Mode")
+            if mod_choice == "1":
+                s["comment_moderation"] = "heldForReview"
+                save_settings(s)
+                success("Comments will be view-only (owner only)")
+            elif mod_choice == "2":
+                s["comment_moderation"] = "published"
+                save_settings(s)
+                success("Comments will be public")
+            else:
+                error("Invalid choice")
         elif choice == "3":
-            val = prompt("Supabase Secret", settings.get("supabase_secret"))
-            settings["supabase_secret"] = val
-            save_json("settings.json", settings)
+            val = prompt("Title prefix", s.get("mirror_title_prefix"))
+            s["mirror_title_prefix"] = val
+            save_settings(s)
             success("Saved")
         elif choice == "4":
-            val = prompt("Default VPLINK_KEY (raw key or URL)", settings.get("vplink_key"))
-            settings["vplink_key"] = normalize_key(val) if val else val
-            save_json("settings.json", settings)
+            val = prompt("Description suffix", s.get("mirror_description_suffix"))
+            s["mirror_description_suffix"] = val
+            save_settings(s)
             success("Saved")
         elif choice == "5":
-            if confirm("Clear all settings?"):
-                save_json("settings.json", {})
-                success("Settings cleared")
+            val = prompt("Privacy status", s.get("privacy_status"))
+            if val in ("public", "unlisted", "private"):
+                s["privacy_status"] = val
+                save_settings(s)
+                success("Saved")
+            else:
+                error("Must be: public, unlisted, or private")
+        elif choice == "6":
+            val = prompt("Category ID", s.get("category_id"))
+            if val.isdigit():
+                s["category_id"] = val
+                save_settings(s)
+                success("Saved")
+        elif choice == "7":
+            val = prompt("Check interval (minutes)", str(s.get("check_interval_minutes", 15)))
+            if val.isdigit() and int(val) >= 5:
+                s["check_interval_minutes"] = int(val)
+                save_settings(s)
+                success("Saved")
+            else:
+                error("Must be >= 5 minutes")
+        elif choice == "8":
+            val = prompt("Max videos per cycle", str(s.get("max_per_cycle", 3)))
+            if val.isdigit() and int(val) >= 1:
+                s["max_per_cycle"] = int(val)
+                save_settings(s)
+                success("Saved")
+            else:
+                error("Must be >= 1")
+
+# ─── Screen: Shortlink Keys ───────────────────────────────────────────────────
+
+def screen_shortlink_keys():
+    while True:
+        clear()
+        banner()
+        print(f"\n  {C_BOLDWHITE}SHORTLINK API KEYS{C_RESET}")
+        divider()
+
+        keys = load_shortlink_keys()
+        settings = load_settings()
+        active_provider = settings.get("shortener_provider", "none")
+        active_key = settings.get("shortener_api_key", "")
+        key_list = list(keys.keys())
+
+        if not key_list:
+            print(f"\n  {C_DIM}No API keys configured yet.{C_RESET}")
+            print(f"  {C_DIM}Add keys for VPLink, CleanURI, TinyURL, etc.{C_RESET}\n")
+        else:
+            for name, k in keys.items():
+                provider = k.get("provider", "?")
+                api_key = k.get("api_key", "")
+                is_active = (provider == active_provider and api_key == active_key)
+                marker = f"{C_GREEN}●{C_RESET}" if is_active else f"{C_DIM}○{C_RESET}"
+                masked = f"{api_key[:8]}...{api_key[-4:]}" if len(api_key) > 12 else "****"
+                print(f"  {marker} {C_BOLD}{name}{C_RESET}  "
+                      f"{C_DIM}{provider}{C_RESET}  {masked}")
+            print()
+
+        print(f"  {C_BOLD}[1]{C_RESET} Add API key")
+        print(f"  {C_BOLD}[2]{C_RESET} Remove key")
+        if key_list:
+            print(f"  {C_BOLD}[3]{C_RESET} Use key (set as active)")
+            print(f"  {C_BOLD}[4]{C_RESET} Test key")
+        print(f"  {C_BOLD}[0]{C_RESET} Back\n")
+
+        choice = prompt("Choice")
+        if choice == "0":
+            return
+        elif choice == "1":
+            _add_shortlink_key(keys)
+        elif choice == "2" and key_list:
+            _remove_shortlink_key(keys)
+        elif choice == "3" and key_list:
+            _use_shortlink_key(keys)
+        elif choice == "4" and key_list:
+            _test_shortlink_key(keys)
+
+def _add_shortlink_key(keys):
+    print(f"\n  {C_DIM}Select provider:{C_RESET}")
+    print(f"  {C_BOLD}[1]{C_RESET} VPLink     — vplink.in (earn per click)")
+    print(f"  {C_BOLD}[2]{C_RESET} CleanURI   — cleanuri.com")
+    print(f"  {C_BOLD}[3]{C_RESET} TinyURL    — tinyurl.com")
+    print(f"  {C_BOLD}[4]{C_RESET} Generic    — custom API endpoint\n")
+
+    prov_choice = prompt("Provider")
+    prov_map = {"1": "vplink", "2": "cleanuri", "3": "tinyurl", "4": "generic"}
+    provider = prov_map.get(prov_choice, "")
+    if not provider:
+        error("Invalid choice")
+        input(f"\n  Press Enter to continue...")
+        return
+
+    name = prompt("Key name (e.g. main)")
+    if not name:
+        return
+    if name in keys:
+        error("Key name already exists")
+        input(f"\n  Press Enter to continue...")
+        return
+
+    api_key = prompt("API key")
+    if not api_key:
+        return
+
+    keys[name] = {
+        "name": name,
+        "provider": provider,
+        "api_key": api_key,
+        "added_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    save_shortlink_keys(keys)
+    success(f"Added '{name}' ({provider})")
+    input(f"\n  Press Enter to continue...")
+
+def _remove_shortlink_key(keys):
+    names = list(keys.keys())
+    print()
+    for i, n in enumerate(names, 1):
+        prov = keys[n].get("provider", "?")
+        print(f"  {C_BOLD}{i}.{C_RESET} {n}  {C_DIM}{prov}{C_RESET}")
+    print(f"\n  {C_BOLD}[0]{C_RESET} Cancel\n")
+
+    choice = prompt("Key number to remove")
+    if not choice or choice == "0" or not choice.isdigit():
+        return
+    idx = int(choice) - 1
+    if idx < 0 or idx >= len(names):
+        return
+    name = names[idx]
+    if confirm(f"Remove '{name}'?"):
+        del keys[name]
+        save_shortlink_keys(keys)
+        success(f"Removed '{name}'")
+        input(f"\n  Press Enter to continue...")
+
+def _use_shortlink_key(keys):
+    names = list(keys.keys())
+    print()
+    for i, n in enumerate(names, 1):
+        prov = keys[n].get("provider", "?")
+        print(f"  {C_BOLD}{i}.{C_RESET} {n}  {C_DIM}{prov}{C_RESET}")
+    print(f"\n  {C_BOLD}[0]{C_RESET} Cancel\n")
+
+    choice = prompt("Key number to activate")
+    if not choice or choice == "0" or not choice.isdigit():
+        return
+    idx = int(choice) - 1
+    if idx < 0 or idx >= len(names):
+        return
+    name = names[idx]
+    k = keys[name]
+    settings = load_settings()
+    settings["shortener_provider"] = k["provider"]
+    settings["shortener_api_key"] = k["api_key"]
+    save_settings(settings)
+    success(f"Activated '{name}' ({k['provider']})")
+    input(f"\n  Press Enter to continue...")
+
+def _test_shortlink_key(keys):
+    names = list(keys.keys())
+    print()
+    for i, n in enumerate(names, 1):
+        prov = keys[n].get("provider", "?")
+        print(f"  {C_BOLD}{i}.{C_RESET} {n}  {C_DIM}{prov}{C_RESET}")
+    print(f"\n  {C_BOLD}[0]{C_RESET} Cancel\n")
+
+    choice = prompt("Key number to test")
+    if not choice or choice == "0" or not choice.isdigit():
+        return
+    idx = int(choice) - 1
+    if idx < 0 or idx >= len(names):
+        return
+    name = names[idx]
+    k = keys[name]
+    provider = k["provider"]
+    api_key = k["api_key"]
+
+    loading(f"Testing {provider} key...")
+    import shortener
+    test_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    result = shortener.shorten_url(test_url, api_key=api_key, provider=provider)
+    if result != test_url:
+        success(f"Shortened: {result}")
+    else:
+        error("Shortener returned original URL — check key")
+    input(f"\n  Press Enter to continue...")
+
+# ─── Screen: Dispatch Local ───────────────────────────────────────────────────
+
+def screen_dispatch_local():
+    clear()
+    banner()
+    print(f"\n  {C_BOLDWHITE}RUN MIRROR LOCALLY{C_RESET}")
+    divider()
+
+    accounts = load_accounts()
+    channels = load_channels()
+    settings = load_settings()
+    active = settings.get("active_account")
+
+    if not active or active not in accounts:
+        error("No active YouTube account — add one in YouTube Accounts first")
+        input(f"\n  Press Enter to continue...")
+        return
+    if not channels:
+        error("No channels to monitor — add one in Channels first")
+        input(f"\n  Press Enter to continue...")
+        return
+
+    print(f"  {C_DIM}Active account:{C_RESET} @{accounts[active].get('channel_name', '?')}")
+    print(f"  {C_DIM}Channels:{C_RESET} {len(channels)}")
+    print()
+
+    if not confirm("Run mirror cycle now?"):
+        return
+
+    loading("Running mirror cycle...")
+    print()
+
+    env = os.environ.copy()
+    acct = accounts[active]
+    env["YT_CLIENT_ID"] = acct["client_id"]
+    env["YT_CLIENT_SECRET"] = acct["client_secret"]
+    env["YT_REFRESH_TOKEN"] = acct["refresh_token"]
+    env["YT_DATA_DIR"] = str(DATA_DIR)
+
+    result = subprocess.run(
+        [sys.executable, str(Path(__file__).parent / "mirror.py")],
+        env=env, timeout=600,
+    )
+    print()
+    if result.returncode == 0:
+        success("Mirror cycle completed")
+    else:
+        error(f"Mirror cycle failed (exit code {result.returncode})")
+    input(f"\n  Press Enter to continue...")
 
 # ─── Main Menu ────────────────────────────────────────────────────────────────
 
@@ -1114,16 +1676,44 @@ def main_menu():
     while True:
         clear()
         banner()
-        status_line()
+
+        yt_accounts = load_accounts()
+        gh_accounts = load_github_accounts()
+        channels = load_channels()
+        settings = load_settings()
+        active_yt = settings.get("active_account")
+        active_gh = settings.get("active_github")
+        deps = load_deployments()
+
+        # Status line
+        if active_yt and active_yt in yt_accounts:
+            ch = yt_accounts[active_yt].get("channel_name", "?")
+            print(f"  {C_DIM}YT:{C_RESET} {C_GREEN}@{ch}{C_RESET}  "
+                  f"{C_DIM}GH:{C_RESET} {len(gh_accounts)}  "
+                  f"{C_DIM}Ch:{C_RESET} {len(channels)}  "
+                  f"{C_DIM}Deploys:{C_RESET} {len(deps)}")
+        elif yt_accounts:
+            print(f"  {C_DIM}YT:{C_RESET} {C_YELLOW}none{C_RESET}  "
+                  f"{C_DIM}GH:{C_RESET} {len(gh_accounts)}  "
+                  f"{C_DIM}Ch:{C_RESET} {len(channels)}  "
+                  f"{C_DIM}Deploys:{C_RESET} {len(deps)}")
+        else:
+            print(f"  {C_YELLOW}No accounts configured — add one to get started{C_RESET}")
+
         print()
-        print(f"  {C_BOLD}[1]{C_RESET} Accounts")
-        print(f"  {C_BOLD}[2]{C_RESET} Deploy new instance")
-        print(f"  {C_BOLD}[3]{C_RESET} Remove deployment")
-        print(f"  {C_BOLD}[4]{C_RESET} Sync from GitHub")
-        print(f"  {C_BOLD}[5]{C_RESET} View status")
-        print(f"  {C_BOLD}[6]{C_RESET} View logs")
-        print(f"  {C_BOLD}[7]{C_RESET} Trigger workflow")
-        print(f"  {C_BOLD}[8]{C_RESET} Settings")
+        print(f"  {C_BOLD}[1]{C_RESET} YouTube accounts")
+        print(f"  {C_BOLD}[2]{C_RESET} GitHub accounts")
+        print(f"  {C_BOLD}[3]{C_RESET} Monitored channels")
+        print(f"  {C_BOLD}[4]{C_RESET} Deploy to GitHub Actions")
+        print(f"  {C_BOLD}[5]{C_RESET} Remove deployment")
+        print(f"  {C_BOLD}[6]{C_RESET} Sync from GitHub")
+        print(f"  {C_BOLD}[7]{C_RESET} View workflow logs")
+        print(f"  {C_BOLD}[8]{C_RESET} Trigger workflow (remote)")
+        print(f"  {C_BOLD}[9]{C_RESET} Run mirror now (local)")
+        print(f"  {C_BOLD}[L]{C_RESET} Shortlink API keys")
+        print(f"  {C_BOLD}[S]{C_RESET} Status overview")
+        print(f"  {C_BOLD}[T]{C_RESET} Settings")
+        print(f"  {C_BOLD}[D]{C_RESET} Doctor (diagnostics)")
         print(f"  {C_BOLD}[0]{C_RESET} Quit\n")
 
         choice = prompt("Choice")
@@ -1133,25 +1723,218 @@ def main_menu():
         elif choice == "1":
             screen_accounts()
         elif choice == "2":
-            screen_deploy()
+            screen_github_accounts()
         elif choice == "3":
-            screen_remove()
+            screen_channels()
         elif choice == "4":
-            screen_sync()
+            screen_deploy()
         elif choice == "5":
-            screen_status()
+            screen_remove_deployment()
         elif choice == "6":
-            screen_logs()
+            screen_sync()
         elif choice == "7":
-            screen_dispatch()
+            screen_logs()
         elif choice == "8":
+            screen_dispatch()
+        elif choice == "9":
+            screen_dispatch_local()
+        elif choice.lower() == "l":
+            screen_shortlink_keys()
+        elif choice.lower() == "s":
+            screen_status()
+        elif choice.lower() == "t":
             screen_settings()
+        elif choice.lower() == "d":
+            screen_doctor()
+
+def screen_doctor():
+    clear()
+    banner()
+    print(f"\n  {C_BOLDWHITE}DIAGNOSTIC DOCTOR{C_RESET}")
+    print(f"  {C_DIM}Checking everything...{C_RESET}\n")
+
+    checks = []
+
+    def ok(label, msg=""):
+        checks.append(("ok", label, msg))
+        print(f"  {C_GREEN}[OK]{C_RESET}   {label}" + (f" — {msg}" if msg else ""))
+
+    def warn(label, msg="", fix=""):
+        checks.append(("warn", label, msg, fix))
+        print(f"  {C_YELLOW}[WARN]{C_RESET} {label}" + (f" — {msg}" if msg else ""))
+        if fix:
+            print(f"           {C_DIM}Fix: {fix}{C_RESET}")
+
+    def fail(label, msg="", fix=""):
+        checks.append(("fail", label, msg, fix))
+        print(f"  {C_RED}[FAIL]{C_RESET} {label}" + (f" — {msg}" if msg else ""))
+        if fix:
+            print(f"           {C_DIM}Fix: {fix}{C_RESET}")
+
+    # 1. Python
+    import sys
+    v = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    if sys.version_info >= (3, 8):
+        ok(f"Python {v}")
+    else:
+        fail(f"Python {v}", "Need 3.8+", "Install Python 3.8+: pkg install python")
+
+    # 2. yt-dlp
+    import shutil, subprocess
+    ytdlp_path = shutil.which("yt-dlp")
+    if ytdlp_path:
+        try:
+            r = subprocess.run(["yt-dlp", "--version"], capture_output=True, text=True, timeout=10)
+            ver = r.stdout.strip()
+            ok(f"yt-dlp {ver}", ytdlp_path)
+        except Exception:
+            warn("yt-dlp found but not responding", fix="Update: yt-dlp -U")
+    else:
+        fail("yt-dlp not found", fix="Install: pkg install yt-dlp  or  pip install yt-dlp")
+
+    # 3. Config files
+    for fname in ["accounts.json", "channels.json", "settings.json", "state.json", "deployments.json", "shortlink_keys.json"]:
+        p = DATA_DIR / fname
+        if not p.exists():
+            warn(f"{fname} missing", fix="Run: yt-mirror (auto-creates)")
+        else:
+            try:
+                json.loads(p.read_text())
+                ok(fname)
+            except json.JSONDecodeError as e:
+                fail(f"{fname} — corrupted JSON", str(e), fix=f"Fix JSON syntax or delete {fname}")
+
+    # 4. YouTube account
+    accounts = load_accounts()
+    settings = load_settings()
+    active_yt = settings.get("active_account")
+    if not accounts:
+        fail("No YouTube accounts", fix="Add via: [1] YouTube accounts → [A] Add")
+    elif not active_yt:
+        warn("No active YouTube account selected", fix="Set via: [1] YouTube accounts → [S] Select")
+    elif active_yt not in accounts:
+        warn(f"Active account '{active_yt}' not found", fix="Re-select via: [1] YouTube accounts → [S] Select")
+    else:
+        acct = accounts[active_yt]
+        ok(f"YouTube: @{acct.get('channel_name', '?')} ({active_yt[:12]}...)")
+
+        # 4b. Test token refresh
+        try:
+            from google.oauth2.credentials import Credentials
+            from googleapiclient.discovery import build
+            creds = Credentials(
+                token=None,
+                refresh_token=acct["refresh_token"],
+                token_uri="https://oauth2.googleapis.com/token",
+                client_id=acct["client_id"],
+                client_secret=acct["client_secret"],
+            )
+            yt = build("youtube", "v3", credentials=creds, cache_discovery=False)
+            resp = yt.channels().list(part="statistics", id=acct["channel_id"]).execute()
+            subs = resp["items"][0]["statistics"]["subscriberCount"]
+            ok(f"Token valid — {subs} subscribers")
+        except Exception as e:
+            err = str(e)
+            if "invalid_grant" in err or "Token has been expired or revoked" in err:
+                fail("YouTube token expired/revoked", err[:80], fix="Re-authenticate: python3 get_refresh_token.py")
+            else:
+                fail("YouTube token test failed", err[:80], fix="Check client_id/client_secret in accounts.json")
+
+    # 5. GitHub account
+    gh_accounts = load_github_accounts()
+    active_gh = settings.get("active_github")
+    if not gh_accounts:
+        warn("No GitHub accounts", "Deploy won't work", "Add via: [2] GitHub accounts → [A] Add")
+    elif not active_gh:
+        warn("No active GitHub account", fix="Set via: [2] GitHub accounts → [S] Select")
+    elif active_gh not in gh_accounts:
+        warn(f"Active GitHub '{active_gh}' not found", fix="Re-select via: [2] GitHub accounts → [S] Select")
+    else:
+        gh = gh_accounts[active_gh]
+        ok(f"GitHub: {gh.get('username', '?')}")
+
+        # 5b. Test token
+        import urllib.request
+        try:
+            req = urllib.request.Request("https://api.github.com/user", headers={
+                "Authorization": f"token {gh['token']}",
+                "User-Agent": "yt-mirror-cli",
+            })
+            resp = urllib.request.urlopen(req, timeout=10)
+            data = json.loads(resp.read())
+            repos = data.get("public_repos", 0)
+            ok(f"GitHub token valid — {repos} repos")
+        except urllib.error.HTTPError as e:
+            if e.code == 401:
+                fail("GitHub token invalid/expired", fix="Re-add account with new token")
+            else:
+                warn(f"GitHub API error: {e.code}")
+        except Exception as e:
+            warn(f"GitHub API unreachable: {e}")
+
+    # 6. Channels
+    channels = load_channels()
+    if not channels:
+        warn("No channels monitored", fix="Add via: [3] Monitored channels → [A] Add")
+    else:
+        ok(f"{len(channels)} channel(s) monitored")
+        for ch in channels[:5]:
+            name = ch.get("channel_name") or ch.get("channel_id", "?")[:20]
+            vid = ch.get("last_video_id", "none")
+            print(f"         {C_DIM}• @{name} — last: {vid}{C_RESET}")
+
+    # 7. Shortlink keys
+    keys = load_shortlink_keys()
+    prov = settings.get("shortener_provider", "none")
+    if prov == "none":
+        ok("Shortener disabled (direct URLs)")
+    elif not keys:
+        warn(f"Shortener set to '{prov}' but no API keys", fix="Add via: [L] Shortlink API keys → [A] Add")
+    else:
+        active_keys = [k for k in keys.values() if k.get("provider") == prov]
+        if active_keys:
+            ok(f"Shortener: {prov} — {len(active_keys)} key(s)")
+        else:
+            warn(f"No '{prov}' keys found", fix=f"Add via: [L] Shortlink API keys → [A] Add (provider: {prov})")
+
+    # 8. Disk space
+    import os
+    st = os.statvfs(str(DATA_DIR))
+    free_mb = (st.f_bavail * st.f_frsize) / (1024 * 1024)
+    if free_mb < 100:
+        warn(f"Low disk space: {free_mb:.0f}MB free", fix="Free space or use larger storage")
+    else:
+        ok(f"Disk space: {free_mb:.0f}MB free")
+
+    # 9. Network
+    try:
+        urllib.request.urlopen("https://www.googleapis.com", timeout=5)
+        ok("Network: YouTube API reachable")
+    except Exception:
+        warn("Network: can't reach YouTube API", fix="Check internet connection")
+
+    # Summary
+    n_ok = sum(1 for c in checks if c[0] == "ok")
+    n_warn = sum(1 for c in checks if c[0] == "warn")
+    n_fail = sum(1 for c in checks if c[0] == "fail")
+    divider()
+    if n_fail == 0 and n_warn == 0:
+        print(f"  {C_GREEN}All checks passed — ready to mirror!{C_RESET}")
+    else:
+        print(f"  {C_GREEN}{n_ok} passed{C_RESET}  "
+              f"{C_YELLOW}{n_warn} warnings{C_RESET}  "
+              f"{C_RED}{n_fail} failures{C_RESET}")
+        if n_fail:
+            print(f"\n  {C_RED}Fix the failures above before running mirror.{C_RESET}")
+    print(f"\n  {C_DIM}Press Enter to return...{C_RESET}")
+    input()
+
 
 # ─── Entry Point ──────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    for f in ["accounts.json", "deployments.json", "settings.json"]:
+    for f in ["accounts.json", "github_accounts.json", "channels.json", "settings.json", "deployments.json", "state.json", "shortlink_keys.json"]:
         p = DATA_DIR / f
         if not p.exists():
             p.write_text("{}")

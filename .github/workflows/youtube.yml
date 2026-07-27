@@ -55,6 +55,12 @@ jobs:
       - name: Run mirror
         id: mirror
         run: |
+          # Set up data directory with repo config
+          mkdir -p ~/.yt-mirror
+          for f in channels.json settings.json state.json shortlink_keys.json; do
+            [ -f "$f" ] && cp "$f" ~/.yt-mirror/ || [ -f ~/.yt-mirror/"$f" ] || echo "{}" > ~/.yt-mirror/"$f"
+          done
+
           DRY_RUN="${{ inputs.dry_run || 'false' }}"
           if [ "$DRY_RUN" = "true" ]; then
             python3 config.py --set dry_run true
@@ -70,6 +76,9 @@ jobs:
           python3 mirror.py 2>&1 | tee /tmp/mirror_output.txt
           EXIT_CODE=${PIPESTATUS[0]}
 
+          # Persist state back to repo for next run
+          cp ~/.yt-mirror/state.json state.json 2>/dev/null || true
+
           # Extract stats from output
           if [ -f /tmp/mirror_output.txt ]; then
             MIRRORED=$(grep -oP 'mirrored: \K\d+' /tmp/mirror_output.txt | tail -1 || echo "0")
@@ -79,6 +88,15 @@ jobs:
           fi
 
           exit $EXIT_CODE
+
+      - name: Persist state
+        if: always()
+        run: |
+          git config user.name "yt-mirror[bot]"
+          git config user.email "yt-mirror[bot]@users.noreply.github.com"
+          cp ~/.yt-mirror/state.json state.json 2>/dev/null || true
+          git add state.json
+          git diff --cached --quiet || git commit -m "state: update mirror state [skip ci]" && git push || true
 
       - name: Relay — trigger next run
         if: always()

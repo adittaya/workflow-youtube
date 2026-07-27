@@ -98,18 +98,18 @@ jobs:
 
           # accounts.json — built from YouTube secrets
           python3 -c "
-          import json, time
+          import json, time, os
           accounts = {
               'main': {
-                  'client_id': '''$YT_CLIENT_ID''',
-                  'client_secret': '''$YT_CLIENT_SECRET''',
-                  'refresh_token': '''$YT_REFRESH_TOKEN''',
+                  'client_id': os.environ['YT_CLIENT_ID'],
+                  'client_secret': os.environ['YT_CLIENT_SECRET'],
+                  'refresh_token': os.environ['YT_REFRESH_TOKEN'],
                   'channel_id': '',
                   'channel_name': 'main',
                   'added_at': time.strftime('%Y-%m-%dT%H:%M:%SZ'),
               }
           }
-          with open('$HOME/.yt-mirror/accounts.json', 'w') as f:
+          with open(os.path.expanduser('~/.yt-mirror/accounts.json'), 'w') as f:
               json.dump(accounts, f, indent=2)
           "
 

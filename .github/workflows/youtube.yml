@@ -2,7 +2,8 @@ name: YouTube Mirror Bot
 
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    # Check every 6 hours for new videos
+    - cron: '0 */6 * * *'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -13,9 +14,9 @@ on:
         options: ['false', 'true']
 
 jobs:
-  mirror:
+  run:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
       YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
@@ -38,12 +39,6 @@ jobs:
           [ -z "$CHANNELS" ] && MISSING="$MISSING CHANNELS"
           if [ -n "$MISSING" ]; then
             echo "::error::Missing secrets:$MISSING"
-            echo "Required GitHub Secrets:"
-            echo "  YT_CLIENT_ID, YT_CLIENT_SECRET, YT_REFRESH_TOKEN"
-            echo "  CHANNELS (JSON dict of channels to monitor)"
-            echo "  SETTINGS (JSON, optional)"
-            echo "  SHORTLINK_KEYS (JSON, optional)"
-            echo "  GH_PAT (optional, for state push)"
             exit 1
           fi
           echo "All required secrets configured"
@@ -56,17 +51,16 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install --break-system-packages -q yt-dlp 2>/dev/null || pip install -q yt-dlp
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg >/dev/null 2>&1 || true
           pip install --break-system-packages -q -r requirements.txt 2>/dev/null || pip install -q -r requirements.txt
 
       - name: Build config from secrets
         run: |
           mkdir -p ~/.yt-mirror
+          mkdir -p ~/.yt-mirror/{bgm,separated,processed}
 
-          # channels.json — REQUIRED from secret
           echo "$CHANNELS" > ~/.yt-mirror/channels.json
 
-          # settings.json — optional override
           if [ -n "$SETTINGS" ]; then
             echo "$SETTINGS" > ~/.yt-mirror/settings.json
           else
@@ -77,26 +71,32 @@ jobs:
             "check_interval_minutes": 15,
             "max_per_cycle": 3,
             "comment_moderation": "heldForReview",
-            "shortener_provider": "vplink"
+            "shortener_provider": "vplink",
+            "warmup_days": 14
           }
           EOF
           fi
 
-          # shortlink_keys.json — optional
           if [ -n "$SHORTLINK_KEYS" ]; then
             echo "$SHORTLINK_KEYS" > ~/.yt-mirror/shortlink_keys.json
           else
             echo "{}" > ~/.yt-mirror/shortlink_keys.json
           fi
 
-          # state.json — restore from repo or start fresh
+          # Restore mirror state from repo
           if [ -f state.json ]; then
             cp state.json ~/.yt-mirror/state.json
           else
             echo '{"processed":{},"stats":{"total_mirrored":0,"total_comments":0,"total_shortened":0}}' > ~/.yt-mirror/state.json
           fi
 
-          # accounts.json — built from YouTube secrets
+          # Restore upload state from repo (warmup tracking, upload history)
+          if [ -f upload_state.json ]; then
+            cp upload_state.json ~/.yt-mirror/upload_state.json
+          else
+            echo '{"warmup_start":null,"warmup_complete":false,"total_uploaded":0,"last_upload_date":null,"last_upload_hour":null,"processed_hashes":[]}' > ~/.yt-mirror/upload_state.json
+          fi
+
           python3 -c "
           import json, time, os
           accounts = {
@@ -113,18 +113,25 @@ jobs:
               json.dump(accounts, f, indent=2)
           "
 
-          echo "Config built:"
-          echo "  channels: $(wc -c < ~/.yt-mirror/channels.json) bytes"
-          echo "  settings: $(wc -c < ~/.yt-mirror/settings.json) bytes"
-          echo "  shortlink_keys: $(wc -c < ~/.yt-mirror/shortlink_keys.json) bytes"
-          echo "  state: $(wc -c < ~/.yt-mirror/state.json) bytes"
+          echo "Config built successfully"
 
-      - name: Run mirror
-        id: mirror
+      - name: Check warmup status
+        id: warmup
+        run: |
+          python3 $GITHUB_WORKSPACE/daily_mirror.py status 2>&1 | tee /tmp/warmup_status.txt
+
+          # Extract warmup day for summary
+          WARMUP_DAY=$(grep 'Warmup day:' /tmp/warmup_status.txt | grep -oP '\d+' | head -1 || echo "0")
+          CAN_UPLOAD=$(grep 'Can upload:' /tmp/warmup_status.txt | grep -oP '(true|false)' || echo "false")
+          echo "warmup_day=${WARMUP_DAY:-0}" >> $GITHUB_OUTPUT
+          echo "can_upload=${CAN_UPLOAD:-false}" >> $GITHUB_OUTPUT
+
+      - name: Process and upload
+        id: process
+        if: steps.warmup.outputs.can_upload == 'true' || inputs.dry_run == 'true'
         run: |
           cd ~/.yt-mirror
 
-          # Dry run if requested
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             python3 -c "
           import json
@@ -134,43 +141,97 @@ jobs:
           "
           fi
 
-          python3 $GITHUB_WORKSPACE/mirror.py 2>&1 | tee /tmp/mirror_output.txt
-          EXIT_CODE=${PIPESTATUS[0]}
+          python3 -c "
+          import sys
+          sys.path.insert(0, '$GITHUB_WORKSPACE')
+          import config
+          import monitor
+          import daily_uploader
+          import download_helpers
 
-          # Copy state back for persist
-          cp ~/.yt-mirror/state.json $GITHUB_WORKSPACE/state.json 2>/dev/null || true
+          channels = config.load_channels()
+          uploaded = False
 
-          # Extract stats
-          if [ -f /tmp/mirror_output.txt ]; then
-            LAST=$(grep 'cycle done' /tmp/mirror_output.txt | tail -1 || true)
-            MIRRORED=$(echo "$LAST" | grep -oP '\K\d+(?= mirrored)' || echo "0")
-            COMMENTS=$(echo "$LAST" | grep -oP '\K\d+(?= comments)' || echo "0")
-            ERRORS=$(echo "$LAST" | grep -oP '\K\d+(?= errors)' || echo "0")
-            echo "mirrored=${MIRRORED:-0}" >> $GITHUB_OUTPUT
-            echo "comments=${COMMENTS:-0}" >> $GITHUB_OUTPUT
-            echo "errors=${ERRORS:-0}" >> $GITHUB_OUTPUT
-          fi
+          for ch_id, ch in channels.items():
+              try:
+                  vid = monitor.get_latest_video(ch_id)
+                  if not vid:
+                      continue
 
-          exit $EXIT_CODE
+                  config.log(f'new video: {vid[\"id\"]} from {ch.get(\"name\", ch_id)}')
+
+                  state = daily_uploader.load_upload_state()
+                  if vid['id'] in state.get('processed_hashes', []):
+                      config.log(f'already processed: {vid[\"id\"]}')
+                      continue
+
+                  config.log(f'downloading: {vid[\"id\"]}')
+                  result = download_helpers.download_video(vid['url'], f'/tmp/daily_{vid[\"id\"]}')
+                  if not result:
+                      config.log(f'download failed: {vid[\"id\"]}')
+                      continue
+                  path = result['path'] if isinstance(result, dict) else result
+
+                  config.log(f'processing: {vid[\"id\"]}')
+                  processed = daily_uploader.process_video(path)
+                  if not processed:
+                      config.log(f'processing failed: {vid[\"id\"]}')
+                      continue
+
+                  title = vid.get('title', f'Daily Upload {vid[\"id\"]}')
+                  desc = vid.get('description', '')
+                  tags = vid.get('tags', [])
+                  source_url = vid.get('url', '')
+                  config.log(f'uploading: {title}')
+                  video_id = daily_uploader.upload_daily(processed, title, desc, tags, source_url=source_url)
+                  if video_id:
+                      config.log(f'uploaded: {video_id}')
+                      uploaded = True
+                  else:
+                      config.log(f'upload failed: {title}')
+                  break
+              except Exception as e:
+                  config.log(f'error: {e}')
+                  continue
+
+          if not uploaded:
+              config.log('no new videos to upload')
+          " 2>&1 | tee /tmp/process_output.txt
+
+          echo "exit_code=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+
+      - name: Skip upload (warmup)
+        if: steps.warmup.outputs.can_upload == 'false' && inputs.dry_run != 'true'
+        run: |
+          echo "Warmup day ${{ steps.warmup.outputs.warmup_day }}/14 — skipping upload"
+          echo "## Warmup Progress" >> $GITHUB_STEP_SUMMARY
+          echo "Day ${{ steps.warmup.outputs.warmup_day }}/14 — uploads will begin after warmup completes." >> $GITHUB_STEP_SUMMARY
 
       - name: Persist state
         if: always()
         run: |
           git config user.name "yt-mirror[bot]"
           git config user.email "yt-mirror[bot]@users.noreply.github.com"
+
           cp ~/.yt-mirror/state.json state.json 2>/dev/null || true
-          git add state.json
+          cp ~/.yt-mirror/upload_state.json upload_state.json 2>/dev/null || true
+
+          git add state.json upload_state.json
           git diff --cached --quiet || git commit -m "state: update [skip ci]" && git push || true
 
       - name: Summary
         if: always()
         run: |
-          MIRRORED="${{ steps.mirror.outputs.mirrored || '0' }}"
-          COMMENTS="${{ steps.mirror.outputs.comments || '0' }}"
-          ERRORS="${{ steps.mirror.outputs.errors || '0' }}"
           echo "## YouTube Mirror Result" >> $GITHUB_STEP_SUMMARY
-          echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Mirrored | $MIRRORED |" >> $GITHUB_STEP_SUMMARY
-          echo "| Comments | $COMMENTS |" >> $GITHUB_STEP_SUMMARY
-          echo "| Errors | $ERRORS |" >> $GITHUB_STEP_SUMMARY
+          echo "| Warmup day | ${{ steps.warmup.outputs.warmup_day }}/14 |" >> $GITHUB_STEP_SUMMARY
+          echo "| Can upload | ${{ steps.warmup.outputs.can_upload }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f /tmp/process_output.txt ]; then
+            echo "### Process Log" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail -30 /tmp/process_output.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi

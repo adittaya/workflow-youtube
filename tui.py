@@ -106,6 +106,7 @@ def load_settings():
         "shortener_api_key": "",
         "shortener_api_url": "",
         "comment_moderation": "heldForReview",
+        "warmup_days": 14,
     }
     saved = _read_json(SETTINGS_PATH)
     return {**defaults, **saved}
@@ -894,6 +895,22 @@ def screen_deploy():
         "YT_CLIENT_SECRET": yt_acct.get("client_secret", ""),
         "YT_REFRESH_TOKEN": yt_acct.get("refresh_token", ""),
     }
+
+    # Channels + settings (required by workflow)
+    channels = load_channels()
+    channels_json = json.dumps(channels, indent=2)
+    secrets["CHANNELS"] = channels_json
+
+    settings_payload = {
+        "privacy_status": settings.get("privacy_status", "public"),
+        "category_id": settings.get("category_id", "22"),
+        "check_interval_minutes": settings.get("check_interval_minutes", 15),
+        "max_per_cycle": settings.get("max_per_cycle", 3),
+        "comment_moderation": settings.get("comment_moderation", "heldForReview"),
+        "shortener_provider": settings.get("shortener_provider", "vplink"),
+    }
+    secrets["SETTINGS"] = json.dumps(settings_payload, indent=2)
+
     sk = settings.get("shortener_api_key", "")
     su = settings.get("shortener_api_url", "")
     if sk:
@@ -1226,10 +1243,19 @@ def screen_dispatch():
     owner = repo["owner"]["login"]
     rn = repo["name"]
 
-    dry_run = prompt("Dry run? (no upload)", "false")
-    inputs = {"dry_run": dry_run}
+    print(f"\n  {C_DIM}Run mode:{C_RESET}")
+    print(f"  {C_BOLD}[1]{C_RESET} Mirror (check + upload new videos)")
+    print(f"  {C_BOLD}[2]{C_RESET} Daily upload (process + upload 1 video)")
+    print(f"  {C_BOLD}[3]{C_RESET} Both (mirror + daily upload)")
+    print(f"  {C_BOLD}[4]{C_RESET} Dry run (no upload)\n")
+    mode_choice = prompt("Mode", "1")
+    mode_map = {"1": "mirror", "2": "daily_upload", "3": "both", "4": "mirror"}
+    mode = mode_map.get(mode_choice, "mirror")
+    dry_run = "true" if mode_choice == "4" else "false"
 
-    if not confirm(f"Trigger workflow on {rn}?"):
+    inputs = {"mode": mode, "dry_run": dry_run}
+
+    if not confirm(f"Trigger workflow on {rn} (mode: {mode})?"):
         return
 
     loading(f"Dispatching workflow on {rn}...")
@@ -1243,7 +1269,7 @@ def screen_dispatch():
     if isinstance(resp, dict) and resp.get("error"):
         error(f"Dispatch failed: {resp.get('message', '')}")
     else:
-        success(f"Workflow triggered on {rn}")
+        success(f"Workflow triggered on {rn} (mode: {mode})")
     input(f"\n  Press Enter to continue...")
 
 # ─── Screen: Status ───────────────────────────────────────────────────────────
@@ -1328,6 +1354,38 @@ def screen_status():
     else:
         print(f"  {C_DIM}Mirror stats:{C_RESET} (no runs yet)")
 
+    # Daily upload stats
+    upload_state_path = DATA_DIR / "upload_state.json"
+    if upload_state_path.exists():
+        try:
+            us = json.loads(upload_state_path.read_text("utf-8"))
+            warmup_start = us.get("warmup_start")
+            warmup_complete = us.get("warmup_complete", False)
+            total = us.get("total_uploaded", 0)
+            last = us.get("last_upload_date", "never")
+            processed_count = len(us.get("processed_hashes", []))
+
+            if warmup_start:
+                from datetime import datetime
+                start = datetime.fromisoformat(warmup_start)
+                days = (datetime.utcnow() - start).days
+                warmup_days = 14
+                if warmup_complete or days >= warmup_days:
+                    warmup_str = f"{C_GREEN}complete{C_RESET}"
+                else:
+                    warmup_str = f"{C_YELLOW}day {days}/{warmup_days}{C_RESET}"
+            else:
+                warmup_str = f"{C_DIM}not started{C_RESET}"
+
+            print()
+            print(f"  {C_DIM}Daily uploads:{C_RESET}")
+            print(f"    Warmup:     {warmup_str}")
+            print(f"    Uploaded:   {total} videos")
+            print(f"    Last:       {last}")
+            print(f"    Processed:  {processed_count} videos")
+        except Exception:
+            pass
+
     # Deployment status
     deps = load_deployments()
     if deps:
@@ -1386,7 +1444,6 @@ def screen_settings():
         print(f"  {C_DIM}Max/cycle:{C_RESET}      {s.get('max_per_cycle', 3)}")
         print(f"  {C_DIM}Shortener:{C_RESET}      {prov_label} (manage in [L] Shortlink keys)")
         print()
-
         print(f"  {C_BOLD}[1]{C_RESET} Comment text (use {url} for link)")
         print(f"  {C_BOLD}[2]{C_RESET} Comment mode (view-only / public)")
         print(f"  {C_BOLD}[3]{C_RESET} Title prefix")
@@ -1395,6 +1452,7 @@ def screen_settings():
         print(f"  {C_BOLD}[6]{C_RESET} Category ID")
         print(f"  {C_BOLD}[7]{C_RESET} Check interval (minutes)")
         print(f"  {C_BOLD}[8]{C_RESET} Max videos per cycle")
+        print(f"  {C_BOLD}[9]{C_RESET} Warmup days (before first upload)")
         print(f"  {C_BOLD}[0]{C_RESET} Back\n")
 
         choice = prompt("Choice")
@@ -1461,6 +1519,14 @@ def screen_settings():
                 success("Saved")
             else:
                 error("Must be >= 1")
+        elif choice == "9":
+            val = prompt("Warmup days (days before first upload)", str(s.get("warmup_days", 14)))
+            if val.isdigit() and int(val) >= 0:
+                s["warmup_days"] = int(val)
+                save_settings(s)
+                success("Saved")
+            else:
+                error("Must be >= 0")
 
 # ─── Screen: Shortlink Keys ───────────────────────────────────────────────────
 
@@ -1792,8 +1858,33 @@ def screen_doctor():
     else:
         fail("yt-dlp not found", fix="Install: pkg install yt-dlp  or  pip install yt-dlp")
 
+    # 2b. ffmpeg
+    ffmpeg_path = shutil.which("ffmpeg")
+    if ffmpeg_path:
+        try:
+            r = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, timeout=5)
+            ver = r.stdout.split("\n")[0] if r.stdout else "installed"
+            ok(f"ffmpeg", ver[:50])
+        except Exception:
+            warn("ffmpeg found but not responding")
+    else:
+        warn("ffmpeg not found", "Required for video processing", "Install: sudo apt install ffmpeg")
+
+    # 2c. demucs
+    try:
+        r = subprocess.run(["python3", "-c", "import demucs; print(demucs.__version__)"],
+                           capture_output=True, text=True, timeout=10)
+        if r.returncode == 0:
+            ok(f"demucs {r.stdout.strip()}", "Vocal separation")
+        else:
+            warn("demucs not installed", "Optional: vocal separation for processing",
+                 "Install: pip install demucs torch")
+    except Exception:
+        warn("demucs check failed", "Optional: vocal separation for processing")
+
     # 3. Config files
-    for fname in ["accounts.json", "channels.json", "settings.json", "state.json", "deployments.json", "shortlink_keys.json"]:
+    for fname in ["accounts.json", "channels.json", "settings.json", "state.json",
+                   "deployments.json", "shortlink_keys.json", "upload_state.json"]:
         p = DATA_DIR / fname
         if not p.exists():
             warn(f"{fname} missing", fix="Run: yt-mirror (auto-creates)")

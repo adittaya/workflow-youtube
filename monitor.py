@@ -13,6 +13,31 @@ def _resolve_channel_id(youtube, channel_id):
     return channel_id
 
 
+def get_latest_video(channel_id):
+    youtube = youtube_api.get_client()
+    if not youtube:
+        return None
+
+    resolved = _resolve_channel_id(youtube, channel_id)
+    playlist_id = youtube_api.get_channel_uploads_playlist(youtube, resolved)
+    if not playlist_id:
+        return None
+
+    videos = youtube_api.get_recent_videos(youtube, playlist_id, max_results=1)
+    if not videos:
+        return None
+
+    v = videos[0]
+    return {
+        "id": v["video_id"],
+        "title": v.get("title", ""),
+        "description": v.get("description", ""),
+        "url": f"https://www.youtube.com/watch?v={v['video_id']}",
+        "tags": v.get("tags", []),
+        "published_at": v.get("published_at", ""),
+    }
+
+
 def check_channel(youtube, channel_id, state):
     processed = state.get("processed", {})
     resolved = _resolve_channel_id(youtube, channel_id)

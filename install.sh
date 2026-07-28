@@ -43,6 +43,16 @@ pip3 install --break-system-packages -q -r "$SCRIPT_DIR/requirements.txt" 2>/dev
   || pip3 install -q -r "$SCRIPT_DIR/requirements.txt" 2>/dev/null \
   || { echo "  Trying with --user..."; pip3 install --user -q -r "$SCRIPT_DIR/requirements.txt"; }
 
+# --- Processing deps (torch/demucs — optional, ~2GB) ---
+echo "[3b/7] Video processing deps (torch, demucs)..."
+if [ "${YT_MIRROR_NO_PROCESSING:-0}" = "1" ]; then
+    echo "  Skipped (YT_MIRROR_NO_PROCESSING=1)"
+else
+    pip3 install --break-system-packages -q -r "$SCRIPT_DIR/requirements-processing.txt" 2>/dev/null \
+      || pip3 install -q -r "$SCRIPT_DIR/requirements-processing.txt" 2>/dev/null \
+      || { echo "  Skipped (install failed — video processing disabled)"; }
+fi
+
 # --- yt-dlp ---
 echo "[4/7] Checking yt-dlp..."
 if command -v yt-dlp &>/dev/null; then

@@ -8,6 +8,12 @@ Monitors target YouTube channels, mirrors new uploads to your channel with VPLin
 git clone https://github.com/adittaya/workflow-shorturl-yt.git && cd workflow-shorturl-yt && bash install.sh
 ```
 
+### Google Cloud Shell (TUI only, no video processing)
+
+```bash
+git clone https://github.com/adittaya/workflow-shorturl-yt.git && cd workflow-shorturl-yt && YT_MIRROR_NO_PROCESSING=1 bash install.sh
+```
+
 Then run `VPLINKYT` to open the management TUI.
 
 ## What It Does

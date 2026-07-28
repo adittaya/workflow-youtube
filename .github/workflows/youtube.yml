@@ -52,8 +52,8 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg >/dev/null 2>&1 || true
-          pip install --break-system-packages -q -r requirements.txt 2>/dev/null || pip install -q -r requirements.txt
-          pip install --break-system-packages -q -r requirements-processing.txt 2>/dev/null || pip install -q -r requirements-processing.txt
+          pip install --break-system-packages -q -r requirements.txt
+          pip install --break-system-packages -q demucs soundfile torch
 
       - name: Build config from secrets
         run: |

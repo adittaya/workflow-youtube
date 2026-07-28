@@ -118,13 +118,33 @@ jobs:
       - name: Check warmup status
         id: warmup
         run: |
+          # Auto-start warmup, auto-complete if elapsed, reset if account changed
+          python3 -c "
+          import sys, hashlib
+          sys.path.insert(0, '$GITHUB_WORKSPACE')
+          import daily_uploader
+
+          state = daily_uploader.load_upload_state()
+          current_client_id = '${{ secrets.YT_CLIENT_ID }}'
+          stored_client_id = state.get('yt_client_id', '')
+
+          if stored_client_id and stored_client_id != current_client_id:
+              daily_uploader.reset_warmup('account changed')
+              state = daily_uploader.load_upload_state()
+
+          state['yt_client_id'] = current_client_id
+          daily_uploader.save_upload_state(state)
+          daily_uploader.start_warmup()
+          "
+
           python3 $GITHUB_WORKSPACE/daily_mirror.py status 2>&1 | tee /tmp/warmup_status.txt
 
           # Extract warmup day for summary
-          WARMUP_DAY=$(grep 'Warmup day:' /tmp/warmup_status.txt | grep -oP '\d+' | head -1 || echo "0")
-          CAN_UPLOAD=$(grep 'Can upload:' /tmp/warmup_status.txt | grep -oP '(true|false)' || echo "false")
+          WARMUP_DAY=$(grep 'day ' /tmp/warmup_status.txt | head -1 | grep -oP '\d+' | head -1 || echo "0")
+          CAN_UPLOAD=$(grep 'YES' /tmp/warmup_status.txt | wc -l)
+          if [ "$CAN_UPLOAD" -gt 0 ]; then CAN_UPLOAD="true"; else CAN_UPLOAD="false"; fi
           echo "warmup_day=${WARMUP_DAY:-0}" >> $GITHUB_OUTPUT
-          echo "can_upload=${CAN_UPLOAD:-false}" >> $GITHUB_OUTPUT
+          echo "can_upload=${CAN_UPLOAD}" >> $GITHUB_OUTPUT
 
       - name: Process and upload
         id: process
@@ -203,9 +223,9 @@ jobs:
       - name: Skip upload (warmup)
         if: steps.warmup.outputs.can_upload == 'false' && inputs.dry_run != 'true'
         run: |
-          echo "Warmup day ${{ steps.warmup.outputs.warmup_day }}/14 — skipping upload"
+          echo "Warmup day ${{ steps.warmup.outputs.warmup_day }} — skipping upload"
           echo "## Warmup Progress" >> $GITHUB_STEP_SUMMARY
-          echo "Day ${{ steps.warmup.outputs.warmup_day }}/14 — uploads will begin after warmup completes." >> $GITHUB_STEP_SUMMARY
+          echo "Day ${{ steps.warmup.outputs.warmup_day }} — uploads will begin after warmup completes." >> $GITHUB_STEP_SUMMARY
 
       - name: Persist state
         if: always()
@@ -226,7 +246,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Warmup day | ${{ steps.warmup.outputs.warmup_day }}/14 |" >> $GITHUB_STEP_SUMMARY
+          echo "| Warmup day | ${{ steps.warmup.outputs.warmup_day }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Can upload | ${{ steps.warmup.outputs.can_upload }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ -f /tmp/process_output.txt ]; then

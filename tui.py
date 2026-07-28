@@ -1369,17 +1369,24 @@ def screen_status():
                 from datetime import datetime
                 start = datetime.fromisoformat(warmup_start)
                 days = (datetime.utcnow() - start).days
-                warmup_days = 14
+                try:
+                    warmup_days = int(json.loads((DATA_DIR / "settings.json").read_text("utf-8")).get("warmup_days", 14))
+                except Exception:
+                    warmup_days = 14
                 if warmup_complete or days >= warmup_days:
                     warmup_str = f"{C_GREEN}complete{C_RESET}"
                 else:
-                    warmup_str = f"{C_YELLOW}day {days}/{warmup_days}{C_RESET}"
+                    remaining = warmup_days - days
+                    warmup_str = f"{C_YELLOW}day {days}/{warmup_days} ({remaining} days left){C_RESET}"
+                warmup_date_str = warmup_start[:10]
             else:
                 warmup_str = f"{C_DIM}not started{C_RESET}"
+                warmup_date_str = "-"
 
             print()
             print(f"  {C_DIM}Daily uploads:{C_RESET}")
             print(f"    Warmup:     {warmup_str}")
+            print(f"    Started:    {warmup_date_str}")
             print(f"    Uploaded:   {total} videos")
             print(f"    Last:       {last}")
             print(f"    Processed:  {processed_count} videos")
@@ -1453,6 +1460,7 @@ def screen_settings():
         print(f"  {C_BOLD}[7]{C_RESET} Check interval (minutes)")
         print(f"  {C_BOLD}[8]{C_RESET} Max videos per cycle")
         print(f"  {C_BOLD}[9]{C_RESET} Warmup days (before first upload)")
+        print(f"  {C_BOLD}[R]{C_RESET} Reset warmup from today")
         print(f"  {C_BOLD}[0]{C_RESET} Back\n")
 
         choice = prompt("Choice")
@@ -1527,6 +1535,21 @@ def screen_settings():
                 success("Saved")
             else:
                 error("Must be >= 0")
+        elif choice.upper() == "R":
+            confirm = prompt("Reset warmup from today? (y/n)", "n")
+            if confirm.lower() == "y":
+                from datetime import datetime
+                us_path = DATA_DIR / "upload_state.json"
+                try:
+                    us = json.loads(us_path.read_text("utf-8"))
+                except Exception:
+                    us = {}
+                us["warmup_start"] = datetime.utcnow().isoformat()
+                us["warmup_complete"] = False
+                us_path.write_text(json.dumps(us, indent=2), "utf-8")
+                success("Warmup reset from today")
+            else:
+                info("Cancelled")
 
 # ─── Screen: Shortlink Keys ───────────────────────────────────────────────────
 

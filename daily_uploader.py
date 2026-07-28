@@ -56,13 +56,39 @@ def save_daily_log(log):
     DAILY_LOG.write_text(json.dumps(log, indent=2), "utf-8")
 
 
-def start_warmup():
+def start_warmup(force=False):
     state = load_upload_state()
-    if not state.get("warmup_start"):
-        state["warmup_start"] = datetime.utcnow().isoformat()
-        state["account_created"] = datetime.utcnow().isoformat()
+    now = datetime.utcnow()
+    today = now.strftime("%Y-%m-%d")
+
+    if force or not state.get("warmup_start"):
+        state["warmup_start"] = now.isoformat()
+        state["account_created"] = state.get("account_created") or now.isoformat()
+        state["warmup_complete"] = False
         save_upload_state(state)
         config.log(f"warmup started: {state['warmup_start']}")
+    else:
+        start = datetime.fromisoformat(state["warmup_start"])
+        days = (now - start).days
+        warmup_total = _get_warmup_days()
+        if days >= warmup_total and not state.get("warmup_complete"):
+            state["warmup_complete"] = True
+            save_upload_state(state)
+            config.log(f"warmup complete: {days} days elapsed")
+
+    return state
+
+
+def reset_warmup(reason="account changed"):
+    state = load_upload_state()
+    state["warmup_start"] = datetime.utcnow().isoformat()
+    state["warmup_complete"] = False
+    state["total_uploaded"] = 0
+    state["last_upload_date"] = None
+    state["last_upload_hour"] = None
+    state["processed_hashes"] = []
+    save_upload_state(state)
+    config.log(f"warmup reset: {reason}")
     return state
 
 
@@ -84,6 +110,9 @@ def get_warmup_day():
 
 
 def is_warmup_complete():
+    state = load_upload_state()
+    if state.get("warmup_complete"):
+        return True
     return get_warmup_day() >= _get_warmup_days()
 
 

@@ -7,6 +7,7 @@ Usage:
   python3 daily_mirror.py upload <video_path>     Process + upload
   python3 daily_mirror.py status                  Show status
   python3 daily_mirror.py warmup                  Start warmup tracker
+  python3 daily_mirror.py warmup --reset          Reset warmup from today
   python3 daily_mirror.py test                    Test processing only
 """
 import sys
@@ -44,25 +45,44 @@ def cmd_upload(video_path, title=None, description=None, tags=None):
 
 
 def cmd_status():
+    daily_uploader.start_warmup()
     status = daily_uploader.get_status()
+    warmup_total = status['warmup_total']
+    warmup_day = status['warmup_day']
+
+    if status['warmup_complete']:
+        warmup_str = f"day {warmup_day}/{warmup_total} (COMPLETE)"
+    else:
+        remaining = warmup_total - warmup_day
+        warmup_str = f"day {warmup_day}/{warmup_total} ({remaining} days left)"
+
     print("\n=== Daily Mirror Status ===")
-    print(f"  Warmup day:       {status['warmup_day']}/{status['warmup_total']}")
-    print(f"  Warmup complete:  {status['warmup_complete']}")
-    print(f"  Can upload:       {status['can_upload']}")
-    print(f"  Upload reason:    {status['upload_reason']}")
-    print(f"  Total uploaded:   {status['total_uploaded']}")
-    print(f"  Last upload:      {status['last_upload'] or 'never'}")
-    print(f"  Processed videos: {status['processed_count']}")
+    print(f"  Warmup:          {warmup_str}")
+    print(f"  Can upload:      {'YES' if status['can_upload'] else 'NO'}")
+    if not status['can_upload']:
+        print(f"  Reason:          {status['upload_reason']}")
+    print(f"  Total uploaded:  {status['total_uploaded']}")
+    print(f"  Last upload:     {status['last_upload'] or 'never'}")
+    print(f"  Processed:       {status['processed_count']} videos")
     print()
     return status
 
 
-def cmd_warmup():
-    state = daily_uploader.start_warmup()
+def cmd_warmup(reset=False):
+    if reset:
+        state = daily_uploader.reset_warmup("manual reset")
+        print(f"\nWarmup RESET: {state['warmup_start']}")
+    else:
+        state = daily_uploader.start_warmup(force=True)
+        print(f"\nWarmup started: {state['warmup_start']}")
+
     day = daily_uploader.get_warmup_day()
-    print(f"\nWarmup started: {state['warmup_start']}")
-    print(f"Current day: {day}/{daily_uploader.WARMUP_DAYS}")
-    print(f"First upload eligible: day {daily_uploader.WARMUP_DAYS}")
+    total = daily_uploader._get_warmup_days()
+    print(f"Current day: {day}/{total}")
+    if day >= total:
+        print("Warmup is COMPLETE — uploads enabled")
+    else:
+        print(f"First upload eligible: {total - day} more days")
     return state
 
 
@@ -115,7 +135,8 @@ def main():
     elif cmd == "status":
         cmd_status()
     elif cmd == "warmup":
-        cmd_warmup()
+        reset = "--reset" in sys.argv
+        cmd_warmup(reset=reset)
     elif cmd == "test" and len(sys.argv) >= 3:
         cmd_test(sys.argv[2])
     else:

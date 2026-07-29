@@ -2,7 +2,13 @@
 
 Monitors target YouTube channels, mirrors new uploads to your channel with VPLink shortened download links in comments. Includes video processing (Demucs vocal separation, FFmpeg edits, non-copyright BGM) to avoid Content ID.
 
-## One-Line Setup
+## One-Line Install
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/adittaya/workflow-shorturl-yt/main/install.sh)
+```
+
+Or via git:
 
 ```bash
 git clone https://github.com/adittaya/workflow-shorturl-yt.git && cd workflow-shorturl-yt && bash install.sh

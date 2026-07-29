@@ -98,7 +98,7 @@ jobs:
             if [ -f upload_state.json ]; then
               cp upload_state.json ~/.yt-mirror/upload_state.json
             else
-              echo '{"warmup_start":null,"warmup_complete":false,"total_uploaded":0,"last_upload_date":null,"last_upload_hour":null,"processed_hashes":[]}' > ~/.yt-mirror/upload_state.json
+              echo '{"warmup_start":null,"warmup_complete":false,"total_uploaded":0,"last_upload_date":null,"last_upload_hour":null,"processed_hashes":[],"pending_hashes":[]}' > ~/.yt-mirror/upload_state.json
             fi
           else
             echo "Supabase configured — state loaded from database"
@@ -197,8 +197,8 @@ jobs:
                       found_new = True
                       # Prepend reversed (oldest-first) to pending queue
                       pending_hashes = new_ids[::-1] + pending_hashes
-                       name_key = 'name'
-                       config.log(f'{len(new_ids)} new video(s) from {ch.get(name_key, ch_id)}: {new_ids[::-1]}')
+                      name_key = 'name'
+                      config.log(f'{len(new_ids)} new video(s) from {ch.get(name_key, ch_id)}: {new_ids[::-1]}')
 
                   # Update cursor to latest
                   supabase_db.save_channel_cursor(ch_id, {'last_video_id': latest_id}, project_id=pid)
@@ -271,8 +271,9 @@ jobs:
                   break
 
               # Check if we can upload (cooldown: 18h between uploads)
-              if not daily_uploader.can_upload_today():
-                  config.log('cooldown active — 18h gap not elapsed, stopping')
+              can_upload, reason = daily_uploader.can_upload_today()
+              if not can_upload:
+                  config.log(f'cooldown: {reason}')
                   up_state['pending_hashes'] = [target_id] + pending_hashes
                   daily_uploader.save_upload_state(up_state)
                   break

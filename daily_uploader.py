@@ -39,6 +39,7 @@ def load_upload_state():
             "last_upload_date": None,
             "last_upload_hour": None,
             "processed_hashes": [],
+            "pending_hashes": [],
             "yt_client_id": "",
         }
 

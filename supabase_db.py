@@ -180,7 +180,7 @@ def get_upload_state(project_id=""):
         "warmup_complete": False, "first_upload_date": None,
         "total_uploaded": 0, "last_upload_date": None,
         "last_upload_hour": None, "processed_hashes": [],
-        "yt_client_id": "",
+        "pending_hashes": [], "yt_client_id": "",
     }
 
 
@@ -195,6 +195,7 @@ def save_upload_state(state, project_id=""):
         "last_upload_date": state.get("last_upload_date"),
         "last_upload_hour": state.get("last_upload_hour"),
         "processed_hashes": state.get("processed_hashes", []),
+        "pending_hashes": state.get("pending_hashes", []),
         "yt_client_id": state.get("yt_client_id", ""),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }

@@ -3,6 +3,7 @@
 
 import json, os, re, shutil, subprocess, sys, time, http.server, threading, urllib.request, urllib.parse
 from pathlib import Path
+from datetime import datetime
 
 try:
     from cryptography.hazmat.primitives import hashes, serialization
@@ -2098,6 +2099,7 @@ def screen_setup():
 
         print()
         print(f"  {C_BOLD}[D]{C_RESET} Deploy to GitHub Actions")
+        print(f"  {C_BOLD}[W]{C_RESET} Reset warmup start to today")
         print(f"  {C_BOLD}[0]{C_RESET} Back")
         print()
 
@@ -2106,6 +2108,15 @@ def screen_setup():
             return
         elif choice.upper() == "D":
             _do_deploy(cfg)
+        elif choice.upper() == "W":
+            if supabase_db.is_enabled():
+                state = supabase_db.get_upload_state()
+                state["warmup_start"] = datetime.utcnow().isoformat()
+                state["warmup_complete"] = False
+                supabase_db.save_upload_state(state)
+                success("Warmup reset to today")
+            else:
+                warn("Supabase not configured — deploy first, then reset warmup via DB")
         elif choice.isdigit():
             idx = int(choice) - 1
             if 0 <= idx < len(fields):

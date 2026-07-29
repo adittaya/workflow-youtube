@@ -162,7 +162,12 @@ def project_list_screen():
         if projects:
             print(f"  {C_BOLD}[D]{C_RESET} Delete project")
             print(f"  {C_BOLD}[1-{len(projects)}]{C_RESET} Select project")
+        print(f"  {C_BOLD}[C]{C_RESET} Change Supabase connection (re-enter URL/key)")
         print(f"  {C_BOLD}[0]{C_RESET} Quit\n")
+        connected_to = _read_json(BOOTSTRAP_PATH).get("supabase_url", "")
+        if connected_to:
+            print(f"  {C_DIM}Connected: {connected_to}{C_RESET}")
+        print()
 
         choice = prompt("Choice").strip().upper()
 
@@ -192,6 +197,17 @@ def project_list_screen():
                     if confirm(f"Delete project '{p['name']}' and ALL its data?"):
                         supabase_db.delete_project(p["id"])
                         success(f"Deleted '{p['name']}'")
+            continue
+        elif choice == "C":
+            su = prompt("Supabase URL", _read_json(BOOTSTRAP_PATH).get("supabase_url", ""))
+            sk = prompt("Supabase Service Key", _read_json(BOOTSTRAP_PATH).get("supabase_key", ""))
+            if su and sk:
+                _write_json(BOOTSTRAP_PATH, {"supabase_url": su, "supabase_key": sk})
+                supabase_db.configure(su, sk)
+                if supabase_db.is_enabled():
+                    success("Connected to Supabase — projects reloaded")
+                else:
+                    error("Connection failed — check URL and key")
             continue
         elif choice.isdigit() and projects:
             idx = int(choice) - 1
@@ -350,29 +366,24 @@ def _do_deploy(project):
 
     if missing:
         error(f"Missing required fields: {', '.join(missing)}")
+        info("Fill all fields in Setup first, then [D]eploy")
+        return
+
+    if not HAS_GH:
+        error("github_api module not found")
+        return
+
+    if not HAS_CRYPTO:
+        error("cryptography library not installed. Run: pip install cryptography")
         return
 
     token = project["github_token"]
     repo = project["github_repo"]
-
-    try:
-        req = urllib.request.Request(
-            f"https://api.github.com/repos/{repo}/actions/secrets/public-key",
-            headers={
-                "Authorization": f"token {token}",
-                "Accept": "application/vnd.github.v3+json",
-                "User-Agent": "yt-mirror-cli",
-            }
-        )
-        resp = urllib.request.urlopen(req)
-        pub_key_data = json.loads(resp.read())
-        pub_key_id = pub_key_data["key_id"]
-    except urllib.error.HTTPError as e:
-        error(f"GitHub API error: {e.code} — check repo name and token scope")
+    parts = repo.split("/")
+    if len(parts) != 2:
+        error(f"Invalid repo format: {repo} (expected owner/name)")
         return
-    except Exception as e:
-        error(f"Failed to get GitHub public key: {e}")
-        return
+    owner, rn = parts[0], parts[1]
 
     bootstrap = _read_json(BOOTSTRAP_PATH)
     su_url = os.environ.get("SUPABASE_URL", "") or bootstrap.get("supabase_url", "")
@@ -416,51 +427,72 @@ def _do_deploy(project):
         }}) if project.get("shortlink_api_key") else "{}",
     }
 
-    if not HAS_CRYPTO:
-        error("cryptography library not installed. Run: pip install cryptography")
-        return
+    print()
 
-    import base64
+    # ── Check if repo exists ──
+    loading("Checking GitHub repo...")
+    existing = github_api.get_repo(owner, rn, token)
+    repo_exists = not (isinstance(existing, dict) and existing.get("error"))
 
-    pub_key_bytes = base64.b64decode(pub_key_data["key"])
-    pub_key = serialization.load_der_public_key(pub_key_bytes, backend=default_backend())
+    total_steps = 3 if repo_exists else 5
+    step_num = 0
 
-    success_count = 0
-    fail_count = 0
+    def step(msg):
+        nonlocal step_num
+        step_num += 1
+        print(f"  {C_BOLD}[{step_num}/{total_steps}]{C_RESET} {msg}")
 
-    for sname, sval in secrets.items():
-        try:
-            encrypted = pub_key.encrypt(
-                sval.encode("utf-8"),
-                padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
-            )
-            encrypted_b64 = base64.b64encode(encrypted).decode("utf-8")
+    if repo_exists:
+        info(f"Repo {repo} exists — re-deploying (secrets & workflow only)")
+    else:
+        # Step 1: Create repo
+        step(f"Creating repo {rn}...")
+        resp = github_api.create_repo(token, rn, "YouTube Mirror Bot")
+        if isinstance(resp, dict) and resp.get("error"):
+            error(f"Create repo failed: {resp.get('message', '')}")
+            return
+        success("Repo created")
 
-            req = urllib.request.Request(
-                f"https://api.github.com/repos/{repo}/actions/secrets/{sname}",
-                data=json.dumps({"encrypted_value": encrypted_b64, "key_id": pub_key_id}).encode(),
-                headers={
-                    "Authorization": f"token {token}",
-                    "Accept": "application/vnd.github.v3+json",
-                    "Content-Type": "application/json",
-                    "User-Agent": "yt-mirror-cli",
-                },
-                method="PUT",
-            )
-            urllib.request.urlopen(req)
-            success_count += 1
-        except Exception as e:
-            error(f"Failed to set {sname}: {e}")
-            fail_count += 1
+        # Step 2: Push code
+        step("Pushing code from local...")
+        src_dir = str(Path(__file__).parent)
+        remote_url = f"https://{token}@github.com/{owner}/{rn}.git"
+        ok, err = github_api.git_push(src_dir, remote_url)
+        if not ok:
+            error(f"Git push failed: {err}")
+            info("Check token has repo scope and try again")
+            return
+        success("Code pushed")
 
+    # Step 3/1: Set secrets
+    step("Setting encrypted secrets..." if repo_exists else "Setting encrypted secrets...")
+    secret_errors = github_api.set_all_secrets(owner, rn, token, secrets)
+    for e in secret_errors:
+        warn(e)
+    if not secret_errors:
+        success("All secrets set")
+
+    # Step 4/2: Find workflow
+    step("Finding workflow..." if repo_exists else "Finding workflow...")
+    wf = github_api.get_mirror_workflow(owner, rn, token)
+    if not wf:
+        warn("No youtube.yml workflow found — push may still be in progress")
+    else:
+        # Step 5/3: Enable workflow
+        step("Enabling workflow..." if repo_exists else "Enabling workflow...")
+        github_api.enable_workflow(owner, rn, wf["id"], token)
+        success("Workflow enabled")
+
+    # Save deployment record in project
     supabase_db.update_project(project["id"], deployed_at=datetime.utcnow().isoformat())
 
     divider()
-    if fail_count == 0:
-        success(f"Deployed! {success_count} secrets pushed/updated on {repo}")
-        info("Workflow will run on the next cron (every 6h)")
+    if not repo_exists:
+        success(f"Deployed to {repo}!")
     else:
-        warn(f"Deployed {success_count}/{success_count + fail_count} secrets")
+        success(f"Re-deployed to {repo}!")
+    info("Workflow will run on the next cron (every 6h)")
+    info("Or trigger manually: GitHub → Actions → Run workflow")
 
 # ─── OAuth ────────────────────────────────────────────────────────────────────
 

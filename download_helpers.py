@@ -2,7 +2,9 @@ import os
 import subprocess
 import json
 import tempfile
+import re
 import config
+from PIL import Image, ImageEnhance
 
 
 def download_thumbnail(url, output_path):
@@ -16,6 +18,34 @@ def download_thumbnail(url, output_path):
     except Exception as e:
         config.log(f"thumbnail download failed: {e}")
         return False
+
+
+def process_thumbnail(video_id, output_path=None):
+    if output_path is None:
+        output_path = os.path.join(tempfile.mkdtemp(), f"{video_id}_thumb.jpg")
+    urls = [
+        f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg",
+        f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",
+    ]
+    img = None
+    for url in urls:
+        try:
+            import urllib.request
+            req = urllib.request.urlopen(url, timeout=10)
+            img = Image.open(req)
+            break
+        except Exception:
+            continue
+    if img is None:
+        config.log(f"thumbnail download failed for: {video_id}")
+        return None
+    img = img.convert("RGB")
+    img = ImageEnhance.Brightness(img).enhance(1.05)
+    img = ImageEnhance.Color(img).enhance(1.05)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    img.save(output_path, "JPEG", quality=95)
+    config.log(f"thumbnail processed: {output_path}")
+    return output_path
 
 
 def download_video(url, output_dir=None):

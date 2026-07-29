@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import time
 import subprocess
 import hashlib
@@ -9,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 import config
 import supabase_db
 import youtube_api
+import download_helpers
 import video_processor
 import audio_separator
 import bgm_manager
@@ -244,6 +246,13 @@ def upload_daily(video_path, title=None, description=None,
         short_url = shortener.shorten_url(video_url)
         config.log(f"shortened: {video_url} → {short_url}")
 
+    thumbnail_path = None
+    if source_url:
+        m = re.search(r'(?:v=|youtu\.be/)([\w-]{11})', source_url)
+        if m:
+            vid = m.group(1)
+            thumbnail_path = download_helpers.process_thumbnail(vid)
+
     config.log(f"uploading: {title}")
 
     upload_desc = "Download link in pinned comment\n\n"
@@ -259,6 +268,7 @@ def upload_daily(video_path, title=None, description=None,
         tags=tags or [],
         category_id=category_id,
         privacy_status="public",
+        thumbnail_path=thumbnail_path,
     )
 
     if video_id:

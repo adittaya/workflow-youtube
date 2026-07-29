@@ -171,57 +171,89 @@ jobs:
           python3 -c "
           import sys
           sys.path.insert(0, '$GITHUB_WORKSPACE')
+          import json, time, os
           import config
-          import monitor
           import daily_uploader
           import download_helpers
+          import youtube_api
+          import supabase_db
 
           channels = config.load_channels()
-          uploaded = False
+          youtube = youtube_api.get_client()
+          pid = os.environ.get('PROJECT_ID', '')
+          up_state = daily_uploader.load_upload_state()
+          cursors = supabase_db.get_all_cursors(project_id=pid)
+          uploaded = 0
 
           for ch_id, ch in channels.items():
               try:
-                  vid = monitor.get_latest_video(ch_id)
-                  if not vid:
+                  playlist_id = youtube_api.get_channel_uploads_playlist(youtube, ch_id)
+                  if not playlist_id:
+                      continue
+                  recent = youtube_api.get_recent_videos(youtube, playlist_id, max_results=10)
+                  if not recent:
                       continue
 
-                  config.log(f'new video: {vid[\"id\"]} from {ch.get(\"name\", ch_id)}')
+                  # Find new videos since last cursor
+                  cursor = (cursors.get(ch_id) or {}).get('last_video_id', '')
+                  new_vids = []
+                  for v in recent:
+                      if v['video_id'] == cursor:
+                          break
+                      new_vids.append(v)
 
-                  state = daily_uploader.load_upload_state()
-                  if vid['id'] in state.get('processed_hashes', []):
-                      config.log(f'already processed: {vid[\"id\"]}')
+                  if not new_vids:
+                      config.log(f'no new videos from {ch.get("name", ch_id)}')
+                      # Update cursor even if no new (ensures tracking)
+                      supabase_db.save_channel_cursor(ch_id, {'last_video_id': recent[0]['video_id']}, project_id=pid)
                       continue
 
-                  config.log(f'downloading: {vid[\"id\"]}')
-                  result = download_helpers.download_video(vid['url'], f'/tmp/daily_{vid[\"id\"]}')
-                  if not result:
-                      config.log(f'download failed: {vid[\"id\"]}')
-                      continue
-                  path = result['path'] if isinstance(result, dict) else result
+                  config.log(f'found {len(new_vids)} new video(s) from {ch.get("name", ch_id)}')
 
-                  config.log(f'processing: {vid[\"id\"]}')
-                  processed = daily_uploader.process_video(path)
-                  if not processed:
-                      config.log(f'processing failed: {vid[\"id\"]}')
-                      continue
+                  # Process oldest first
+                  for vid in reversed(new_vids):
+                      if vid['video_id'] in up_state.get('processed_hashes', []):
+                          continue
+                      config.log(f'downloading: {vid["video_id"]}')
+                      result = download_helpers.download_video(
+                          f'https://www.youtube.com/watch?v={vid["video_id"]}',
+                          f'/tmp/daily_{vid["video_id"]}'
+                      )
+                      if not result:
+                          config.log(f'download failed: {vid["video_id"]}')
+                          continue
+                      path = result['path'] if isinstance(result, dict) else result
 
-                  title = vid.get('title', f'Daily Upload {vid[\"id\"]}')
-                  desc = vid.get('description', '')
-                  tags = vid.get('tags', [])
-                  source_url = vid.get('url', '')
-                  config.log(f'uploading: {title}')
-                  video_id = daily_uploader.upload_daily(processed, title, desc, tags, source_url=source_url)
-                  if video_id:
-                      config.log(f'uploaded: {video_id}')
-                      uploaded = True
-                  else:
-                      config.log(f'upload failed: {title}')
-                  break
+                      config.log(f'processing: {vid["video_id"]}')
+                      processed = daily_uploader.process_video(path)
+                      if not processed:
+                          config.log(f'processing failed: {vid["video_id"]}')
+                          continue
+
+                      title = vid.get('title', f'Daily Upload {vid["video_id"]}')
+                      desc = vid.get('description', '')
+                      tags = vid.get('tags', [])
+                      source_url = f'https://www.youtube.com/watch?v={vid["video_id"]}'
+                      config.log(f'uploading: {title}')
+                      video_id = daily_uploader.upload_daily(processed, title, desc, tags, source_url=source_url)
+                      if video_id:
+                          config.log(f'uploaded: {video_id}')
+                          uploaded += 1
+                          up_state['processed_hashes'].append(vid['video_id'])
+                          daily_uploader.save_upload_state(up_state)
+                      else:
+                          config.log(f'upload failed: {title}')
+                      time.sleep(2)
+
+                  # Save cursor as latest video seen
+                  supabase_db.save_channel_cursor(ch_id, {'last_video_id': recent[0]['video_id']}, project_id=pid)
               except Exception as e:
-                  config.log(f'error: {e}')
+                  config.log(f'error processing {ch_id}: {e}')
                   continue
 
-          if not uploaded:
+          if uploaded:
+              config.log(f'uploaded {uploaded} video(s) this cycle')
+          else:
               config.log('no new videos to upload')
           " 2>&1 | tee /tmp/process_output.txt
 

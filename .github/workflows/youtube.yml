@@ -277,6 +277,23 @@ jobs:
               f.write("YT_PROXY=" + proxy_list[0] + "\n")
           PYEOF
 
+      - name: Ensure test video in pending queue
+        run: |
+          python3 << PYEOF
+          import sys, os
+          sys.path.insert(0, "$GITHUB_WORKSPACE")
+          import daily_uploader
+          state = daily_uploader.load_upload_state()
+          pending = state.get("pending_hashes", [])
+          if not pending:
+              pending = ["N1LN2WypXQw"]
+              state["pending_hashes"] = pending
+              daily_uploader.save_upload_state(state)
+              print("Enqueued N1LN2WypXQw for testing")
+          else:
+              print("Pending queue already has items:", pending)
+          PYEOF
+
       - name: Process and upload
         run: |
           cd ~/.yt-mirror

@@ -27,6 +27,8 @@ def download_video(url, output_dir=None):
         "--no-playlist",
         "--no-warnings",
         "--force-ipv4",
+        "--js-runtimes", "node",
+        "--remote-components", "ejs:github",
         "--extractor-args", "youtube:player_client=android,android_vr,tv,web_embedded;formats=duplicate,missing_pot",
         "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
         "--merge-output-format", "mp4",

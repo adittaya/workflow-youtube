@@ -2,74 +2,41 @@
 
 ## Current State
 
-- **Last updated:** 2026-07-27
-- **Project:** YouTube Mirror Bot — monitors target channels, mirrors new uploads to own channel
-- **Status:** Initial build complete, ready for OAuth setup and first test
+- **Project:** YouTube Mirror Bot — monitors target channels via Supabase, mirrors to own channel
+- **GitHub:** `adittaya/workflow-shorturl-yt` (private); deployed to `joymoy767/main`
+- **Supabase:** Multi-project management via `upload_state`, `channel_cursors`, `upload_logs` tables
+- **CI cron:** `0 */6 * * *` (every 6h) — always detects new videos, only uploads when can_upload
 
-## Architecture
+## CI Workflow
 
-```
-Target Channel → monitor.py (polls uploads playlist)
-                      ↓ new video detected
-                 mirror.py (orchestrator)
-                      ↓
-         ┌───────────┼───────────┐
-         ↓           ↓           ↓
-  download_helpers  shortener   youtube_api
-  (yt-dlp)         (URL short) (upload+comment)
-```
+1. **Warmup** — auto-starts/completes based on elapsed time; tracks `yt_client_id` for account changes
+2. **Detect** (always runs) — polls each channel's uploads playlist, compares with `channel_cursors.last_video_id`, collects all new IDs into `pending_hashes` queue (oldest-first), updates cursor
+3. **Process** (only if can_upload) — pops oldest from `pending_hashes`, fetches video info via YouTube API by ID, downloads with yt-dlp (android client), processes via `daily_uploader`, uploads; on failure re-queues to pending
 
 ## Key Files
 
-| File | Lines | Purpose |
-|------|-------|---------|
-| `mirror.py` | ~200 | Main engine: orchestrates monitor → download → upload → comment |
-| `youtube_api.py` | ~200 | YouTube Data API v3 wrapper (upload, comments, channel, thumbnails) |
-| `monitor.py` | ~80 | Channel polling — detects new videos via uploads playlist |
-| `shortener.py` | ~100 | URL shortener integration (CleanURI, TinyURL, generic) |
-| `download_helpers.py` | ~80 | yt-dlp video/thumbnail download |
-| `config.py` | ~150 | Config management, channels, state persistence |
-| `get_refresh_token.py` | ~50 | One-time OAuth setup script |
-| `youtube.yml` | ~80 | GitHub Actions workflow (every 15min cron) |
+| File | Purpose |
+|------|---------|
+| `tui.py` | Multi-project TUI with auto-suggest, OAuth, warmup, deploy, dispatch |
+| `supabase_db.py` | Supabase REST wrapper with `resolution=merge-duplicates` Prefer header |
+| `daily_uploader.py` | Warmup/scheduling, cursor tracking, tz-safe datetime arithmetic |
+| `download_helpers.py` | yt-dlp download with `--extractor-args youtube:player_client=android` |
+| `github_api.py` | Repo CRUD, git push (remove origin before add), secret encryption, dispatch |
+| `config.py` | Channels/accounts/state via Supabase |
+| `youtube_api.py` | YouTube Data API v3 wrapper |
+| `.github/workflows/youtube.yml` | 6h cron workflow |
 
-## How It Works
+## State Management
 
-1. **Monitor**: Every 15 min, poll each tracked channel's uploads playlist
-2. **Detect**: Compare latest video ID against last known — new = needs mirroring
-3. **Download**: yt-dlp downloads video (mp4) + thumbnail (jpg)
-4. **Upload**: YouTube API uploads with modified title, description, tags
-5. **Comment**: Posts download link comment (shortened URL), pins it
-6. **State**: Tracks processed videos to avoid duplicates
+- `upload_state` — warmup_start, warmup_complete, total_uploaded, last_upload_date, processed_hashes, pending_hashes, yt_client_id
+- `channel_cursors` — per-channel last_video_id for new video detection
+- `upload_logs` — audit trail of upload attempts
+- All fields stored as JSON in Supabase rows keyed by `project_id`
 
-## Setup Required
+## Troubleshooting
 
-1. Google Cloud Console → YouTube Data API v3 enabled
-2. OAuth consent screen → External → Published App
-3. Desktop App OAuth client → download client_secrets.json
-4. Run `python3 get_refresh_token.py` locally → get refresh token
-5. Add 3 GitHub Secrets: YT_CLIENT_ID, YT_CLIENT_SECRET, YT_REFRESH_TOKEN
-6. Add channels to `~/.yt-mirror/channels.json`
-7. Enable workflow in GitHub Actions
-
-## YouTube API Quota
-
-- Upload video: 1600 units
-- Daily quota: 10,000 units
-- Max uploads/day: ~6 videos
-- Comment insert: ~50 units
-- Channel list: ~1 unit
-- Playlist items: ~1 unit
-
-## Comment Section Control
-
-- Posts comment with download link (shortened URL)
-- Comment moderation: set to "heldForReview" so only approved comments appear
-- Owner's comment always visible
-- Comment text template: configurable in config.json
-
-## Files Removed (VPLink)
-
-All previous VPLink automation files have been removed:
-- automation.py, tui.py, proxy_rotator.py, profile_generator.py
-- install.sh (old), AUTOMATION.md, AUTOMATION_GUIDE.md
-- continuous.yml (replaced with youtube.yml)
+- **409 on upsert:** ensure `Prefer: return=representation,resolution=merge-duplicates` header is sent
+- **yt-dlp "bot" error:** android client flag `--extractor-args youtube:player_client=android` bypasses
+- **Datetime error:** use `datetime.now(timezone.utc)` not `utcnow()`; strip tzinfo before subtraction
+- **OAuth refresh:** expires every 7 days — re-run `[O]` in TUI before expiry
+- **Git push "already exists":** `git remote remove origin` before `git remote add origin`

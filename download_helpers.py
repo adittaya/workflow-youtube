@@ -26,6 +26,7 @@ def download_video(url, output_dir=None):
         "yt-dlp",
         "--no-playlist",
         "--no-warnings",
+        "--extractor-args", "youtube:player_client=android",
         "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
         "--merge-output-format", "mp4",
         "-o", output_template,

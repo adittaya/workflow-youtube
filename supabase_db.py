@@ -48,8 +48,18 @@ def _request(method, path, **kwargs):
 
 
 def _upsert(table, data, on_conflict="id"):
-    result = _request("POST", table + f"?on_conflict={on_conflict}", data=data)
-    return result
+    try:
+        return _request("POST", table + f"?on_conflict={on_conflict}", data=data)
+    except urllib.error.HTTPError as e:
+        if e.code == 409:
+            key_cols = [c.strip() for c in on_conflict.split(",")]
+            key_filter = "&".join(f"{k}=eq.{data.get(k)}" for k in key_cols if data.get(k) is not None)
+            if key_filter:
+                existing = _request("GET", f"{table}?{key_filter}&select={key_cols[0]}")
+                if existing:
+                    return _request("PATCH", f"{table}?{key_filter}", data=data)
+            return _request("POST", table, data=data)
+        raise
 
 
 # ─── Settings ────────────────────────────────────────────────────────────
@@ -70,7 +80,7 @@ def get_setting(key, default=None):
 def set_setting(key, value):
     if not isinstance(value, str):
         value = json.dumps(value)
-    _upsert("settings", {"key": key, "value": value, "updated_at": datetime.utcnow().isoformat()})
+    _upsert("settings", {"key": key, "value": value, "updated_at": datetime.utcnow().isoformat()}, on_conflict="key")
 
 
 def get_all_settings():

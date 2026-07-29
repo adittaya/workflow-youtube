@@ -75,7 +75,28 @@ CREATE TABLE IF NOT EXISTS upload_state (
 -- Insert default upload_state row
 INSERT INTO upload_state (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 
--- 7. Daily upload logs (replaces daily_log.json)
+-- 7. Projects — multi-project management (all credentials per project, no local files)
+CREATE TABLE IF NOT EXISTS projects (
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  yt_client_id TEXT DEFAULT '',
+  yt_client_secret TEXT DEFAULT '',
+  yt_refresh_token TEXT DEFAULT '',
+  github_token TEXT DEFAULT '',
+  github_repo TEXT DEFAULT '',
+  channels TEXT DEFAULT '',
+  shortlink_provider TEXT DEFAULT 'vplink',
+  shortlink_api_key TEXT DEFAULT '',
+  warmup_days INTEGER DEFAULT 14,
+  warmup_start TEXT DEFAULT '',
+  comment_moderation TEXT DEFAULT 'heldForReview',
+  mirror_title_prefix TEXT DEFAULT '',
+  deployed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 9. Daily upload logs (replaces daily_log.json)
 CREATE TABLE IF NOT EXISTS upload_logs (
   id SERIAL PRIMARY KEY,
   upload_date DATE NOT NULL,
@@ -87,7 +108,7 @@ CREATE TABLE IF NOT EXISTS upload_logs (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 8. Channel cursor — last checked video per channel (from monitor)
+-- 10. Channel cursor — last checked video per channel (from monitor)
 CREATE TABLE IF NOT EXISTS channel_cursors (
   channel_id TEXT PRIMARY KEY,
   last_video_id TEXT DEFAULT '',

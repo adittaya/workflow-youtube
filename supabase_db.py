@@ -226,6 +226,44 @@ def save_channel_cursor(channel_id, data):
     _upsert("channel_cursors", data, on_conflict="channel_id")
 
 
+# ─── Projects ───────────────────────────────────────────────────────────────
+
+def list_projects():
+    rows = _request("GET", "projects?select=*&order=name.asc")
+    return rows or []
+
+
+def get_project(project_id):
+    row = _request("GET", f"projects?id=eq.{project_id}&select=*")
+    return row[0] if row else None
+
+
+def create_project(name, **fields):
+    data = {"name": name}
+    for k, v in fields.items():
+        if v is not None:
+            data[k] = v
+    data["created_at"] = datetime.utcnow().isoformat()
+    data["updated_at"] = datetime.utcnow().isoformat()
+    result = _request("POST", "projects", data=data)
+    if isinstance(result, list) and len(result) > 0:
+        return result[0]
+    return result
+
+
+def update_project(project_id, **fields):
+    data = {"updated_at": datetime.utcnow().isoformat()}
+    for k, v in fields.items():
+        if v is not None:
+            data[k] = v
+    _request("PATCH", f"projects?id=eq.{project_id}", data=data)
+    return get_project(project_id)
+
+
+def delete_project(project_id):
+    _request("DELETE", f"projects?id=eq.{project_id}")
+
+
 # ─── Init ────────────────────────────────────────────────────────────────
 
 configure()

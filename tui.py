@@ -479,7 +479,7 @@ def _do_deploy(project):
     existing = github_api.get_repo(owner, rn, token)
     repo_exists = not (isinstance(existing, dict) and existing.get("error"))
 
-    total_steps = 3 if repo_exists else 5
+    total_steps = 5 if repo_exists else 6
     step_num = 0
 
     def step(msg):
@@ -535,16 +535,24 @@ def _do_deploy(project):
         github_api.enable_workflow(owner, rn, wf["id"], token)
         success("Workflow enabled")
 
+        # Step 6/4: Trigger immediately
+        step("Triggering workflow run..." if repo_exists else "Triggering workflow run...")
+        dispatch = github_api.dispatch_workflow(owner, rn, wf["id"], token, ref="main")
+        if isinstance(dispatch, dict) and dispatch.get("error"):
+            warn(f"Trigger failed: {dispatch.get('message', '')} — cron will pick it up")
+        else:
+            success("Workflow triggered!")
+
     # Save deployment record in project
     supabase_db.update_project(project["id"], deployed_at=datetime.now(timezone.utc).isoformat())
 
     divider()
     if not repo_exists:
         success(f"Deployed to {repo}!")
+        info("Workflow triggered — check GitHub Actions for progress")
     else:
         success(f"Re-deployed to {repo}!")
-    info("Workflow will run on the next cron (every 6h)")
-    info("Or trigger manually: GitHub → Actions → Run workflow")
+        info("Workflow triggered — check GitHub Actions for progress")
 
 # ─── OAuth ────────────────────────────────────────────────────────────────────
 

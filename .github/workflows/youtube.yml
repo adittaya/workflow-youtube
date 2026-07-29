@@ -59,6 +59,7 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg >/dev/null 2>&1 || true
           pip install --break-system-packages -q -r requirements.txt
           pip install --break-system-packages -q demucs soundfile torch
+          pip install --break-system-packages -q bgutil-ytdlp-pot-provider 2>&1
 
       - name: Build config from secrets
         run: |
@@ -228,9 +229,17 @@ jobs:
               print('new_detected=false')
           " 2>&1
 
+      - name: Verify bgutil plugin loaded
+        run: |
+          echo "=== yt-dlp version ==="
+          yt-dlp --version
+          echo "=== PO token providers ==="
+          yt-dlp -v "https://youtube.com/watch?v=N1LN2WypXQw" 2>&1 | grep -i -A5 "pot provider" || echo "NO bgutil providers found"
+          echo "=== bgutil plugin check ==="
+          python3 -c "import bgutil_ytdlp_pot_provider; print('bgutil plugin module found:', bgutil_ytdlp_pot_provider.__file__)" 2>&1 || echo "Module not found"
+
       - name: Start PO token provider
         run: |
-          pip install --break-system-packages -q bgutil-ytdlp-pot-provider
           docker run -d --name bgutil-provider --init -p 4416:4416 brainicism/bgutil-ytdlp-pot-provider
           # Wait for server to start
           for i in $(seq 1 15); do
@@ -240,15 +249,6 @@ jobs:
             fi
             sleep 1
           done
-
-      - name: Verify bgutil plugin loaded
-        run: |
-          echo "=== yt-dlp version ==="
-          yt-dlp --version
-          echo "=== PO token providers ==="
-          yt-dlp -v "https://youtube.com/watch?v=N1LN2WypXQw" 2>&1 | grep -i -A5 "pot provider" || echo "NO bgutil providers found"
-          echo "=== bgutil plugin check ==="
-          python3 -c "import bgutil_ytdlp_pot_provider; print('bgutil plugin module found:', bgutil_ytdlp_pot_provider.__file__)" 2>&1
 
       - name: Process and upload
         run: |

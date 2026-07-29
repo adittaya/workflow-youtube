@@ -241,6 +241,15 @@ jobs:
             sleep 1
           done
 
+      - name: Verify bgutil plugin loaded
+        run: |
+          echo "=== yt-dlp version ==="
+          yt-dlp --version
+          echo "=== PO token providers ==="
+          yt-dlp -v "https://youtube.com/watch?v=N1LN2WypXQw" 2>&1 | grep -i -A5 "pot provider" || echo "NO bgutil providers found"
+          echo "=== bgutil plugin check ==="
+          python3 -c "import bgutil_ytdlp_pot_provider; print('bgutil plugin module found:', bgutil_ytdlp_pot_provider.__file__)" 2>&1
+
       - name: Process and upload
         run: |
           cd ~/.yt-mirror

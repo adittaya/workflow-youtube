@@ -25,7 +25,7 @@ def download_video(url, output_dir=None):
     cmd = [
         "yt-dlp",
         "--no-playlist",
-        "--no-warnings",
+        "--verbose",
         "--force-ipv4",
         "--js-runtimes", "node",
         "--remote-components", "ejs:github",
@@ -43,7 +43,8 @@ def download_video(url, output_dir=None):
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
-            config.log(f"yt-dlp failed: {result.stderr[:200]}")
+            config.log(f"yt-dlp failed (rc={result.returncode}): {result.stderr[:2000]}")
+            config.log(f"yt-dlp stdout (last 500): {result.stdout[-500:]}")
             return None
         info = json.loads(result.stdout) if result.stdout.strip() else {}
         filepath = info.get("filename") or info.get("_filename")

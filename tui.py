@@ -1451,7 +1451,7 @@ def screen_settings():
         print(f"  {C_DIM}Max/cycle:{C_RESET}      {s.get('max_per_cycle', 3)}")
         print(f"  {C_DIM}Shortener:{C_RESET}      {prov_label} (manage in [L] Shortlink keys)")
         print()
-        print(f"  {C_BOLD}[1]{C_RESET} Comment text (use {url} for link)")
+        print(f"  {C_BOLD}[1]{C_RESET} Comment text (use {{url}} for link)")
         print(f"  {C_BOLD}[2]{C_RESET} Comment mode (view-only / public)")
         print(f"  {C_BOLD}[3]{C_RESET} Title prefix")
         print(f"  {C_BOLD}[4]{C_RESET} Description suffix")

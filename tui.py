@@ -2099,6 +2099,7 @@ def screen_setup():
 
         print()
         print(f"  {C_BOLD}[D]{C_RESET} Deploy to GitHub Actions")
+        print(f"  {C_BOLD}[O]{C_RESET} YouTube OAuth login (get refresh token)")
         print(f"  {C_BOLD}[W]{C_RESET} Reset warmup start to today")
         print(f"  {C_BOLD}[0]{C_RESET} Back")
         print()
@@ -2108,6 +2109,8 @@ def screen_setup():
             return
         elif choice.upper() == "D":
             _do_deploy(cfg)
+        elif choice.upper() == "O":
+            _do_oauth(cfg, fields)
         elif choice.upper() == "W":
             if supabase_db.is_enabled():
                 state = supabase_db.get_upload_state()
@@ -2246,6 +2249,97 @@ def _do_deploy(cfg):
     else:
         warn(f"Deployed {success_count}/{success_count + fail_count} secrets")
         info(f"Check {repo}/settings/secrets/actions for details")
+
+
+def _do_oauth(cfg, fields):
+    cid = cfg.get("yt_client_id")
+    csec = cfg.get("yt_client_secret")
+    if not cid or not csec:
+        error("Set YouTube Client ID and Client Secret first (fields 3 & 4)")
+        return
+
+    import hashlib, base64, http.server
+
+    code_verifier = base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode()
+    code_challenge = base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode()).digest()).rstrip(b"=").decode()
+
+    scopes = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.force-ssl https://www.googleapis.com/auth/youtube"
+    params = {
+        "client_id": cid,
+        "redirect_uri": "http://127.0.0.1:8085",
+        "response_type": "code",
+        "scope": scopes,
+        "access_type": "offline",
+        "prompt": "consent",
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+    }
+    auth_url = "https://accounts.google.com/o/oauth2/auth?" + urllib.parse.urlencode(params)
+
+    result = {"code": None}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            parsed = urllib.parse.urlparse(self.path)
+            params = urllib.parse.parse_qs(parsed.query)
+            code = params.get("code", [None])[0]
+            if code:
+                result["code"] = code
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                self.wfile.write(b"<html><body><h2>Done! Close this tab.</h2></body></html>")
+            else:
+                self.send_response(400)
+                self.end_headers()
+        def log_message(self, format, *args):
+            pass
+
+    print()
+    info("Starting local server on port 8085...")
+    server = http.server.HTTPServer(("0.0.0.0", 8085), Handler)
+    server.timeout = 300
+
+    try:
+        import webbrowser
+        webbrowser.open(auth_url)
+    except Exception:
+        pass
+
+    info("Open this URL in your browser (300s timeout):")
+    print(f"  {auth_url}")
+    print()
+
+    server.handle_request()
+    server.server_close()
+
+    if result["code"]:
+        token_data = urllib.parse.urlencode({
+            "code": result["code"],
+            "client_id": cid,
+            "client_secret": csec,
+            "redirect_uri": "http://127.0.0.1:8085",
+            "grant_type": "authorization_code",
+            "code_verifier": code_verifier,
+        }).encode()
+
+        try:
+            req = urllib.request.Request("https://oauth2.googleapis.com/token", data=token_data, method="POST")
+            req.add_header("Content-Type", "application/x-www-form-urlencoded")
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                tokens = json.loads(resp.read())
+                rt = tokens.get("refresh_token", "")
+                if rt:
+                    cfg["yt_refresh_token"] = rt
+                    fields[4] = ("yt_refresh_token", "YouTube Refresh Token", rt)
+                    save_config(cfg)
+                    success(f"Refresh token obtained! Auto-filled field 5")
+                else:
+                    error("No refresh token returned — make sure OAuth consent screen is Published")
+        except Exception as e:
+            error(f"Token exchange failed: {e}")
+    else:
+        error("OAuth timed out or no code received")
 
 
 # ─── Entry Point ──────────────────────────────────────────────────────────────

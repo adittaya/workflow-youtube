@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import urllib.error
 from datetime import datetime, timezone
 
@@ -39,13 +40,23 @@ def _request(method, path, **kwargs):
     data = kwargs.pop("data", None)
     body = json.dumps(data).encode("utf-8") if data is not None else None
     req = urllib.request.Request(url, data=body, headers=_headers(), method=method)
-    try:
-        with urllib.request.urlopen(req) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        if e.code == 406 and method == "GET":
-            return None
-        raise
+    max_retries = kwargs.get("retries", 3)
+    for attempt in range(max_retries):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code == 406 and method == "GET":
+                return None
+            raise
+        except (urllib.error.URLError, ConnectionError, TimeoutError) as e:
+            if attempt < max_retries - 1:
+                wait = 2 ** attempt
+                import sys
+                print(f"supabase retry {attempt + 1}/{max_retries} after {wait}s: {e}", file=sys.stderr)
+                time.sleep(wait)
+                continue
+            raise
 
 
 def _upsert(table, data, on_conflict="id"):

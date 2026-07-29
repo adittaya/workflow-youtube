@@ -197,7 +197,8 @@ jobs:
                       found_new = True
                       # Prepend reversed (oldest-first) to pending queue
                       pending_hashes = new_ids[::-1] + pending_hashes
-                      config.log(f'{len(new_ids)} new video(s) from {ch.get("name", ch_id)}: {new_ids[::-1]}')
+                      name_key = 'name'
+config.log(f'{len(new_ids)} new video(s) from {ch.get(name_key, ch_id)}: {new_ids[::-1]}')
 
                   # Update cursor to latest
                   supabase_db.save_channel_cursor(ch_id, {'last_video_id': latest_id}, project_id=pid)

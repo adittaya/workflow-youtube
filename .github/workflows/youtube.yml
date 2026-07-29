@@ -299,7 +299,7 @@ jobs:
                   except Exception as e:
                       config.log(f'could not fetch video info: {e}')
 
-                  config.log(f'uploading: {vid["title"]} ({target_id})')
+                  config.log(f"uploading: {vid['title']} ({target_id})")
                   result = download_helpers.download_video(source_url, f'/tmp/daily_{target_id}')
                   if not result:
                       config.log(f'download failed: {target_id}')

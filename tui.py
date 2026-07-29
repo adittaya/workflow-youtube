@@ -2227,7 +2227,7 @@ def _do_deploy(cfg):
 
     divider()
     if fail_count == 0:
-        success(f"Deployed! {success_count} secrets pushed to {repo}")
+        success(f"Deployed! {success_count} secrets pushed/updated on {repo}")
         info("Workflow will run on the next cron (every 6h) or trigger manually in Actions tab")
     else:
         warn(f"Deployed {success_count}/{success_count + fail_count} secrets")

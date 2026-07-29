@@ -4,7 +4,7 @@ import time
 import subprocess
 import hashlib
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import config
 import supabase_db
@@ -77,7 +77,7 @@ def save_daily_log(log):
 
 def start_warmup(force=False):
     state = load_upload_state()
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     today = now.strftime("%Y-%m-%d")
 
     if force or not state.get("warmup_start"):
@@ -88,7 +88,11 @@ def start_warmup(force=False):
         config.log(f"warmup started: {state['warmup_start']}")
     else:
         start = datetime.fromisoformat(state["warmup_start"])
-        days = (now - start).days
+        # Strip tz so we can subtract even if one is naive and other aware
+        if start.tzinfo is not None:
+            start = start.replace(tzinfo=None)
+        naive_now = now.replace(tzinfo=None)
+        days = (naive_now - start).days
         warmup_total = _get_warmup_days()
         if days >= warmup_total and not state.get("warmup_complete"):
             state["warmup_complete"] = True
@@ -100,7 +104,7 @@ def start_warmup(force=False):
 
 def reset_warmup(reason="account changed"):
     state = load_upload_state()
-    state["warmup_start"] = datetime.utcnow().isoformat()
+    state["warmup_start"] = datetime.now(timezone.utc).isoformat()
     state["warmup_complete"] = False
     state["total_uploaded"] = 0
     state["last_upload_date"] = None
@@ -124,7 +128,9 @@ def get_warmup_day():
     if not state.get("warmup_start"):
         return 0
     start = datetime.fromisoformat(state["warmup_start"])
-    delta = datetime.utcnow() - start
+    if start.tzinfo is not None:
+        start = start.replace(tzinfo=None)
+    delta = datetime.now(timezone.utc).replace(tzinfo=None) - start
     return delta.days
 
 
@@ -143,7 +149,7 @@ def can_upload_today():
         config.log(f"warmup day {day}/{_get_warmup_days()} - no uploads yet")
         return False, f"warmup day {day}/{_get_warmup_days()}"
 
-    today = datetime.utcnow().strftime("%Y-%m-%d")
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if state.get("last_upload_date") == today:
         log = load_daily_log()
         today_uploads = [u for u in log["uploads"]
@@ -153,7 +159,9 @@ def can_upload_today():
 
     if state.get("last_upload_hour"):
         last = datetime.fromisoformat(state["last_upload_hour"])
-        hours_since = (datetime.utcnow() - last).total_seconds() / 3600
+        if last.tzinfo is not None:
+            last = last.replace(tzinfo=None)
+        hours_since = (datetime.now(timezone.utc).replace(tzinfo=None) - last).total_seconds() / 3600
         if hours_since < MIN_HOURS_BETWEEN:
             wait = MIN_HOURS_BETWEEN - hours_since
             return False, f"wait {wait:.1f}h more"
@@ -228,7 +236,7 @@ def upload_daily(video_path, title=None, description=None,
     suffix = settings.get("mirror_description_suffix", "")
 
     if title is None:
-        title = f"Daily Upload {datetime.utcnow().strftime('%Y-%m-%d')}"
+        title = f"Daily Upload {datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
     title = f"{prefix}{title}{suffix}"
 
     video_url = source_url or ""
@@ -271,14 +279,14 @@ def upload_daily(video_path, title=None, description=None,
                 config.log(f"comment failed: {e}")
 
         state = load_upload_state()
-        state["last_upload_date"] = datetime.utcnow().strftime("%Y-%m-%d")
-        state["last_upload_hour"] = datetime.utcnow().isoformat()
+        state["last_upload_date"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        state["last_upload_hour"] = datetime.now(timezone.utc).isoformat()
         state["total_uploaded"] = state.get("total_uploaded", 0) + 1
         save_upload_state(state)
 
         entry = {
-            "upload_date": datetime.utcnow().strftime("%Y-%m-%d"),
-            "upload_time": datetime.utcnow().isoformat(),
+            "upload_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            "upload_time": datetime.now(timezone.utc).isoformat(),
             "video_id": video_id,
             "title": title,
             "short_url": short_url or "",

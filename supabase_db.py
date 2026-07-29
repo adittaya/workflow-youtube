@@ -1,6 +1,6 @@
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 _SUPABASE_URL = None
 _SUPABASE_KEY = None
@@ -80,7 +80,7 @@ def get_setting(key, default=None):
 def set_setting(key, value):
     if not isinstance(value, str):
         value = json.dumps(value)
-    _upsert("settings", {"key": key, "value": value, "updated_at": datetime.utcnow().isoformat()}, on_conflict="key")
+    _upsert("settings", {"key": key, "value": value, "updated_at": datetime.now(timezone.utc).isoformat()}, on_conflict="key")
 
 
 def get_all_settings():
@@ -101,7 +101,7 @@ def get_all_accounts():
 
 def save_account(name, data):
     data["name"] = name
-    data["updated_at"] = datetime.utcnow().isoformat()
+    data["updated_at"] = datetime.now(timezone.utc).isoformat()
     _upsert("accounts", data, on_conflict="name")
 
 
@@ -122,7 +122,7 @@ def get_all_channels():
 
 def save_channel(channel_id, data):
     data["id"] = channel_id
-    data["updated_at"] = datetime.utcnow().isoformat()
+    data["updated_at"] = datetime.now(timezone.utc).isoformat()
     _upsert("channels", data, on_conflict="id")
 
 
@@ -146,7 +146,7 @@ def save_mirror_state(source_channel, source_video_id, data, project_id=""):
     data["project_id"] = project_id
     data["source_channel"] = source_channel
     data["source_video_id"] = source_video_id
-    data["mirrored_at"] = data.get("mirrored_at") or datetime.utcnow().isoformat()
+    data["mirrored_at"] = data.get("mirrored_at") or datetime.now(timezone.utc).isoformat()
     _upsert("mirror_state", data, on_conflict="project_id,source_channel,source_video_id")
 
 
@@ -161,7 +161,7 @@ def get_mirror_stats(project_id=""):
 
 def update_mirror_stats(stats, project_id=""):
     stats["project_id"] = project_id
-    stats["updated_at"] = datetime.utcnow().isoformat()
+    stats["updated_at"] = datetime.now(timezone.utc).isoformat()
     _upsert("mirror_stats", stats, on_conflict="project_id")
 
 
@@ -196,7 +196,7 @@ def save_upload_state(state, project_id=""):
         "last_upload_hour": state.get("last_upload_hour"),
         "processed_hashes": state.get("processed_hashes", []),
         "yt_client_id": state.get("yt_client_id", ""),
-        "updated_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     _upsert("upload_state", row, on_conflict="project_id")
 
@@ -236,7 +236,7 @@ def get_all_cursors(project_id=""):
 def save_channel_cursor(channel_id, data, project_id=""):
     data["project_id"] = project_id
     data["channel_id"] = channel_id
-    data["updated_at"] = datetime.utcnow().isoformat()
+    data["updated_at"] = datetime.now(timezone.utc).isoformat()
     _upsert("channel_cursors", data, on_conflict="project_id,channel_id")
 
 
@@ -257,8 +257,8 @@ def create_project(name, **fields):
     for k, v in fields.items():
         if v is not None:
             data[k] = v
-    data["created_at"] = datetime.utcnow().isoformat()
-    data["updated_at"] = datetime.utcnow().isoformat()
+    data["created_at"] = datetime.now(timezone.utc).isoformat()
+    data["updated_at"] = datetime.now(timezone.utc).isoformat()
     result = _request("POST", "projects", data=data)
     if isinstance(result, list) and len(result) > 0:
         return result[0]
@@ -266,7 +266,7 @@ def create_project(name, **fields):
 
 
 def update_project(project_id, **fields):
-    data = {"updated_at": datetime.utcnow().isoformat()}
+    data = {"updated_at": datetime.now(timezone.utc).isoformat()}
     for k, v in fields.items():
         if v is not None:
             data[k] = v

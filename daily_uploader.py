@@ -287,8 +287,6 @@ def upload_daily(video_path, title=None, description=None,
             except Exception as e:
                 config.log(f"comment failed: {e}")
 
-        youtube_api.disable_comments(youtube, video_id)
-
         state = load_upload_state()
         state["last_upload_date"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         state["last_upload_hour"] = datetime.now(timezone.utc).isoformat()

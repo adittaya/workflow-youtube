@@ -143,32 +143,6 @@ def update_video_description(youtube, video_id, description):
     return True
 
 
-def disable_comments(youtube, video_id):
-    try:
-        resp = youtube.videos().list(part="status", id=video_id).execute()
-        items = resp.get("items", [])
-        if not items:
-            return False
-        st = items[0]["status"]
-        youtube.videos().update(
-            part="status",
-            body={
-                "id": video_id,
-                "status": {
-                    "privacyStatus": st.get("privacyStatus", "public"),
-                    "selfDeclaredMadeForKids": st.get("selfDeclaredMadeForKids", False),
-                    "embeddable": st.get("embeddable", True),
-                    "commentModeration": "disabled",
-                },
-            },
-        ).execute()
-        config.log(f"comments disabled for: {video_id}")
-        return True
-    except Exception as e:
-        config.log(f"disable comments failed (may not be supported): {e}")
-        return False
-
-
 def post_comment(youtube, video_id, text, held_for_review=True):
     body = {
         "snippet": {

@@ -331,8 +331,19 @@ def screen_setup(project):
             _do_oauth(p)
         elif choice == "W":
             try:
-                supabase_db.update_project(pid, warmup_start=datetime.utcnow().isoformat())
-                success("Warmup reset to today (warmup_start updated)")
+                now = datetime.utcnow()
+                supabase_db.save_upload_state({
+                    "account_created": now.isoformat(),
+                    "warmup_start": now.isoformat(),
+                    "warmup_complete": False,
+                    "first_upload_date": None,
+                    "total_uploaded": 0,
+                    "last_upload_date": None,
+                    "last_upload_hour": None,
+                    "processed_hashes": [],
+                    "yt_client_id": p.get("yt_client_id", ""),
+                }, project_id=pid)
+                success("Warmup reset to today")
             except Exception as e:
                 error(f"Failed: {e}")
         elif choice.isdigit():

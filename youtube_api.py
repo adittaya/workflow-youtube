@@ -42,7 +42,10 @@ def get_my_channel_id(youtube):
 
 
 def get_channel_uploads_playlist(youtube, channel_id):
-    resp = youtube.channels().list(part="contentDetails", id=channel_id).execute()
+    if channel_id.startswith("@"):
+        resp = youtube.channels().list(part="contentDetails", forHandle=channel_id[1:]).execute()
+    else:
+        resp = youtube.channels().list(part="contentDetails", id=channel_id).execute()
     items = resp.get("items", [])
     if not items:
         return None

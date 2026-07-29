@@ -25,11 +25,11 @@ def download_video(url, output_dir=None):
     cmd = [
         "yt-dlp",
         "--no-playlist",
-        "--verbose",
+        "--no-warnings",
         "--force-ipv4",
         "--js-runtimes", "node",
         "--remote-components", "ejs:github",
-        "--extractor-args", "youtube:player_client=android,android_vr,tv,web_embedded;formats=duplicate,missing_pot",
+        "--extractor-args", "youtube:player_client=mweb,web_safari,tv,android;formats=duplicate,missing_pot",
         "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
         "--merge-output-format", "mp4",
         "-o", output_template,
@@ -43,8 +43,7 @@ def download_video(url, output_dir=None):
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
-            config.log(f"yt-dlp failed (rc={result.returncode}): {result.stderr[:2000]}")
-            config.log(f"yt-dlp stdout (last 500): {result.stdout[-500:]}")
+            config.log(f"yt-dlp failed: {result.stderr[:200]}")
             return None
         info = json.loads(result.stdout) if result.stdout.strip() else {}
         filepath = info.get("filename") or info.get("_filename")

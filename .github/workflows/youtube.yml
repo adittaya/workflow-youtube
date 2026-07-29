@@ -248,86 +248,103 @@ jobs:
           youtube = youtube_api.get_client()
           pid = os.environ.get('PROJECT_ID', '')
           up_state = daily_uploader.load_upload_state()
-          pending_hashes = list(up_state.get('pending_hashes', []))
-          processed_hashes = list(up_state.get('processed_hashes', []))
 
-          # Pop oldest pending video (first in list)
-          target_id = None
-          while pending_hashes:
-              candidate = pending_hashes.pop(0)
-              if candidate not in processed_hashes:
-                  target_id = candidate
+          uploaded_count = 0
+          while True:
+              pending_hashes = list(up_state.get('pending_hashes', []))
+              processed_hashes = list(up_state.get('processed_hashes', []))
+
+              # Pop oldest pending video not yet uploaded
+              target_id = None
+              temp = list(pending_hashes)
+              pending_hashes = []
+              for v in temp:
+                  if v not in processed_hashes and target_id is None:
+                      target_id = v
+                  else:
+                      pending_hashes.append(v)
+
+              if not target_id:
+                  config.log('nothing pending — all detected videos already uploaded')
+                  up_state['pending_hashes'] = []
+                  daily_uploader.save_upload_state(up_state)
                   break
 
-          if not target_id:
-              config.log('nothing pending — all detected videos already uploaded')
-              up_state['pending_hashes'] = []
-              daily_uploader.save_upload_state(up_state)
-              exit(0)
+              # Check if we can upload (cooldown: 18h between uploads)
+              if not daily_uploader.can_upload_today():
+                  config.log('cooldown active — 18h gap not elapsed, stopping')
+                  up_state['pending_hashes'] = [target_id] + pending_hashes
+                  daily_uploader.save_upload_state(up_state)
+                  break
 
-          config.log(f'processing pending video: {target_id}')
+              config.log(f'processing pending video: {target_id} (batch #{uploaded_count + 1})')
 
-          source_url = f'https://www.youtube.com/watch?v={target_id}'
+              source_url = f'https://www.youtube.com/watch?v={target_id}'
+              vid = None
 
-          try:
-              # Fetch video info by ID directly
-              vid = {'video_id': target_id, 'title': f'Video {target_id}', 'description': '', 'tags': []}
               try:
-                  resp = youtube.videos().list(part='snippet', id=target_id).execute()
-                  items = resp.get('items', [])
-                  if items:
-                      sn = items[0]['snippet']
-                      vid = {
-                          'video_id': target_id,
-                          'title': sn.get('title', vid['title']),
-                          'description': sn.get('description', ''),
-                          'tags': sn.get('tags', []),
-                      }
+                  vid = {'video_id': target_id, 'title': f'Video {target_id}', 'description': '', 'tags': []}
+                  try:
+                      resp = youtube.videos().list(part='snippet', id=target_id).execute()
+                      items = resp.get('items', [])
+                      if items:
+                          sn = items[0]['snippet']
+                          vid = {
+                              'video_id': target_id,
+                              'title': sn.get('title', vid['title']),
+                              'description': sn.get('description', ''),
+                              'tags': sn.get('tags', []),
+                          }
+                  except Exception as e:
+                      config.log(f'could not fetch video info: {e}')
+
+                  config.log(f'uploading: {vid["title"]} ({target_id})')
+                  result = download_helpers.download_video(source_url, f'/tmp/daily_{target_id}')
+                  if not result:
+                      config.log(f'download failed: {target_id}')
+                      up_state['pending_hashes'] = [target_id] + pending_hashes
+                      daily_uploader.save_upload_state(up_state)
+                      break
+                  path = result['path'] if isinstance(result, dict) else result
+
+                  config.log(f'processing: {target_id}')
+                  processed = daily_uploader.process_video(path)
+                  if not processed:
+                      config.log(f'processing failed: {target_id}')
+                      up_state['pending_hashes'] = [target_id] + pending_hashes
+                      daily_uploader.save_upload_state(up_state)
+                      break
+
+                  title = vid.get('title', f'Daily Upload {target_id}')
+                  desc = vid.get('description', '')
+                  tags = vid.get('tags', [])
+                  video_id = daily_uploader.upload_daily(processed, title, desc, tags, source_url=source_url)
+                  if video_id:
+                      config.log(f'uploaded: {video_id}')
+                      uploaded_count += 1
+                      processed_hashes.append(target_id)
+                      up_state['processed_hashes'] = processed_hashes
+                      up_state['pending_hashes'] = pending_hashes
+                      daily_uploader.save_upload_state(up_state)
+                      config.log(f'{len(pending_hashes)} remaining in queue')
+                  else:
+                      config.log(f'upload failed: {title}')
+                      up_state['pending_hashes'] = [target_id] + pending_hashes
+                      daily_uploader.save_upload_state(up_state)
+                      break
               except Exception as e:
-                  config.log(f'could not fetch video info: {e}')
-
-              config.log(f'uploading: {vid[\"title\"]} ({target_id})')
-              result = download_helpers.download_video(source_url, f'/tmp/daily_{target_id}')
-              if not result:
-                  config.log(f'download failed: {target_id}')
-                  up_state['pending_hashes'] = pending_hashes
+                  config.log(f'error: {e}')
+                  up_state['pending_hashes'] = [target_id] + pending_hashes
                   daily_uploader.save_upload_state(up_state)
-                  exit(1)
-              path = result['path'] if isinstance(result, dict) else result
+                  break
 
-              config.log(f'processing: {target_id}')
-              processed = daily_uploader.process_video(path)
-              if not processed:
-                  config.log(f'processing failed: {target_id}')
-                  up_state['pending_hashes'] = pending_hashes
-                  daily_uploader.save_upload_state(up_state)
-                  exit(1)
+              # Re-check cooldown before next iteration
+              up_state = daily_uploader.load_upload_state()
 
-              title = vid.get('title', f'Daily Upload {target_id}')
-              desc = vid.get('description', '')
-              tags = vid.get('tags', [])
-              video_id = daily_uploader.upload_daily(processed, title, desc, tags, source_url=source_url)
-              if video_id:
-                  config.log(f'uploaded: {video_id}')
-                  processed_hashes.append(target_id)
-                  up_state['processed_hashes'] = processed_hashes
-                  up_state['pending_hashes'] = pending_hashes
-                  daily_uploader.save_upload_state(up_state)
-              else:
-                  config.log(f'upload failed: {title}')
-                  # Keep in pending for retry next cycle
-                  pending_hashes.insert(0, target_id)
-                  up_state['pending_hashes'] = pending_hashes
-                  daily_uploader.save_upload_state(up_state)
-                  exit(1)
-          except Exception as e:
-              config.log(f'error: {e}')
-              pending_hashes.insert(0, target_id)
-              up_state['pending_hashes'] = pending_hashes
-              daily_uploader.save_upload_state(up_state)
-              exit(1)
-
-          config.log('upload successful')
+          if uploaded_count:
+              config.log(f'uploaded {uploaded_count} video(s) this cycle')
+          else:
+              config.log('no video uploaded this cycle')
           " 2>&1 | tee /tmp/process_output.txt
 
           echo "exit_code=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT

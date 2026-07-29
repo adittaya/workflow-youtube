@@ -26,9 +26,7 @@ MIN_HOURS_BETWEEN = 18
 
 def load_upload_state():
     if supabase_db.is_enabled():
-        state = supabase_db.get_upload_state(project_id=config.PROJECT_ID)
-        state["pending_hashes"] = supabase_db.get_pending_hashes(project_id=config.PROJECT_ID)
-        return state
+        return supabase_db.get_upload_state(project_id=config.PROJECT_ID)
     try:
         return json.loads(UPLOAD_STATE.read_text("utf-8"))
     except Exception:
@@ -48,10 +46,7 @@ def load_upload_state():
 
 def save_upload_state(state):
     if supabase_db.is_enabled():
-        ph = state.get("pending_hashes")
-        if ph is not None:
-            supabase_db.set_pending_hashes(ph, project_id=config.PROJECT_ID)
-        supabase_db.save_upload_state({k: v for k, v in state.items() if k != "pending_hashes"}, project_id=config.PROJECT_ID)
+        supabase_db.save_upload_state(state, project_id=config.PROJECT_ID)
         return
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     UPLOAD_STATE.write_text(json.dumps(state, indent=2), "utf-8")

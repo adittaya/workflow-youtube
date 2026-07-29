@@ -86,10 +86,16 @@ CREATE TABLE IF NOT EXISTS projects (
   warmup_start TEXT DEFAULT '',
   comment_moderation TEXT DEFAULT 'heldForReview',
   mirror_title_prefix TEXT DEFAULT '',
+  proxy_supabase_url TEXT DEFAULT '',
+  proxy_supabase_key TEXT DEFAULT '',
   deployed_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Migration: add proxy Supabase columns to projects
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS proxy_supabase_url TEXT DEFAULT '';
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS proxy_supabase_key TEXT DEFAULT '';
 
 -- 9. Daily upload logs (replaces daily_log.json)
 CREATE TABLE IF NOT EXISTS upload_logs (

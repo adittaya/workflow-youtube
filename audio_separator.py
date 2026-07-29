@@ -170,26 +170,3 @@ def mix_audio(video_path, new_audio_path, output_path,
     _run(cmd, "mix_audio")
     return output_path
 
-
-def remove_bgm_keep_vocals(video_path, output_video_path=None,
-                            output_dir=None, model="htdemucs"):
-    output_dir = Path(output_dir or TEMP_DIR / "vocal_extract")
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    video_path = Path(video_path)
-    stems = separate_video_audio(video_path, output_dir, model)
-
-    if not stems["vocals"]:
-        raise RuntimeError("Vocal separation failed")
-
-    if output_video_path is None:
-        output_video_path = output_dir / f"{video_path.stem}_vocals_only.mp4"
-    output_video_path = Path(output_video_path)
-
-    replace_audio(video_path, stems["vocals"], output_video_path)
-
-    return {
-        "video": str(output_video_path),
-        "vocals": stems["vocals"],
-        "instrumental": stems["instrumental"],
-    }

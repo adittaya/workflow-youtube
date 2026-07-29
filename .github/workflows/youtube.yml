@@ -309,10 +309,10 @@ jobs:
                   config.log('uploading: ' + vid['title'] + ' (' + target_id + ')')
                   result = download_helpers.download_video(source_url, f'/tmp/daily_{target_id}')
                   if not result:
-                      config.log(f'download failed: {target_id}')
-                      up_state['pending_hashes'] = [target_id] + pending_hashes
+                      config.log(f'download failed: {target_id} — removing from queue, trying next')
+                      up_state['pending_hashes'] = pending_hashes
                       daily_uploader.save_upload_state(up_state)
-                      break
+                      continue
                   path = result['path'] if isinstance(result, dict) else result
 
                   config.log(f'processing: {target_id}')
@@ -341,10 +341,10 @@ jobs:
                       daily_uploader.save_upload_state(up_state)
                       break
               except Exception as e:
-                  config.log(f'error: {e}')
-                  up_state['pending_hashes'] = [target_id] + pending_hashes
+                  config.log(f'error: {e} — removing from queue, trying next')
+                  up_state['pending_hashes'] = pending_hashes
                   daily_uploader.save_upload_state(up_state)
-                  break
+                  continue
 
               # Re-check cooldown before next iteration
               up_state = daily_uploader.load_upload_state()

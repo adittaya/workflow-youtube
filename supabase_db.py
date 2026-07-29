@@ -23,7 +23,7 @@ def _headers():
         "apikey": _SUPABASE_KEY,
         "Authorization": f"Bearer {_SUPABASE_KEY}",
         "Content-Type": "application/json",
-        "Prefer": "return=representation",
+        "Prefer": "return=representation,resolution=merge-duplicates",
     }
 
 

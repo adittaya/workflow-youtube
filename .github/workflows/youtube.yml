@@ -192,6 +192,11 @@ jobs:
                   cursor = (cursors.get(ch_id) or {}).get('last_video_id', '')
                   latest_id = recent[0]['video_id']
 
+                  if not cursor:
+                      config.log(f'first run for {ch_id} — setting baseline cursor to {latest_id}, no videos queued')
+                      supabase_db.save_channel_cursor(ch_id, {'last_video_id': latest_id}, project_id=pid)
+                      continue
+
                   # Collect all new videos since cursor (newest-first order)
                   new_ids = []
                   for v in recent:

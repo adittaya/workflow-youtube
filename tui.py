@@ -348,8 +348,40 @@ def screen_setup(project):
                         else:
                             supabase_db.update_project(pid, **{key: new_val})
                         success(f"{label} saved")
+                        p[key] = new_val
                     except Exception as e:
                         error(f"Failed: {e}")
+                        continue
+
+                # ── Auto-actions ──────────────────────────────────────────
+                # GitHub token saved → detect username, suggest repo
+                if key == "github_token" and new_val:
+                    _auto_suggest_repo(pid, new_val, p.get("name", ""))
+
+                # Client ID or secret saved → if both set, offer OAuth
+                if key in ("yt_client_id", "yt_client_secret") and p.get("yt_client_id") and p.get("yt_client_secret"):
+                    if confirm("Run YouTube OAuth login now to get refresh token?"):
+                        p = supabase_db.get_project(pid) or p
+                        _do_oauth(p)
+
+# ─── Auto-detect GitHub username and suggest repo ──────────────────────────
+
+def _auto_suggest_repo(pid, token, project_name):
+    import urllib.request, urllib.error, json
+    try:
+        req = urllib.request.Request("https://api.github.com/user",
+            headers={"Authorization": f"token {token}", "User-Agent": "yt-mirror-cli"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            user = json.loads(resp.read())
+            username = user.get("login", "")
+            if username:
+                suggested = f"{username}/{project_name.replace(' ', '-').lower()}"
+                info(f"Detected GitHub user: {username}")
+                if confirm(f"Set repo to {suggested}?"):
+                    supabase_db.update_project(pid, github_repo=suggested)
+                    success(f"Repo set to {suggested}")
+    except Exception as e:
+        warn(f"Could not auto-detect GitHub user: {e}")
 
 # ─── Deploy ──────────────────────────────────────────────────────────────────
 

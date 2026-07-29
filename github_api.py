@@ -109,11 +109,29 @@ def dispatch_workflow(owner, repo, workflow_id, token, ref="main", inputs=None):
     return gh(f"/repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches", token, "POST", body)
 
 
-def get_runs(owner, repo, token, per=10):
-    data = gh(f"/repos/{owner}/{repo}/actions/runs?per_page={per}", token)
+def get_runs(owner, repo, token, per=10, status=None):
+    query = f"?per_page={per}"
+    if status:
+        query += f"&status={status}"
+    data = gh(f"/repos/{owner}/{repo}/actions/runs{query}", token)
     if isinstance(data, dict) and data.get("error"):
         return []
     return data.get("workflow_runs", [])
+
+
+def cancel_run(owner, repo, run_id, token):
+    return gh(f"/repos/{owner}/{repo}/actions/runs/{run_id}/cancel", token, "POST")
+
+
+def cancel_active_runs(owner, repo, token):
+    cancelled = 0
+    for run in get_runs(owner, repo, token, per=20, status="in_progress"):
+        cancel_run(owner, repo, run["id"], token)
+        cancelled += 1
+    for run in get_runs(owner, repo, token, per=20, status="queued"):
+        cancel_run(owner, repo, run["id"], token)
+        cancelled += 1
+    return cancelled
 
 
 def get_run_logs(owner, repo, run_id, token):

@@ -331,7 +331,7 @@ def screen_setup(project):
             _do_oauth(p)
         elif choice == "W":
             try:
-                now = datetime.utcnow()
+                now = datetime.now(datetime.timezone.utc)
                 supabase_db.save_upload_state({
                     "account_created": now.isoformat(),
                     "warmup_start": now.isoformat(),
@@ -489,6 +489,13 @@ def _do_deploy(project):
 
     if repo_exists:
         info(f"Repo {repo} exists — re-deploying (secrets & workflow only)")
+        # Cancel any running/queued runs so the latest code takes effect
+        step("Cancelling active workflow runs...")
+        cancelled = github_api.cancel_active_runs(owner, rn, token)
+        if cancelled:
+            success(f"Cancelled {cancelled} active run(s)")
+        else:
+            info("No active runs to cancel")
     else:
         # Step 1: Create repo
         step(f"Creating repo {rn}...")
@@ -529,7 +536,7 @@ def _do_deploy(project):
         success("Workflow enabled")
 
     # Save deployment record in project
-    supabase_db.update_project(project["id"], deployed_at=datetime.utcnow().isoformat())
+    supabase_db.update_project(project["id"], deployed_at=datetime.now(datetime.timezone.utc).isoformat())
 
     divider()
     if not repo_exists:
@@ -684,7 +691,10 @@ def screen_status(project):
         wc = test.get("warmup_complete", False)
         if ws:
             start = datetime.fromisoformat(ws)
-            days = (datetime.utcnow() - start).days
+            now = datetime.now(datetime.timezone.utc)
+            if start.tzinfo is None:
+                start = start.replace(tzinfo=datetime.timezone.utc)
+            days = (now - start).days
             if wc:
                 _ok(f"Warmup complete (started {ws[:10]})")
             else:

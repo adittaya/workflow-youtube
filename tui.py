@@ -1824,6 +1824,7 @@ def main_menu():
             status_parts.append(f"{C_DIM}deployed:{C_RESET} {list(deps.keys())[0]}")
 
         print(f"  {C_BOLD}[1]{C_RESET} Setup & Deploy (all credentials)")
+        print(f"  {C_BOLD}[S]{C_RESET} Status — check everything is right")
         if deps:
             print(f"  {C_BOLD}[2]{C_RESET} View workflow logs")
             print(f"  {C_BOLD}[3]{C_RESET} Remove deployment")
@@ -1842,211 +1843,193 @@ def main_menu():
             screen_logs()
         elif choice == "3" and deps:
             screen_remove_deployment()
+        elif choice.upper() == "S":
+            screen_status()
 
-def screen_doctor():
+def screen_status():
     clear()
     banner()
-    print(f"\n  {C_BOLDWHITE}DIAGNOSTIC DOCTOR{C_RESET}")
-    print(f"  {C_DIM}Checking everything...{C_RESET}\n")
+    print(f"\n  {C_BOLDWHITE}STATUS — CHECK EVERYTHING{C_RESET}")
+    print(f"  {C_DIM}Testing all credentials and connections...{C_RESET}\n")
 
-    checks = []
+    cfg = load_config()
+    deps = load_deployments()
+    ok_count = warn_count = fail_count = 0
 
     def ok(label, msg=""):
-        checks.append(("ok", label, msg))
+        nonlocal ok_count
+        ok_count += 1
         print(f"  {C_GREEN}[OK]{C_RESET}   {label}" + (f" — {msg}" if msg else ""))
 
     def warn(label, msg="", fix=""):
-        checks.append(("warn", label, msg, fix))
+        nonlocal warn_count
+        warn_count += 1
         print(f"  {C_YELLOW}[WARN]{C_RESET} {label}" + (f" — {msg}" if msg else ""))
         if fix:
             print(f"           {C_DIM}Fix: {fix}{C_RESET}")
 
     def fail(label, msg="", fix=""):
-        checks.append(("fail", label, msg, fix))
+        nonlocal fail_count
+        fail_count += 1
         print(f"  {C_RED}[FAIL]{C_RESET} {label}" + (f" — {msg}" if msg else ""))
         if fix:
             print(f"           {C_DIM}Fix: {fix}{C_RESET}")
 
-    # 1. Python
-    import sys
-    v = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-    if sys.version_info >= (3, 8):
-        ok(f"Python {v}")
-    else:
-        fail(f"Python {v}", "Need 3.8+", "Install Python 3.8+: pkg install python")
-
-    # 2. yt-dlp
-    import shutil, subprocess
-    ytdlp_path = shutil.which("yt-dlp")
-    if ytdlp_path:
-        try:
-            r = subprocess.run(["yt-dlp", "--version"], capture_output=True, text=True, timeout=10)
-            ver = r.stdout.strip()
-            ok(f"yt-dlp {ver}", ytdlp_path)
-        except Exception:
-            warn("yt-dlp found but not responding", fix="Update: yt-dlp -U")
-    else:
-        fail("yt-dlp not found", fix="Install: pkg install yt-dlp  or  pip install yt-dlp")
-
-    # 2b. ffmpeg
-    ffmpeg_path = shutil.which("ffmpeg")
-    if ffmpeg_path:
-        try:
-            r = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, timeout=5)
-            ver = r.stdout.split("\n")[0] if r.stdout else "installed"
-            ok(f"ffmpeg", ver[:50])
-        except Exception:
-            warn("ffmpeg found but not responding")
-    else:
-        warn("ffmpeg not found", "Required for video processing", "Install: sudo apt install ffmpeg")
-
-    # 2c. demucs
-    try:
-        r = subprocess.run(["python3", "-c", "import demucs; print(demucs.__version__)"],
-                           capture_output=True, text=True, timeout=10)
-        if r.returncode == 0:
-            ok(f"demucs {r.stdout.strip()}", "Vocal separation")
+    # 1. Local config
+    print(f"  {C_DIM}── Local Configuration ──{C_RESET}")
+    for key, label in [
+        ("supabase_url", "Supabase URL"),
+        ("supabase_key", "Supabase Service Key"),
+        ("yt_client_id", "YouTube Client ID"),
+        ("yt_client_secret", "YouTube Client Secret"),
+        ("yt_refresh_token", "YouTube Refresh Token"),
+        ("github_token", "GitHub Token"),
+        ("github_repo", "GitHub Repo"),
+    ]:
+        if cfg.get(key):
+            ok(f"{label} set")
         else:
-            warn("demucs not installed", "Optional: vocal separation for processing",
-                 "Install: pip install demucs torch")
-    except Exception:
-        warn("demucs check failed", "Optional: vocal separation for processing")
+            fail(f"{label} not set", fix="Fill in Setup screen field and [D]eploy")
 
-    # 3. Config files
-    for fname in ["accounts.json", "channels.json", "settings.json", "state.json",
-                   "deployments.json", "shortlink_keys.json", "upload_state.json"]:
-        p = DATA_DIR / fname
-        if not p.exists():
-            warn(f"{fname} missing", fix="Run: yt-mirror (auto-creates)")
-        else:
-            try:
-                json.loads(p.read_text())
-                ok(fname)
-            except json.JSONDecodeError as e:
-                fail(f"{fname} — corrupted JSON", str(e), fix=f"Fix JSON syntax or delete {fname}")
-
-    # 4. YouTube account
-    accounts = load_accounts()
-    settings = load_settings()
-    active_yt = settings.get("active_account")
-    if not accounts:
-        fail("No YouTube accounts", fix="Add via: [1] YouTube accounts → [A] Add")
-    elif not active_yt:
-        warn("No active YouTube account selected", fix="Set via: [1] YouTube accounts → [S] Select")
-    elif active_yt not in accounts:
-        warn(f"Active account '{active_yt}' not found", fix="Re-select via: [1] YouTube accounts → [S] Select")
+    n_channels = len([c for c in cfg.get("channels", "").split(",") if c.strip()])
+    if n_channels:
+        ok(f"Channels: {n_channels} configured")
     else:
-        acct = accounts[active_yt]
-        ok(f"YouTube: @{acct.get('channel_name', '?')} ({active_yt[:12]}...)")
+        fail("No channels configured", fix="Add channel URLs in Setup screen field 8")
 
-        # 4b. Test token refresh
+    if cfg.get("shortlink_api_key"):
+        ok("Shortlink API key set")
+    else:
+        ok("Shortlink: using direct URLs (no API key)")
+
+    # 2. Supabase connection
+    print(f"\n  {C_DIM}── Supabase Database ──{C_RESET}")
+    su = cfg.get("supabase_url")
+    sk = cfg.get("supabase_key")
+    if su and sk:
         try:
-            from google.oauth2.credentials import Credentials
-            from googleapiclient.discovery import build
-            creds = Credentials(
-                token=None,
-                refresh_token=acct["refresh_token"],
-                token_uri="https://oauth2.googleapis.com/token",
-                client_id=acct["client_id"],
-                client_secret=acct["client_secret"],
+            supabase_db.configure(su, sk)
+            test = supabase_db.get_upload_state()
+            ok("Connected to Supabase")
+            # Show warmup
+            ws = test.get("warmup_start")
+            wc = test.get("warmup_complete", False)
+            if ws:
+                from datetime import datetime
+                start = datetime.fromisoformat(ws)
+                days = (datetime.utcnow() - start).days
+                if wc:
+                    ok(f"Warmup: complete (started {ws[:10]})")
+                else:
+                    wd = int(cfg.get("warmup_days", 14))
+                    remain = wd - days
+                    if remain < 0:
+                        ok(f"Warmup: day {days}/{wd} — auto-completing soon")
+                    else:
+                        ok(f"Warmup: day {days}/{wd} ({remain} days left, started {ws[:10]})")
+            else:
+                warn("Warmup not started yet", fix="Deploy and let workflow run once")
+        except Exception as e:
+            fail("Supabase connection failed", str(e)[:80], fix="Check URL and Key in Setup")
+    else:
+        fail("Supabase not configured", fix="Set URL and Key in Setup and [D]eploy")
+
+    # 3. GitHub access
+    print(f"\n  {C_DIM}── GitHub ──{C_RESET}")
+    token = cfg.get("github_token")
+    repo = cfg.get("github_repo")
+    if token and repo:
+        try:
+            req = urllib.request.Request(
+                f"https://api.github.com/repos/{repo}",
+                headers={"Authorization": f"token {token}", "User-Agent": "yt-mirror-cli"},
             )
-            yt = build("youtube", "v3", credentials=creds, cache_discovery=False)
-            resp = yt.channels().list(part="statistics", id=acct["channel_id"]).execute()
-            subs = resp["items"][0]["statistics"]["subscriberCount"]
-            ok(f"Token valid — {subs} subscribers")
-        except Exception as e:
-            err = str(e)
-            if "invalid_grant" in err or "Token has been expired or revoked" in err:
-                fail("YouTube token expired/revoked", err[:80], fix="Re-authenticate: python3 get_refresh_token.py")
-            else:
-                fail("YouTube token test failed", err[:80], fix="Check client_id/client_secret in accounts.json")
-
-    # 5. GitHub account
-    gh_accounts = load_github_accounts()
-    active_gh = settings.get("active_github")
-    if not gh_accounts:
-        warn("No GitHub accounts", "Deploy won't work", "Add via: [2] GitHub accounts → [A] Add")
-    elif not active_gh:
-        warn("No active GitHub account", fix="Set via: [2] GitHub accounts → [S] Select")
-    elif active_gh not in gh_accounts:
-        warn(f"Active GitHub '{active_gh}' not found", fix="Re-select via: [2] GitHub accounts → [S] Select")
-    else:
-        gh = gh_accounts[active_gh]
-        ok(f"GitHub: {gh.get('username', '?')}")
-
-        # 5b. Test token
-        import urllib.request
-        try:
-            req = urllib.request.Request("https://api.github.com/user", headers={
-                "Authorization": f"token {gh['token']}",
-                "User-Agent": "yt-mirror-cli",
-            })
-            resp = urllib.request.urlopen(req, timeout=10)
-            data = json.loads(resp.read())
-            repos = data.get("public_repos", 0)
-            ok(f"GitHub token valid — {repos} repos")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+                ok(f"Repo: {repo} — {data.get('description', '')[:50]}")
         except urllib.error.HTTPError as e:
-            if e.code == 401:
-                fail("GitHub token invalid/expired", fix="Re-add account with new token")
+            if e.code == 404:
+                fail(f"Repo {repo} not found", fix="Check repo name (user/repo) in Setup field 7")
+            elif e.code == 401:
+                fail("GitHub token invalid", fix="Regenerate token and update Setup field 6")
             else:
-                warn(f"GitHub API error: {e.code}")
+                fail(f"GitHub API error: {e.code}", fix="Check token has repo scope")
         except Exception as e:
-            warn(f"GitHub API unreachable: {e}")
+            fail(f"GitHub unreachable: {e}", fix="Check network")
 
-    # 6. Channels
-    channels = load_channels()
-    if not channels:
-        warn("No channels monitored", fix="Add via: [3] Monitored channels → [A] Add")
+        # Check secrets
+        try:
+            req = urllib.request.Request(
+                f"https://api.github.com/repos/{repo}/actions/secrets",
+                headers={"Authorization": f"token {token}", "User-Agent": "yt-mirror-cli"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+                secret_names = [s["name"] for s in data.get("secrets", [])]
+                required = ["SUPABASE_URL", "SUPABASE_SERVICE_KEY", "YT_CLIENT_ID", "YT_CLIENT_SECRET", "YT_REFRESH_TOKEN", "GH_PAT", "CHANNELS", "SETTINGS"]
+                for s in required:
+                    if s in secret_names:
+                        ok(f"Secret: {s}")
+                    else:
+                        fail(f"Secret: {s} missing", fix="Run [D]eploy from Setup screen")
+        except Exception as e:
+            warn(f"Could not check secrets: {e}")
     else:
-        ok(f"{len(channels)} channel(s) monitored")
-        for ch in channels[:5]:
-            name = ch.get("channel_name") or ch.get("channel_id", "?")[:20]
-            vid = ch.get("last_video_id", "none")
-            print(f"         {C_DIM}• @{name} — last: {vid}{C_RESET}")
+        fail("GitHub not configured", fix="Set token and repo in Setup and [D]eploy")
 
-    # 7. Shortlink keys
-    keys = load_shortlink_keys()
-    prov = settings.get("shortener_provider", "none")
-    if prov == "none":
-        ok("Shortener disabled (direct URLs)")
-    elif not keys:
-        warn(f"Shortener set to '{prov}' but no API keys", fix="Add via: [L] Shortlink API keys → [A] Add")
+    # 4. YouTube OAuth
+    print(f"\n  {C_DIM}── YouTube ──{C_RESET}")
+    cid = cfg.get("yt_client_id")
+    csec = cfg.get("yt_client_secret")
+    rt = cfg.get("yt_refresh_token")
+    if cid and csec and rt:
+        try:
+            data = urllib.parse.urlencode({
+                "client_id": cid,
+                "client_secret": csec,
+                "refresh_token": rt,
+                "grant_type": "refresh_token",
+            }).encode()
+            req = urllib.request.Request("https://oauth2.googleapis.com/token", data=data, method="POST")
+            req.add_header("Content-Type", "application/x-www-form-urlencoded")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                tokens = json.loads(resp.read())
+                if tokens.get("access_token"):
+                    ok("YouTube token valid — can upload")
+                    exp = tokens.get("expires_in", 0)
+                    if exp < 3600:
+                        warn(f"Access token expires in {exp//60} min")
+                else:
+                    fail("YouTube token exchange failed", fix="Re-run [O] OAuth login")
+        except urllib.error.HTTPError as e:
+            if e.code == 400:
+                fail("YouTube refresh token expired", fix="Re-run [O] OAuth login (7-day lifespan)")
+            else:
+                fail(f"YouTube API error: {e.code}", fix="Check client_id/secret")
+        except Exception as e:
+            fail(f"YouTube unreachable: {e}")
     else:
-        active_keys = [k for k in keys.values() if k.get("provider") == prov]
-        if active_keys:
-            ok(f"Shortener: {prov} — {len(active_keys)} key(s)")
-        else:
-            warn(f"No '{prov}' keys found", fix=f"Add via: [L] Shortlink API keys → [A] Add (provider: {prov})")
+        fail("YouTube OAuth incomplete", fix="Set client_id, secret, and run [O] OAuth login")
 
-    # 8. Disk space
-    import os
-    st = os.statvfs(str(DATA_DIR))
-    free_mb = (st.f_bavail * st.f_frsize) / (1024 * 1024)
-    if free_mb < 100:
-        warn(f"Low disk space: {free_mb:.0f}MB free", fix="Free space or use larger storage")
+    # 5. Deployment
+    print(f"\n  {C_DIM}── Deployment ──{C_RESET}")
+    if deps:
+        for name, d in deps.items():
+            ok(f"Deployed to {name} at {d.get('deployed_at', '?')}")
     else:
-        ok(f"Disk space: {free_mb:.0f}MB free")
-
-    # 9. Network
-    try:
-        urllib.request.urlopen("https://www.googleapis.com", timeout=5)
-        ok("Network: YouTube API reachable")
-    except Exception:
-        warn("Network: can't reach YouTube API", fix="Check internet connection")
+        warn("Not deployed yet", fix="Complete Setup and press [D]eploy")
 
     # Summary
-    n_ok = sum(1 for c in checks if c[0] == "ok")
-    n_warn = sum(1 for c in checks if c[0] == "warn")
-    n_fail = sum(1 for c in checks if c[0] == "fail")
     divider()
-    if n_fail == 0 and n_warn == 0:
-        print(f"  {C_GREEN}All checks passed — ready to mirror!{C_RESET}")
+    total = ok_count + warn_count + fail_count
+    print(f"  {C_GREEN}{ok_count} passed{C_RESET}  {C_YELLOW}{warn_count} warnings{C_RESET}  {C_RED}{fail_count} failures{C_RESET} / {total}")
+    if fail_count:
+        print(f"\n  {C_RED}Fix failures above, then re-run [S] Status to verify.{C_RESET}")
+    elif warn_count:
+        print(f"\n  {C_YELLOW}Warnings are non-critical but should be reviewed.{C_RESET}")
     else:
-        print(f"  {C_GREEN}{n_ok} passed{C_RESET}  "
-              f"{C_YELLOW}{n_warn} warnings{C_RESET}  "
-              f"{C_RED}{n_fail} failures{C_RESET}")
-        if n_fail:
-            print(f"\n  {C_RED}Fix the failures above before running mirror.{C_RESET}")
+        print(f"\n  {C_GREEN}All good! Ready to deploy or already deployed.{C_RESET}")
+
     print(f"\n  {C_DIM}Press Enter to return...{C_RESET}")
     input()
 
@@ -2300,15 +2283,11 @@ def _do_oauth(cfg, fields):
     server = http.server.HTTPServer(("0.0.0.0", 8085), Handler)
     server.timeout = 300
 
-    try:
-        import webbrowser
-        webbrowser.open(auth_url)
-    except Exception:
-        pass
-
-    info("Open this URL in your browser (300s timeout):")
+    print()
+    print(f"  {C_BOLD}Open this URL in your browser and authorize:{C_RESET}")
     print(f"  {auth_url}")
     print()
+    info("Waiting for callback (300s timeout)...")
 
     server.handle_request()
     server.server_close()
@@ -2334,6 +2313,8 @@ def _do_oauth(cfg, fields):
                     fields[4] = ("yt_refresh_token", "YouTube Refresh Token", rt)
                     save_config(cfg)
                     success(f"Refresh token obtained! Auto-filled field 5")
+                    warn("Refresh token expires in 7 days — re-run [O] before expiry")
+                    info("Set a reminder to re-authorize every 6 days")
                 else:
                     error("No refresh token returned — make sure OAuth consent screen is Published")
         except Exception as e:

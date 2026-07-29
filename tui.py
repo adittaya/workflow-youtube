@@ -344,8 +344,10 @@ def screen_setup(project):
                     "yt_client_id": p.get("yt_client_id", ""),
                 }, project_id=pid)
                 success("Warmup reset to today")
+                input("\n  Press Enter to continue...")
             except Exception as e:
                 error(f"Failed: {e}")
+                input("\n  Press Enter to continue...")
         elif choice.isdigit():
             idx = int(choice) - 1
             if 0 <= idx < len(FIELD_SPEC):
@@ -479,7 +481,7 @@ def _do_deploy(project):
     existing = github_api.get_repo(owner, rn, token)
     repo_exists = not (isinstance(existing, dict) and existing.get("error"))
 
-    total_steps = 5 if repo_exists else 6
+    total_steps = 6
     step_num = 0
 
     def step(msg):
@@ -488,7 +490,7 @@ def _do_deploy(project):
         print(f"  {C_BOLD}[{step_num}/{total_steps}]{C_RESET} {msg}")
 
     if repo_exists:
-        info(f"Repo {repo} exists — re-deploying (secrets & workflow only)")
+        info(f"Repo {repo} exists — re-deploying (code + secrets + workflow)")
         # Cancel any running/queued runs so the latest code takes effect
         step("Cancelling active workflow runs...")
         cancelled = github_api.cancel_active_runs(owner, rn, token)
@@ -496,6 +498,15 @@ def _do_deploy(project):
             success(f"Cancelled {cancelled} active run(s)")
         else:
             info("No active runs to cancel")
+        # Push latest code
+        step("Pushing latest code...")
+        src_dir = str(Path(__file__).parent)
+        remote_url = f"https://{token}@github.com/{owner}/{rn}.git"
+        ok, err = github_api.git_push(src_dir, remote_url)
+        if not ok:
+            warn(f"Git push warning: {err}")
+        else:
+            success("Code pushed")
     else:
         # Step 1: Create repo
         step(f"Creating repo {rn}...")

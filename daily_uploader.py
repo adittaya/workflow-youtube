@@ -191,22 +191,15 @@ def process_video(input_path, output_dir=None):
 
     config.log(f"processing: {input_path.name}")
 
-    config.log("  step 1: separating audio...")
-    separated = audio_separator.remove_bgm_keep_vocals(
-        input_path,
-        output_video_path=output_dir / f"vocal_{input_path.name}",
-        output_dir=DATA_DIR / "separated"
-    )
-
-    config.log("  step 2: applying video edits...")
+    config.log("  step 1: applying video edits...")
     edited_path = output_dir / f"edited_{input_path.name}"
-    video_processor.apply_edits(separated["video"], edited_path)
+    video_processor.apply_edits(input_path, edited_path)
 
-    config.log("  step 3: getting video duration...")
+    config.log("  step 2: getting video duration...")
     info = video_processor.get_video_info(edited_path)
     duration = float(info.get("format", {}).get("duration", 60))
 
-    config.log("  step 4: adding non-copyright BGM...")
+    config.log("  step 3: adding non-copyright BGM...")
     bgm_path = bgm_manager.get_bgm_for_duration(duration)
     if bgm_path:
         trimmed = bgm_manager.trim_bgm(bgm_path, duration,
@@ -214,7 +207,7 @@ def process_video(input_path, output_dir=None):
         final_path = output_dir / f"final_{input_path.name}"
         audio_separator.mix_audio(
             edited_path, trimmed, final_path,
-            original_vol=0.85, bgm_vol=0.20
+            original_vol=1.0, bgm_vol=0.30
         )
     else:
         final_path = edited_path

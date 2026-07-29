@@ -128,26 +128,46 @@ ALTER TABLE channel_cursors ADD COLUMN IF NOT EXISTS project_id TEXT NOT NULL DE
 
 -- Update constraints for multi-project isolation
 ALTER TABLE mirror_state DROP CONSTRAINT IF EXISTS mirror_state_source_channel_source_video_id_key;
--- The new CREATE TABLE statement handles the new UNIQUE(project_id, source_channel, source_video_id)
--- For existing tables, add it explicitly:
+ALTER TABLE mirror_state DROP CONSTRAINT IF EXISTS mirror_state_pid_source;
 ALTER TABLE mirror_state ADD CONSTRAINT mirror_state_pid_source UNIQUE (project_id, source_channel, source_video_id);
 
 ALTER TABLE channel_cursors DROP CONSTRAINT IF EXISTS channel_cursors_pkey;
 ALTER TABLE channel_cursors ADD PRIMARY KEY (project_id, channel_id);
 
 -- Handle upload_state and mirror_stats transitioning from id-based to project_id-based PK
--- These were single-row tables (id=1), now project_id is the PK
--- Only needed if the old definition was used:
+-- Only needed if old-style tables (with id SERIAL) still exist
 DO $$
 BEGIN
-  IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'upload_state') THEN
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='upload_state' AND column_name='id') THEN
     ALTER TABLE upload_state DROP CONSTRAINT IF EXISTS upload_state_pkey;
-    ALTER TABLE upload_state DROP CONSTRAINT IF EXISTS upload_state_id_check;
     ALTER TABLE upload_state ALTER COLUMN id DROP DEFAULT;
+    ALTER TABLE upload_state DROP COLUMN IF EXISTS id;
   END IF;
-  IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'mirror_stats') THEN
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='mirror_stats' AND column_name='id') THEN
     ALTER TABLE mirror_stats DROP CONSTRAINT IF EXISTS mirror_stats_pkey;
-    ALTER TABLE mirror_stats DROP CONSTRAINT IF EXISTS mirror_stats_id_check;
     ALTER TABLE mirror_stats ALTER COLUMN id DROP DEFAULT;
+    ALTER TABLE mirror_stats DROP COLUMN IF EXISTS id;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='mirror_state' AND column_name='id') THEN
+    ALTER TABLE mirror_state DROP COLUMN IF EXISTS id;
+  END IF;
+END$$;
+-- Re-ensure PK on project_id for upload_state and mirror_stats
+--
+-- If the old table had id SERIAL PRIMARY KEY and the new CREATE TABLE IF NOT EXISTS
+-- was skipped, project_id has no PK yet. Add it only if missing.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints tc
+    JOIN information_schema.constraint_column_usage ccu USING (constraint_name)
+    WHERE tc.table_name='upload_state' AND tc.constraint_type='PRIMARY KEY'
+      AND ccu.column_name='project_id') THEN
+    ALTER TABLE upload_state ADD PRIMARY KEY (project_id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints tc
+    JOIN information_schema.constraint_column_usage ccu USING (constraint_name)
+    WHERE tc.table_name='mirror_stats' AND tc.constraint_type='PRIMARY KEY'
+      AND ccu.column_name='project_id') THEN
+    ALTER TABLE mirror_stats ADD PRIMARY KEY (project_id);
   END IF;
 END$$;

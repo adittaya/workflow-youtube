@@ -11,18 +11,21 @@ echo "║        Y O U T U B E   M I R R O R   I N S T A L L     ║"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo ""
 
-# --- Detect source dir (where install.sh lives) ---
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ ! -f "$SCRIPT_DIR/mirror.py" ]; then
-    echo "ERROR: mirror.py not found next to install.sh"
-    echo "Run from the project directory: bash install.sh"
-    exit 1
-fi
+# --- Detect source — local git clone or one-liner ---
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+REPO_URL="https://github.com/adittaya/workflow-shorturl-yt.git"
 
-# Detect git remote (for auto-update)
-GIT_REMOTE=""
-if git -C "$SCRIPT_DIR" remote get-url origin &>/dev/null; then
-    GIT_REMOTE=$(git -C "$SCRIPT_DIR" remote get-url origin)
+if [ -f "$SCRIPT_DIR/mirror.py" ]; then
+    COPY_SRC="$SCRIPT_DIR"
+    GIT_REMOTE=$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || echo "$REPO_URL")
+    echo "  Source: local clone"
+else
+    GIT_REMOTE="$REPO_URL"
+    COPY_SRC="$INSTALL_DIR/.repo"
+    echo "  Source: one-liner (cloning from $REPO_URL)"
+    echo "  Cloning repo..."
+    rm -rf "$COPY_SRC"
+    git clone --depth 1 "$GIT_REMOTE" "$COPY_SRC"
 fi
 
 # --- Python ---
@@ -45,8 +48,8 @@ fi
 
 # --- Pip deps ---
 echo "[3/7] Installing Python dependencies..."
-pip3 install --break-system-packages -q -r "$SCRIPT_DIR/requirements.txt" 2>/dev/null \
-  || pip3 install -q -r "$SCRIPT_DIR/requirements.txt" 2>/dev/null \
+pip3 install --break-system-packages -q -r "$COPY_SRC/requirements.txt" 2>/dev/null \
+  || pip3 install -q -r "$COPY_SRC/requirements.txt" 2>/dev/null \
   || { echo "  Trying with --user..."; pip3 install --user -q -r "$SCRIPT_DIR/requirements.txt"; }
 
 # --- yt-dlp ---
@@ -72,14 +75,14 @@ mkdir -p "$INSTALL_DIR/bgm" "$INSTALL_DIR/separated" "$INSTALL_DIR/processed"
 echo "[6/7] Copying source files..."
 mkdir -p "$SRC_DIR"
 for py in config.py mirror.py monitor.py youtube_api.py shortener.py download_helpers.py github_api.py get_refresh_token.py tui.py video_processor.py audio_separator.py bgm_manager.py daily_uploader.py daily_mirror.py supabase_db.py; do
-    cp "$SCRIPT_DIR/$py" "$SRC_DIR/"
+    cp "$COPY_SRC/$py" "$SRC_DIR/" 2>/dev/null || true
 done
-cp "$SCRIPT_DIR/requirements.txt" "$SRC_DIR/"
-cp "$SCRIPT_DIR/client_secrets.json" "$SRC_DIR/" 2>/dev/null || true
+cp "$COPY_SRC/requirements.txt" "$SRC_DIR/" 2>/dev/null || true
+cp "$COPY_SRC/client_secrets.json" "$SRC_DIR/" 2>/dev/null || true
 
 # Copy workflows
-if [ -d "$SCRIPT_DIR/.github" ]; then
-    cp -r "$SCRIPT_DIR/.github" "$SRC_DIR/"
+if [ -d "$COPY_SRC/.github" ]; then
+    cp -r "$COPY_SRC/.github" "$SRC_DIR/"
 fi
 
 # --- Save metadata ---

@@ -231,28 +231,51 @@ jobs:
               print('new_detected=false')
           " 2>&1
 
-      - name: Fetch residential proxy
+      - name: Fetch and test residential proxies
         run: |
           if [ -z "$PROXY_SUPABASE_URL" ] || [ -z "$PROXY_SUPABASE_SERVICE_KEY" ]; then
             echo "No proxy database configured — running without proxy"
             exit 0
           fi
-          PROXY_JSON=$(curl -s "$PROXY_SUPABASE_URL/rest/v1/proxy_results?select=ip,port&vplink_ok=eq.true&order=latency_ms.asc&limit=500" \
-            -H "apikey: $PROXY_SUPABASE_SERVICE_KEY" \
-            -H "Authorization: Bearer $PROXY_SUPABASE_SERVICE_KEY")
-          COUNT=$(echo "$PROXY_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d))" 2>/dev/null || echo "0")
-          if [ "$COUNT" -eq 0 ]; then
-            echo "No residential proxies available — running without proxy"
-            exit 0
-          fi
-          PROXY_URL=$(echo "$PROXY_JSON" | python3 -c "
-          import sys, json, random
-          proxies = json.load(sys.stdin)
-          p = random.choice(proxies)
-          print(f'http://{p[\"ip\"]}:{p[\"port\"]}')
-          ")
-          echo "YT_PROXY=$PROXY_URL" >> $GITHUB_ENV
-          echo "Using proxy: $PROXY_URL"
+          python3 << 'PYEOF'
+          import json, urllib.request, os, time
+          supabase_url = "$PROXY_SUPABASE_URL"
+          supabase_key = "$PROXY_SUPABASE_SERVICE_KEY"
+          api_url = f"{supabase_url}/rest/v1/proxy_results?select=ip,port,latency_ms&vplink_ok=eq.true&order=latency_ms.asc&limit=200"
+          req = urllib.request.Request(api_url, headers={
+              "apikey": supabase_key,
+              "Authorization": f"Bearer {supabase_key}",
+          })
+          proxies = json.loads(urllib.request.urlopen(req, timeout=15).read())
+          print(f"Fetched {len(proxies)} proxies")
+          working = []
+          for p in proxies:
+              p_url = f"http://{p['ip']}:{p['port']}"
+              try:
+                  t0 = time.time()
+                  urllib.request.urlopen(
+                      urllib.request.Request("http://www.gstatic.com/generate_204"),
+                      timeout=5
+                  )
+                  lat = round((time.time() - t0) * 1000)
+                  working.append({"url": p_url, "latency_ms": lat})
+                  print(f"  OK {lat}ms  {p_url}")
+              except Exception:
+                  print(f"  FAIL {p_url}")
+              if len(working) >= 10:
+                  break
+          if not working:
+              print("No working proxies found — will try without proxy")
+              exit(0)
+          working.sort(key=lambda x: x["latency_ms"])
+          proxy_list = [w["url"] for w in working]
+          print("Working proxies (best first):")
+          for w in working:
+              print(f"  {w['latency_ms']}ms  {w['url']}")
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              f.write(f"WORKING_PROXIES={json.dumps(proxy_list)}\n")
+              f.write(f"YT_PROXY={proxy_list[0]}\n")
+          PYEOF
 
       - name: Process and upload
         run: |

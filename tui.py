@@ -436,7 +436,7 @@ def _do_deploy(project):
             }
 
     secrets = {
-        "PROJECT_ID": project["id"],
+        "PROJECT_ID": str(project["id"]),
         "SUPABASE_URL": su_url,
         "SUPABASE_SERVICE_KEY": su_key,
         "YT_CLIENT_ID": project.get("yt_client_id", ""),

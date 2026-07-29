@@ -139,6 +139,8 @@ def get_public_key(owner, repo, token):
 
 
 def encrypt_secret(public_key_b64, plaintext):
+    if not isinstance(plaintext, str):
+        plaintext = str(plaintext)
     raw = __import__("base64").b64decode(public_key_b64)
     try:
         import nacl.public

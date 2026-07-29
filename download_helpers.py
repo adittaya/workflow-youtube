@@ -33,8 +33,10 @@ def download_video(url, output_dir=None):
         "--print-json",
         url,
     ]
-    # Android client is incompatible with --cookies flag
-    # (cookies cause it to return zero formats from flagged IPs)
+    proxy = os.environ.get("YT_PROXY", "")
+    if proxy:
+        cmd.extend(["--proxy", proxy])
+
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:

@@ -33,10 +33,8 @@ def download_video(url, output_dir=None):
         "--print-json",
         url,
     ]
-    cookies_file = os.environ.get("YT_COOKIES_FILE", "")
-    if cookies_file and os.path.exists(cookies_file):
-        cmd.append("--cookies")
-        cmd.append(cookies_file)
+    # Android client is incompatible with --cookies flag
+    # (cookies cause it to return zero formats from flagged IPs)
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:

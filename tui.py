@@ -4,6 +4,14 @@
 import json, os, re, shutil, subprocess, sys, time, http.server, threading, urllib.request, urllib.parse
 from pathlib import Path
 
+try:
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+    from cryptography.hazmat.backends import default_backend
+    HAS_CRYPTO = True
+except ImportError:
+    HAS_CRYPTO = False
+
 import supabase_db
 
 try:
@@ -1773,83 +1781,66 @@ def screen_dispatch_local():
 
 # ─── Main Menu ────────────────────────────────────────────────────────────────
 
+def load_config():
+    saved = _read_json(DATA_DIR / "config.json")
+    return {
+        "supabase_url": saved.get("supabase_url", ""),
+        "supabase_key": saved.get("supabase_key", ""),
+        "yt_client_id": saved.get("yt_client_id", ""),
+        "yt_client_secret": saved.get("yt_client_secret", ""),
+        "yt_refresh_token": saved.get("yt_refresh_token", ""),
+        "github_token": saved.get("github_token", ""),
+        "github_repo": saved.get("github_repo", ""),
+        "channels": saved.get("channels", ""),
+        "shortlink_provider": saved.get("shortlink_provider", "vplink"),
+        "shortlink_api_key": saved.get("shortlink_api_key", ""),
+        "warmup_days": saved.get("warmup_days", 14),
+        "comment_moderation": saved.get("comment_moderation", "heldForReview"),
+        "mirror_title_prefix": saved.get("mirror_title_prefix", ""),
+    }
+
+def save_config(data):
+    _write_json(DATA_DIR / "config.json", data)
+
 def main_menu():
     while True:
         clear()
         banner()
-
-        yt_accounts = load_accounts()
-        gh_accounts = load_github_accounts()
-        channels = load_channels()
-        settings = load_settings()
-        active_yt = settings.get("active_account")
-        active_gh = settings.get("active_github")
         deps = load_deployments()
+        cfg = load_config()
 
-        # Status line
-        if active_yt and active_yt in yt_accounts:
-            ch = yt_accounts[active_yt].get("channel_name", "?")
-            print(f"  {C_DIM}YT:{C_RESET} {C_GREEN}@{ch}{C_RESET}  "
-                  f"{C_DIM}GH:{C_RESET} {len(gh_accounts)}  "
-                  f"{C_DIM}Ch:{C_RESET} {len(channels)}  "
-                  f"{C_DIM}Deploys:{C_RESET} {len(deps)}")
-        elif yt_accounts:
-            print(f"  {C_DIM}YT:{C_RESET} {C_YELLOW}none{C_RESET}  "
-                  f"{C_DIM}GH:{C_RESET} {len(gh_accounts)}  "
-                  f"{C_DIM}Ch:{C_RESET} {len(channels)}  "
-                  f"{C_DIM}Deploys:{C_RESET} {len(deps)}")
-        else:
-            print(f"  {C_YELLOW}No accounts configured — add one to get started{C_RESET}")
+        status_parts = []
+        if cfg.get("supabase_url"):
+            status_parts.append(f"{C_GREEN}DB{C_RESET}")
+        if cfg.get("yt_client_id"):
+            status_parts.append(f"{C_GREEN}YT{C_RESET}")
+        if cfg.get("github_token"):
+            status_parts.append(f"{C_GREEN}GH{C_RESET}")
+        if cfg.get("channels"):
+            n = len(cfg["channels"].split(","))
+            status_parts.append(f"{C_GREEN}{n}ch{C_RESET}")
+        if deps:
+            status_parts.append(f"{C_DIM}deployed:{C_RESET} {list(deps.keys())[0]}")
 
+        print(f"  {C_BOLD}[1]{C_RESET} Setup & Deploy (all credentials)")
+        if deps:
+            print(f"  {C_BOLD}[2]{C_RESET} View workflow logs")
+            print(f"  {C_BOLD}[3]{C_RESET} Remove deployment")
+        print(f"  {C_BOLD}[0]{C_RESET} Quit")
+        if status_parts:
+            print(f"\n  {'  '.join(status_parts)}")
         print()
-        print(f"  {C_BOLD}[1]{C_RESET} YouTube accounts")
-        print(f"  {C_BOLD}[2]{C_RESET} GitHub accounts")
-        print(f"  {C_BOLD}[3]{C_RESET} Monitored channels")
-        print(f"  {C_BOLD}[4]{C_RESET} Deploy to GitHub Actions")
-        print(f"  {C_BOLD}[5]{C_RESET} Remove deployment")
-        print(f"  {C_BOLD}[6]{C_RESET} Sync from GitHub")
-        print(f"  {C_BOLD}[7]{C_RESET} View workflow logs")
-        print(f"  {C_BOLD}[8]{C_RESET} Trigger workflow (remote)")
-        print(f"  {C_BOLD}[9]{C_RESET} Run mirror now (local)")
-        print(f"  {C_BOLD}[L]{C_RESET} Shortlink API keys")
-        print(f"  {C_BOLD}[S]{C_RESET} Status overview")
-        print(f"  {C_BOLD}[T]{C_RESET} Settings")
-        print(f"  {C_BOLD}[D]{C_RESET} Doctor (diagnostics)")
-        print(f"  {C_BOLD}[B]{C_RESET} Database (Supabase)")
-        print(f"  {C_BOLD}[0]{C_RESET} Quit\n")
 
         choice = prompt("Choice")
         if choice == "0" or choice.lower() == "q":
             print(f"\n  {C_DIM}Bye!{C_RESET}\n")
             break
         elif choice == "1":
-            screen_accounts()
-        elif choice == "2":
-            screen_github_accounts()
-        elif choice == "3":
-            screen_channels()
-        elif choice == "4":
-            screen_deploy()
-        elif choice == "5":
-            screen_remove_deployment()
-        elif choice == "6":
-            screen_sync()
-        elif choice == "7":
+            screen_setup()
+        elif choice == "2" and deps:
             screen_logs()
-        elif choice == "8":
-            screen_dispatch()
-        elif choice == "9":
-            screen_dispatch_local()
-        elif choice.lower() == "l":
-            screen_shortlink_keys()
-        elif choice.lower() == "s":
-            screen_status()
-        elif choice.lower() == "t":
-            screen_settings()
-        elif choice.lower() == "d":
-            screen_doctor()
-        elif choice.lower() == "b":
-            screen_database()
+        elif choice == "3" and deps:
+            screen_remove_deployment()
 
 def screen_doctor():
     clear()
@@ -2059,133 +2050,179 @@ def screen_doctor():
     input()
 
 
-# ─── Screen: Database ───────────────────────────────────────────────────
+# ─── Screen: Setup & Deploy ────────────────────────────────────────────
 
-def screen_database():
+def screen_setup():
+    cfg = load_config()
+    fields = [
+        ("supabase_url", "Supabase URL", cfg.get("supabase_url", "")),
+        ("supabase_key", "Supabase Service Key", cfg.get("supabase_key", "")),
+        ("yt_client_id", "YouTube Client ID", cfg.get("yt_client_id", "")),
+        ("yt_client_secret", "YouTube Client Secret", cfg.get("yt_client_secret", "")),
+        ("yt_refresh_token", "YouTube Refresh Token", cfg.get("yt_refresh_token", "")),
+        ("github_token", "GitHub Token (PAT)", cfg.get("github_token", "")),
+        ("github_repo", "GitHub Repo (user/repo)", cfg.get("github_repo", "")),
+        ("channels", "Channel IDs (comma-separated, e.g. @abc,@xyz)", cfg.get("channels", "")),
+        ("shortlink_provider", "Shortlink provider (vplink/cleanuri/tinyurl)", cfg.get("shortlink_provider", "vplink")),
+        ("shortlink_api_key", "Shortlink API key", cfg.get("shortlink_api_key", "")),
+        ("warmup_days", "Warmup days (before first upload)", str(cfg.get("warmup_days", 14))),
+        ("comment_moderation", "Comment mode (heldForReview/published)", cfg.get("comment_moderation", "heldForReview")),
+        ("mirror_title_prefix", "Title prefix (optional)", cfg.get("mirror_title_prefix", "")),
+    ]
+
     while True:
         clear()
         banner()
-        print(f"\n  {C_BOLDWHITE}DATABASE (SUPABASE){C_RESET}")
+        print(f"\n  {C_BOLDWHITE}SETUP & DEPLOY{C_RESET}")
         divider()
 
-        url = os.environ.get("SUPABASE_URL", "")
-        key = os.environ.get("SUPABASE_SERVICE_KEY", "")
-        enabled = supabase_db.is_enabled()
-
-        if enabled:
-            print(f"  {C_GREEN}[CONNECTED]{C_RESET}")
-            print(f"  {C_DIM}URL:{C_RESET} {url[:50]}...")
-            print(f"  {C_DIM}Key:{C_RESET} {'*' * 8}{key[-4:] if len(key) > 4 else ''}")
-        else:
-            print(f"  {C_YELLOW}[NOT CONFIGURED]{C_RESET}")
-            print(f"  {C_DIM}Set SUPABASE_URL and SUPABASE_SERVICE_KEY env vars{C_RESET}")
+        for i, (key, label, val) in enumerate(fields, 1):
+            display = val if len(val) < 50 else val[:20] + "..." + val[-10:]
+            if not val:
+                display = f"{C_DIM}(empty){C_RESET}"
+            elif "secret" in key or "token" in key or "key" in key:
+                display = "*" * 8 + (val[-4:] if len(val) > 4 else "")
+            print(f"  {C_BOLD}[{i:2d}]{C_RESET} {label:30s} {display}")
 
         print()
-        print(f"  {C_BOLD}[1]{C_RESET} Check connection")
-        print(f"  {C_BOLD}[2]{C_RESET} Set URL")
-        print(f"  {C_BOLD}[3]{C_RESET} Set Service Key")
-        print(f"  {C_BOLD}[4]{C_RESET} Save to .env file (local)")
-        print(f"  {C_BOLD}[5]{C_RESET} Export to GitHub secrets (deploy)")
-        print(f"  {C_BOLD}[0]{C_RESET} Back\n")
+        print(f"  {C_BOLD}[D]{C_RESET} Deploy to GitHub Actions")
+        print(f"  {C_BOLD}[0]{C_RESET} Back")
+        print()
 
         choice = prompt("Choice")
         if choice == "0":
             return
-        elif choice == "1":
-            try:
-                import urllib.request
-                test_url = url.rstrip('/') + '/rest/v1/'
-                req = urllib.request.Request(test_url, headers={
-                    "apikey": key,
-                    "Authorization": f"Bearer {key}",
-                })
-                urllib.request.urlopen(req, timeout=10)
-                success("Connected to Supabase!")
-            except Exception as e:
-                error(f"Connection failed: {e}")
-        elif choice == "2":
-            val = prompt("Supabase URL")
-            if val:
-                os.environ["SUPABASE_URL"] = val
-                supabase_db.configure(val, os.environ.get("SUPABASE_SERVICE_KEY", ""))
-                success("Set. Use [5] to deploy to GitHub")
-        elif choice == "3":
-            val = prompt("Supabase Service Key")
-            if val:
-                os.environ["SUPABASE_SERVICE_KEY"] = val
-                supabase_db.configure(os.environ.get("SUPABASE_URL", ""), val)
-                success("Set. Use [5] to deploy to GitHub")
-        elif choice == "4":
-            env_path = DATA_DIR / ".env"
-            import urllib.parse
-            existing = ""
-            if env_path.exists():
-                existing = env_path.read_text("utf-8")
-            lines = []
-            found_url = found_key = False
-            for line in existing.split("\n"):
-                if line.startswith("SUPABASE_URL="):
-                    lines.append(f'SUPABASE_URL={url}')
-                    found_url = True
-                elif line.startswith("SUPABASE_SERVICE_KEY="):
-                    lines.append(f'SUPABASE_SERVICE_KEY={key}')
-                    found_key = True
-                else:
-                    if line.strip():
-                        lines.append(line)
-            if not found_url:
-                lines.append(f'SUPABASE_URL={url}')
-            if not found_key:
-                lines.append(f'SUPABASE_SERVICE_KEY={key}')
-            env_path.write_text("\n".join(lines) + "\n")
-            success(f"Saved to {env_path}")
-        elif choice == "5":
-            gh_accounts = load_github_accounts()
-            settings = load_settings()
-            active_gh = settings.get("active_github")
-            if not active_gh or active_gh not in gh_accounts:
-                error("No active GitHub account. Set one up first via [2] GitHub accounts")
-                continue
-            gh = gh_accounts[active_gh]
-            token = gh["token"]
-            deps = load_deployments()
-            active_dep = settings.get("active_deployment") or (list(deps.keys())[0] if deps else None)
-            if not active_dep:
-                error("No deployment found. Deploy first via [4] Deploy")
-                continue
-            dep = deps.get(active_dep)
-            if not dep:
-                error(f"Deployment '{active_dep}' not found")
-                continue
-            repo = dep.get("repo", "")
-            if not repo:
-                error("No repo in deployment config")
-                continue
-            try:
-                import urllib.request
-                secrets_to_set = {
-                    "SUPABASE_URL": url,
-                    "SUPABASE_SERVICE_KEY": key,
-                }
-                for sname, sval in secrets_to_set.items():
-                    req = urllib.request.Request(
-                        f"https://api.github.com/repos/{repo}/actions/secrets/{sname}",
-                        data=json.dumps({"encrypted_value": sval, "key_id": ""}).encode(),
-                        headers={
-                            "Authorization": f"token {token}",
-                            "Content-Type": "application/json",
-                            "User-Agent": "yt-mirror-cli",
-                        },
-                        method="PUT",
-                    )
-                    try:
-                        urllib.request.urlopen(req)
-                        info(f"Set {sname}")
-                    except Exception as e:
-                        error(f"Failed to set {sname}: {e}")
-                success("Database secrets deployed to GitHub!")
-            except Exception as e:
-                error(f"Failed: {e}")
+        elif choice.upper() == "D":
+            _do_deploy(cfg)
+        elif choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(fields):
+                key, label, old = fields[idx]
+                new_val = prompt(f"{label}", old)
+                if new_val is not None:
+                    fields[idx] = (key, label, new_val)
+                    cfg[key] = new_val
+                    save_config(cfg)
+                    success(f"{label} saved")
+
+
+def _do_deploy(cfg):
+    missing = []
+    for key, label in [
+        ("supabase_url", "Supabase URL"),
+        ("supabase_key", "Supabase Service Key"),
+        ("yt_client_id", "YouTube Client ID"),
+        ("yt_client_secret", "YouTube Client Secret"),
+        ("yt_refresh_token", "YouTube Refresh Token"),
+        ("github_token", "GitHub Token"),
+        ("github_repo", "GitHub Repo"),
+    ]:
+        if not cfg.get(key):
+            missing.append(label)
+
+    if missing:
+        error(f"Missing required fields: {', '.join(missing)}")
+        return
+
+    token = cfg["github_token"]
+    repo = cfg["github_repo"]
+
+    import urllib.request
+
+    # Get public key for secret encryption
+    try:
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/{repo}/actions/secrets/public-key",
+            headers={
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github.v3+json",
+                "User-Agent": "yt-mirror-cli",
+            }
+        )
+        resp = urllib.request.urlopen(req)
+        pub_key_data = json.loads(resp.read())
+        pub_key_id = pub_key_data["key_id"]
+    except Exception as e:
+        error(f"Failed to get GitHub public key: {e}")
+        return
+
+    # Build secrets payload
+    secrets = {
+        "SUPABASE_URL": cfg["supabase_url"],
+        "SUPABASE_SERVICE_KEY": cfg["supabase_key"],
+        "YT_CLIENT_ID": cfg["yt_client_id"],
+        "YT_CLIENT_SECRET": cfg["yt_client_secret"],
+        "YT_REFRESH_TOKEN": cfg["yt_refresh_token"],
+        "GH_PAT": cfg["github_token"],
+        "CHANNELS": json.dumps({ch.strip(): {"channel_id": ch.strip(), "channel_name": ch.strip().lstrip("@"), "enabled": True, "added_at": time.strftime("%Y-%m-%dT%H:%M:%SZ")} for ch in cfg["channels"].split(",") if ch.strip()}),
+        "SETTINGS": json.dumps({
+            "privacy_status": "public",
+            "category_id": "22",
+            "check_interval_minutes": 15,
+            "max_per_cycle": 3,
+            "shortener_provider": cfg.get("shortlink_provider", "vplink"),
+            "shortener_api_key": cfg.get("shortlink_api_key", ""),
+            "comment_moderation": cfg.get("comment_moderation", "heldForReview"),
+            "warmup_days": int(cfg.get("warmup_days", 14)),
+            "mirror_title_prefix": cfg.get("mirror_title_prefix", ""),
+        }),
+        "SHORTLINK_KEYS": json.dumps({"default": {"provider": cfg.get("shortlink_provider", "vplink"), "api_key": cfg.get("shortlink_api_key", "")}} if cfg.get("shortlink_api_key") else "{}"),
+    }
+
+    if not HAS_CRYPTO:
+        error("cryptography library not installed. Run: pip install cryptography")
+        return
+
+    # Encrypt and set each secret
+    import base64
+
+    pub_key_bytes = base64.b64decode(pub_key_data["key"])
+    pub_key = serialization.load_der_public_key(pub_key_bytes, backend=default_backend())
+
+    success_count = 0
+    fail_count = 0
+
+    for sname, sval in secrets.items():
+        try:
+            encrypted = pub_key.encrypt(
+                sval.encode("utf-8"),
+                padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
+            )
+            encrypted_b64 = base64.b64encode(encrypted).decode("utf-8")
+
+            req = urllib.request.Request(
+                f"https://api.github.com/repos/{repo}/actions/secrets/{sname}",
+                data=json.dumps({"encrypted_value": encrypted_b64, "key_id": pub_key_id}).encode(),
+                headers={
+                    "Authorization": f"token {token}",
+                    "Accept": "application/vnd.github.v3+json",
+                    "Content-Type": "application/json",
+                    "User-Agent": "yt-mirror-cli",
+                },
+                method="PUT",
+            )
+            urllib.request.urlopen(req)
+            success_count += 1
+        except Exception as e:
+            error(f"Failed to set {sname}: {e}")
+            fail_count += 1
+
+    # Save deployment record
+    deps = load_deployments()
+    deps[repo] = {
+        "repo": repo,
+        "deployed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "secrets_set": list(secrets.keys()),
+    }
+    save_deployments(deps)
+
+    divider()
+    if fail_count == 0:
+        success(f"Deployed! {success_count} secrets pushed to {repo}")
+        info("Workflow will run on the next cron (every 6h) or trigger manually in Actions tab")
+    else:
+        warn(f"Deployed {success_count}/{success_count + fail_count} secrets")
+        info(f"Check {repo}/settings/secrets/actions for details")
 
 
 # ─── Entry Point ──────────────────────────────────────────────────────────────

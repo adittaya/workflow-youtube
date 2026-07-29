@@ -849,7 +849,7 @@ def screen_logs(project):
             conclusion = run.get("conclusion") or run.get("status", "unknown")
             sc = C_GREEN if conclusion == "success" else C_RED if conclusion == "failure" else C_YELLOW
             created = run.get("created_at", "")[:16].replace("T", " ")
-            print(f"  {C_BOLD}{i:2d}.{C_RESET} #{run['number']:4d}  {sc}{conclusion:10s}{C_RESET}  {created}")
+            print(f"  {C_BOLD}{i:2d}.{C_RESET} #{run.get('run_number', run.get('number', '?')):>4}  {sc}{conclusion:10s}{C_RESET}  {created}")
         print(f"\n  {C_BOLD}[N]{C_RESET} View log for run N")
         print(f"  {C_BOLD}[R]{C_RESET} Refresh")
         print(f"  {C_BOLD}[0]{C_RESET} Back\n")
@@ -868,7 +868,7 @@ def screen_logs(project):
             idx = int(choice) - 1
             if 0 <= idx < len(runs):
                 run = runs[idx]
-                loading(f"Fetching logs for run #{run['number']}...")
+                loading(f"Fetching logs for run #{run.get('run_number', run.get('number', '?'))}...")
                 logs = github_api.get_run_logs(owner, rn, run["id"], token)
                 if not logs:
                     print(f"\n  {C_DIM}No logs available.{C_RESET}")

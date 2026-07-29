@@ -1,5 +1,6 @@
 import os
 import json
+import urllib.error
 from datetime import datetime, timezone
 
 _SUPABASE_URL = None
@@ -60,6 +61,17 @@ def _upsert(table, data, on_conflict="id"):
                     return _request("PATCH", f"{table}?{key_filter}", data=data)
             return _request("POST", table, data=data)
         raise
+
+
+def get_pending_hashes(project_id="1"):
+    val = get_setting(f"pending_hashes_{project_id}", [])
+    return val if isinstance(val, list) else []
+
+
+def set_pending_hashes(hashes, project_id="1"):
+    if not isinstance(hashes, list):
+        hashes = []
+    set_setting(f"pending_hashes_{project_id}", hashes)
 
 
 # ─── Settings ────────────────────────────────────────────────────────────
@@ -180,7 +192,7 @@ def get_upload_state(project_id=""):
         "warmup_complete": False, "first_upload_date": None,
         "total_uploaded": 0, "last_upload_date": None,
         "last_upload_hour": None, "processed_hashes": [],
-        "pending_hashes": [], "yt_client_id": "",
+        "yt_client_id": "",
     }
 
 
@@ -195,7 +207,6 @@ def save_upload_state(state, project_id=""):
         "last_upload_date": state.get("last_upload_date"),
         "last_upload_hour": state.get("last_upload_hour"),
         "processed_hashes": state.get("processed_hashes", []),
-        "pending_hashes": state.get("pending_hashes", []),
         "yt_client_id": state.get("yt_client_id", ""),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }

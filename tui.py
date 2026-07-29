@@ -3,7 +3,7 @@
 
 import json, os, shutil, sys, time, http.server, urllib.request, urllib.error, urllib.parse
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 
 try:
     from cryptography.hazmat.primitives import hashes, serialization
@@ -331,7 +331,7 @@ def screen_setup(project):
             _do_oauth(p)
         elif choice == "W":
             try:
-                now = datetime.now(datetime.timezone.utc)
+                now = datetime.now(timezone.utc)
                 supabase_db.save_upload_state({
                     "account_created": now.isoformat(),
                     "warmup_start": now.isoformat(),
@@ -536,7 +536,7 @@ def _do_deploy(project):
         success("Workflow enabled")
 
     # Save deployment record in project
-    supabase_db.update_project(project["id"], deployed_at=datetime.now(datetime.timezone.utc).isoformat())
+    supabase_db.update_project(project["id"], deployed_at=datetime.now(timezone.utc).isoformat())
 
     divider()
     if not repo_exists:
@@ -691,9 +691,9 @@ def screen_status(project):
         wc = test.get("warmup_complete", False)
         if ws:
             start = datetime.fromisoformat(ws)
-            now = datetime.now(datetime.timezone.utc)
+            now = datetime.now(timezone.utc)
             if start.tzinfo is None:
-                start = start.replace(tzinfo=datetime.timezone.utc)
+                start = start.replace(tzinfo=timezone.utc)
             days = (now - start).days
             if wc:
                 _ok(f"Warmup complete (started {ws[:10]})")

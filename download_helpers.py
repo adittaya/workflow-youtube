@@ -35,8 +35,8 @@ def download_video(url, output_dir=None):
     ]
     cookies_file = os.environ.get("YT_COOKIES_FILE", "")
     if cookies_file and os.path.exists(cookies_file):
-        cmd.insert(4, "--cookies")
-        cmd.insert(5, cookies_file)
+        cmd.append("--cookies")
+        cmd.append(cookies_file)
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:

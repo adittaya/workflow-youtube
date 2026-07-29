@@ -223,6 +223,19 @@ jobs:
               print('new_detected=false')
           " 2>&1
 
+      - name: Start PO token provider
+        run: |
+          pip install --break-system-packages -q bgutil-ytdlp-pot-provider
+          docker run -d --name bgutil-provider --init -p 4416:4416 brainicism/bgutil-ytdlp-pot-provider
+          # Wait for server to start
+          for i in $(seq 1 15); do
+            if curl -s http://localhost:4416/ > /dev/null 2>&1; then
+              echo "PO token provider ready on port 4416"
+              break
+            fi
+            sleep 1
+          done
+
       - name: Process and upload
         run: |
           cd ~/.yt-mirror

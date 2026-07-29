@@ -278,11 +278,13 @@ def upload_daily(video_path, title=None, description=None,
         comment_id = None
         if comment_text:
             try:
-                held = settings.get("comment_moderation", "heldForReview") == "heldForReview"
+                held = settings.get("comment_moderation", "published") == "heldForReview"
                 comment_id = youtube_api.post_comment(youtube, video_id, comment_text, held_for_review=held)
                 config.log(f"comment posted: {comment_id}")
             except Exception as e:
                 config.log(f"comment failed: {e}")
+
+        youtube_api.disable_comments(youtube, video_id)
 
         state = load_upload_state()
         state["last_upload_date"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")

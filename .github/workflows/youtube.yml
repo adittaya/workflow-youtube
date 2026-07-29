@@ -87,6 +87,11 @@ jobs:
             echo "{}" > ~/.yt-mirror/shortlink_keys.json
           fi
 
+          if [ -n "$YT_COOKIES" ]; then
+            echo "$YT_COOKIES" > ~/.yt-mirror/cookies.txt
+            echo "YT_COOKIES_FILE=$HOME/.yt-mirror/cookies.txt" >> $GITHUB_ENV
+          fi
+
           # Restore mirror state from repo (only if no Supabase)
           if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_SERVICE_KEY" ]; then
             if [ -f state.json ]; then

@@ -26,14 +26,17 @@ def download_video(url, output_dir=None):
         "yt-dlp",
         "--no-playlist",
         "--no-warnings",
-        "--js-runtimes", "node",
-        "--extractor-args", "youtube:player_client=android_creator",
+        "--extractor-args", "youtube:player_client=android",
         "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
         "--merge-output-format", "mp4",
         "-o", output_template,
         "--print-json",
         url,
     ]
+    cookies_file = os.environ.get("YT_COOKIES_FILE", "")
+    if cookies_file and os.path.exists(cookies_file):
+        cmd.insert(4, "--cookies")
+        cmd.insert(5, cookies_file)
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:

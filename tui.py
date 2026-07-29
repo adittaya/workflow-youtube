@@ -2050,6 +2050,18 @@ def screen_doctor():
     input()
 
 
+def _parse_channel(raw):
+    raw = raw.strip().rstrip("/")
+    if "/@" in raw:
+        handle = raw.split("/@")[-1].split("?")[0].split("/")[0]
+        return f"@{handle}"
+    if raw.startswith("UC") and len(raw) > 15:
+        return raw
+    if raw.startswith("@"):
+        return raw
+    return raw
+
+
 # ─── Screen: Setup & Deploy ────────────────────────────────────────────
 
 def screen_setup():
@@ -2062,7 +2074,7 @@ def screen_setup():
         ("yt_refresh_token", "YouTube Refresh Token", cfg.get("yt_refresh_token", "")),
         ("github_token", "GitHub Token (PAT)", cfg.get("github_token", "")),
         ("github_repo", "GitHub Repo (user/repo)", cfg.get("github_repo", "")),
-        ("channels", "Channel IDs (comma-separated, e.g. @abc,@xyz)", cfg.get("channels", "")),
+        ("channels", "Channel URLs (comma-separated, e.g. https://.../@abc,@xyz)", cfg.get("channels", "")),
         ("shortlink_provider", "Shortlink provider (vplink/cleanuri/tinyurl)", cfg.get("shortlink_provider", "vplink")),
         ("shortlink_api_key", "Shortlink API key", cfg.get("shortlink_api_key", "")),
         ("warmup_days", "Warmup days (before first upload)", str(cfg.get("warmup_days", 14))),
@@ -2154,7 +2166,7 @@ def _do_deploy(cfg):
         "YT_CLIENT_SECRET": cfg["yt_client_secret"],
         "YT_REFRESH_TOKEN": cfg["yt_refresh_token"],
         "GH_PAT": cfg["github_token"],
-        "CHANNELS": json.dumps({ch.strip(): {"channel_id": ch.strip(), "channel_name": ch.strip().lstrip("@"), "enabled": True, "added_at": time.strftime("%Y-%m-%dT%H:%M:%SZ")} for ch in cfg["channels"].split(",") if ch.strip()}),
+        "CHANNELS": json.dumps({_parse_channel(ch.strip()): {"channel_id": _parse_channel(ch.strip()), "channel_name": _parse_channel(ch.strip()).lstrip("@"), "enabled": True, "added_at": time.strftime("%Y-%m-%dT%H:%M:%SZ")} for ch in cfg["channels"].split(",") if ch.strip()}),
         "SETTINGS": json.dumps({
             "privacy_status": "public",
             "category_id": "22",

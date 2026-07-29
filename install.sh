@@ -19,6 +19,12 @@ if [ ! -f "$SCRIPT_DIR/mirror.py" ]; then
     exit 1
 fi
 
+# Detect git remote (for auto-update)
+GIT_REMOTE=""
+if git -C "$SCRIPT_DIR" remote get-url origin &>/dev/null; then
+    GIT_REMOTE=$(git -C "$SCRIPT_DIR" remote get-url origin)
+fi
+
 # --- Python ---
 echo "[1/7] Checking Python..."
 if ! command -v python3 &>/dev/null; then
@@ -76,13 +82,51 @@ if [ -d "$SCRIPT_DIR/.github" ]; then
     cp -r "$SCRIPT_DIR/.github" "$SRC_DIR/"
 fi
 
-# --- Launcher ---
-echo "[7/7] Installing launcher..."
+# --- Save metadata ---
+META_FILE="$INSTALL_DIR/.install_meta.json"
+echo "{\"remote\": \"$GIT_REMOTE\", \"installed_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" > "$META_FILE"
+
+# --- Launcher with auto-update ---
+echo "[7/7] Installing launcher with auto-update..."
 mkdir -p "$BIN_DIR"
 cat > "$BIN" << WRAPPER
 #!/usr/bin/env bash
-cd "$SRC_DIR"
-exec python3 "$SRC_DIR/tui.py" "\$@"
+META="\$HOME/.yt-mirror/.install_meta.json"
+SRC="\$HOME/.yt-mirror/src"
+REMOTE=\$(python3 -c "import json; print(json.load(open('\$META')).get('remote',''))" 2>/dev/null)
+
+# Auto-update: pull repo and re-copy (skip with --no-update)
+SKIP_UPDATE=false
+for arg in "\$@"; do [ "\$arg" = "--no-update" ] && SKIP_UPDATE=true; done
+if [ "\$SKIP_UPDATE" = false ] && [ -n "\$REMOTE" ] && command -v git &>/dev/null; then
+    TMP_REPO="\$HOME/.yt-mirror/.repo"
+    if [ -d "\$TMP_REPO/.git" ]; then
+        git -C "\$TMP_REPO" pull --ff-only --depth 1 2>/dev/null
+    else
+        rm -rf "\$TMP_REPO"
+        git clone --depth 1 "\$REMOTE" "\$TMP_REPO" 2>/dev/null
+    fi
+    if [ -f "\$TMP_REPO/mirror.py" ]; then
+        for py in config.py mirror.py monitor.py youtube_api.py shortener.py download_helpers.py github_api.py get_refresh_token.py tui.py video_processor.py audio_separator.py bgm_manager.py daily_uploader.py daily_mirror.py supabase_db.py; do
+            cp "\$TMP_REPO/\$py" "\$SRC/" 2>/dev/null
+        done
+        cp "\$TMP_REPO/requirements.txt" "\$SRC/" 2>/dev/null
+        if [ -d "\$TMP_REPO/.github" ]; then
+            cp -r "\$TMP_REPO/.github" "\$SRC/" 2>/dev/null
+        fi
+        # Re-apply PATH fix if needed
+        if ! echo "\$PATH" | grep -q "\$HOME/.local/bin"; then
+            echo 'export PATH="\$HOME/.local/bin:\$PATH"' >> "\$HOME/.bashrc"
+        fi
+    fi
+fi
+
+# Filter --no-update from args before passing to TUI
+ARGS=()
+for arg in "\$@"; do [ "\$arg" != "--no-update" ] && ARGS+=("\$arg"); done
+
+cd "\$SRC"
+exec python3 "\$SRC/tui.py" "\${ARGS[@]}"
 WRAPPER
 chmod +x "$BIN"
 
@@ -97,9 +141,11 @@ echo ""
 echo "  Source:  $SRC_DIR"
 echo "  Config:  $INSTALL_DIR"
 echo "  Binary:  $BIN"
+echo "  Auto-update: enabled (pulls latest on every VPLINKYT launch)"
 echo ""
 echo "Run:"
-echo "  VPLINKYT              # Open management TUI"
+echo "  VPLINKYT              # Open management TUI (auto-updates)"
+echo "  VPLINKYT --no-update  # Skip auto-update"
 echo "  python3 $SRC_DIR/mirror.py      # Run mirror directly"
 echo "  python3 $SRC_DIR/daily_mirror.py # Run daily upload pipeline"
 echo "  python3 $SRC_DIR/tui.py          # Open TUI directly"

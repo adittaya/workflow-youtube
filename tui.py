@@ -95,9 +95,9 @@ def load_settings():
     defaults = {
         "active_account": "",
         "active_github": "",
-        "comment_text": "Download link: {url}\n\nSubscribe for more!",
+        "comment_text": "Download: {url}",
         "mirror_title_prefix": "",
-        "mirror_description_suffix": "Original video link in pinned comment.",
+        "mirror_description_suffix": "",
         "privacy_status": "public",
         "category_id": "22",
         "check_interval_minutes": 15,

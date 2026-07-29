@@ -27,6 +27,7 @@ jobs:
       SHORTLINK_KEYS: ${{ secrets.SHORTLINK_KEYS }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      YT_COOKIES: ${{ secrets.YT_COOKIES }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4

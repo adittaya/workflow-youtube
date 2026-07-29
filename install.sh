@@ -65,7 +65,7 @@ mkdir -p "$INSTALL_DIR/bgm" "$INSTALL_DIR/separated" "$INSTALL_DIR/processed"
 # --- Copy source files ---
 echo "[6/7] Copying source files..."
 mkdir -p "$SRC_DIR"
-for py in config.py mirror.py monitor.py youtube_api.py shortener.py download_helpers.py github_api.py get_refresh_token.py tui.py video_processor.py audio_separator.py bgm_manager.py daily_uploader.py daily_mirror.py; do
+for py in config.py mirror.py monitor.py youtube_api.py shortener.py download_helpers.py github_api.py get_refresh_token.py tui.py video_processor.py audio_separator.py bgm_manager.py daily_uploader.py daily_mirror.py supabase_db.py; do
     cp "$SCRIPT_DIR/$py" "$SRC_DIR/"
 done
 cp "$SCRIPT_DIR/requirements.txt" "$SRC_DIR/"

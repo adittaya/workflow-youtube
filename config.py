@@ -4,6 +4,8 @@ import tempfile
 import time
 from pathlib import Path
 
+import supabase_db
+
 DATA_DIR = Path(os.environ.get("YT_DATA_DIR", os.path.expanduser("~/.yt-mirror")))
 CONFIG_PATH = DATA_DIR / "config.json"
 CHANNELS_PATH = DATA_DIR / "channels.json"
@@ -71,6 +73,14 @@ def save(config):
 
 
 def load_channels():
+    if supabase_db.is_enabled():
+        rows = supabase_db.get_all_channels()
+        return {r["id"]: {
+            "url": r.get("url", ""),
+            "alias": r.get("name", r["id"]),
+            "added_at": r.get("added_at", ""),
+            "enabled": r.get("enabled", True),
+        } for r in rows}
     _ensure_dir()
     try:
         return json.loads(CHANNELS_PATH.read_text("utf-8"))
@@ -79,11 +89,34 @@ def load_channels():
 
 
 def save_channels(channels):
+    if supabase_db.is_enabled():
+        for ch_id, ch in channels.items():
+            supabase_db.save_channel(ch_id, {
+                "name": ch.get("alias", ch_id),
+                "url": ch.get("url", ""),
+                "enabled": ch.get("enabled", True),
+                "added_at": ch.get("added_at"),
+            })
+        return
     _ensure_dir()
     _write_json(CHANNELS_PATH, channels)
 
 
 def load_state():
+    if supabase_db.is_enabled():
+        processed_rows = supabase_db.get_all_mirror_states()
+        stats = supabase_db.get_mirror_stats()
+        processed = {}
+        for r in processed_rows:
+            key = f"{r['source_channel']}:{r['source_video_id']}"
+            processed[key] = {
+                "new_video_id": r.get("mirrored_video_id") or "",
+                "original_title": r.get("original_title", ""),
+                "mirrored_at": r.get("mirrored_at") or "",
+                "comment_id": r.get("comment_id", ""),
+                "shortened_urls": r.get("shortened_urls") or {},
+            }
+        return {"processed": processed, "stats": stats}
     _ensure_dir()
     try:
         return json.loads(STATE_PATH.read_text("utf-8"))
@@ -92,11 +125,35 @@ def load_state():
 
 
 def save_state(state):
+    if supabase_db.is_enabled():
+        for key, entry in state.get("processed", {}).items():
+            if ":" in key:
+                source, vid = key.split(":", 1)
+            else:
+                source, vid = key, ""
+            supabase_db.save_mirror_state(source, vid, {
+                "mirrored_video_id": entry.get("new_video_id") or entry.get("mirrored_video_id"),
+                "original_title": entry.get("original_title", ""),
+                "mirrored_at": entry.get("mirrored_at"),
+                "comment_id": entry.get("comment_id", ""),
+                "shortened_urls": entry.get("shortened_urls", {}),
+            })
+        supabase_db.update_mirror_stats(state.get("stats", {}))
+        return
     _ensure_dir()
     _write_json(STATE_PATH, state)
 
 
 def load_accounts():
+    if supabase_db.is_enabled():
+        rows = supabase_db.get_all_accounts()
+        return {r["name"]: {
+            "client_id": r["client_id"],
+            "client_secret": r["client_secret"],
+            "refresh_token": r["refresh_token"],
+            "channel_id": r.get("channel_id", ""),
+            "channel_name": r.get("channel_name", ""),
+        } for r in rows}
     _ensure_dir()
     try:
         return json.loads(ACCOUNTS_PATH.read_text("utf-8"))
@@ -105,6 +162,16 @@ def load_accounts():
 
 
 def save_accounts(accounts):
+    if supabase_db.is_enabled():
+        for name, acct in accounts.items():
+            supabase_db.save_account(name, {
+                "client_id": acct.get("client_id", ""),
+                "client_secret": acct.get("client_secret", ""),
+                "refresh_token": acct.get("refresh_token", ""),
+                "channel_id": acct.get("channel_id", ""),
+                "channel_name": acct.get("channel_name", ""),
+            })
+        return
     _ensure_dir()
     _write_json(ACCOUNTS_PATH, accounts)
 
@@ -112,7 +179,8 @@ def save_accounts(accounts):
 def load_tui_settings():
     defaults = {
         "active_account": "",
-        "comment_text": "Download link: {url}",
+        "active_github": "",
+        "comment_text": "Download: {url}",
         "mirror_title_prefix": "",
         "mirror_description_suffix": "",
         "privacy_status": "public",
@@ -121,7 +189,16 @@ def load_tui_settings():
         "shortener_api_url": "",
         "check_interval_minutes": 15,
         "max_per_cycle": 3,
+        "shortener_provider": "vplink",
+        "comment_moderation": "heldForReview",
+        "warmup_days": 14,
     }
+    if supabase_db.is_enabled():
+        for key in defaults:
+            val = supabase_db.get_setting(f"tui_{key}")
+            if val is not None:
+                defaults[key] = val
+        return defaults
     _ensure_dir()
     try:
         saved = json.loads(SETTINGS_PATH.read_text("utf-8"))

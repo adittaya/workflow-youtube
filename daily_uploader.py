@@ -7,6 +7,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 
 import config
+import supabase_db
 import youtube_api
 import video_processor
 import audio_separator
@@ -24,6 +25,8 @@ MIN_HOURS_BETWEEN = 18
 
 
 def load_upload_state():
+    if supabase_db.is_enabled():
+        return supabase_db.get_upload_state()
     try:
         return json.loads(UPLOAD_STATE.read_text("utf-8"))
     except Exception:
@@ -36,15 +39,29 @@ def load_upload_state():
             "last_upload_date": None,
             "last_upload_hour": None,
             "processed_hashes": [],
+            "yt_client_id": "",
         }
 
 
 def save_upload_state(state):
+    if supabase_db.is_enabled():
+        supabase_db.save_upload_state(state)
+        return
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     UPLOAD_STATE.write_text(json.dumps(state, indent=2), "utf-8")
 
 
 def load_daily_log():
+    if supabase_db.is_enabled():
+        logs = supabase_db.get_upload_logs(limit=100)
+        return {"uploads": [{
+            "date": l.get("upload_date", ""),
+            "time": l.get("upload_time", ""),
+            "video_id": l.get("video_id", ""),
+            "title": l.get("title", ""),
+            "short_url": l.get("short_url", ""),
+            "comment_id": l.get("comment_id", ""),
+        } for l in logs]}
     try:
         return json.loads(DAILY_LOG.read_text("utf-8"))
     except Exception:
@@ -52,6 +69,8 @@ def load_daily_log():
 
 
 def save_daily_log(log):
+    if supabase_db.is_enabled():
+        return
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     DAILY_LOG.write_text(json.dumps(log, indent=2), "utf-8")
 
@@ -257,18 +276,22 @@ def upload_daily(video_path, title=None, description=None,
         state["total_uploaded"] = state.get("total_uploaded", 0) + 1
         save_upload_state(state)
 
-        log = load_daily_log()
-        log["uploads"].append({
-            "date": datetime.utcnow().strftime("%Y-%m-%d"),
-            "time": datetime.utcnow().isoformat(),
+        entry = {
+            "upload_date": datetime.utcnow().strftime("%Y-%m-%d"),
+            "upload_time": datetime.utcnow().isoformat(),
             "video_id": video_id,
             "title": title,
-            "short_url": short_url,
-            "comment_id": comment_id,
-        })
-        if len(log["uploads"]) > 100:
-            log["uploads"] = log["uploads"][-100:]
-        save_daily_log(log)
+            "short_url": short_url or "",
+            "comment_id": comment_id or "",
+        }
+        if supabase_db.is_enabled():
+            supabase_db.add_upload_log(entry)
+        else:
+            log = load_daily_log()
+            log["uploads"].append(entry)
+            if len(log["uploads"]) > 100:
+                log["uploads"] = log["uploads"][-100:]
+            save_daily_log(log)
 
         config.log(f"uploaded: {video_id}")
 

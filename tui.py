@@ -4,6 +4,8 @@
 import json, os, re, shutil, subprocess, sys, time, http.server, threading, urllib.request, urllib.parse
 from pathlib import Path
 
+import supabase_db
+
 try:
     from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
@@ -108,10 +110,20 @@ def load_settings():
         "comment_moderation": "heldForReview",
         "warmup_days": 14,
     }
+    if supabase_db.is_enabled():
+        for key in defaults:
+            val = supabase_db.get_setting(f"tui_{key}")
+            if val is not None:
+                defaults[key] = val
+        return defaults
     saved = _read_json(SETTINGS_PATH)
     return {**defaults, **saved}
 
 def save_settings(data):
+    if supabase_db.is_enabled():
+        for key, val in data.items():
+            supabase_db.set_setting(f"tui_{key}", val)
+        return
     _write_json(SETTINGS_PATH, data)
 
 def load_deployments():
@@ -1803,6 +1815,7 @@ def main_menu():
         print(f"  {C_BOLD}[S]{C_RESET} Status overview")
         print(f"  {C_BOLD}[T]{C_RESET} Settings")
         print(f"  {C_BOLD}[D]{C_RESET} Doctor (diagnostics)")
+        print(f"  {C_BOLD}[B]{C_RESET} Database (Supabase)")
         print(f"  {C_BOLD}[0]{C_RESET} Quit\n")
 
         choice = prompt("Choice")
@@ -1835,6 +1848,8 @@ def main_menu():
             screen_settings()
         elif choice.lower() == "d":
             screen_doctor()
+        elif choice.lower() == "b":
+            screen_database()
 
 def screen_doctor():
     clear()
@@ -2042,6 +2057,135 @@ def screen_doctor():
             print(f"\n  {C_RED}Fix the failures above before running mirror.{C_RESET}")
     print(f"\n  {C_DIM}Press Enter to return...{C_RESET}")
     input()
+
+
+# ─── Screen: Database ───────────────────────────────────────────────────
+
+def screen_database():
+    while True:
+        clear()
+        banner()
+        print(f"\n  {C_BOLDWHITE}DATABASE (SUPABASE){C_RESET}")
+        divider()
+
+        url = os.environ.get("SUPABASE_URL", "")
+        key = os.environ.get("SUPABASE_SERVICE_KEY", "")
+        enabled = supabase_db.is_enabled()
+
+        if enabled:
+            print(f"  {C_GREEN}[CONNECTED]{C_RESET}")
+            print(f"  {C_DIM}URL:{C_RESET} {url[:50]}...")
+            print(f"  {C_DIM}Key:{C_RESET} {'*' * 8}{key[-4:] if len(key) > 4 else ''}")
+        else:
+            print(f"  {C_YELLOW}[NOT CONFIGURED]{C_RESET}")
+            print(f"  {C_DIM}Set SUPABASE_URL and SUPABASE_SERVICE_KEY env vars{C_RESET}")
+
+        print()
+        print(f"  {C_BOLD}[1]{C_RESET} Check connection")
+        print(f"  {C_BOLD}[2]{C_RESET} Set URL")
+        print(f"  {C_BOLD}[3]{C_RESET} Set Service Key")
+        print(f"  {C_BOLD}[4]{C_RESET} Save to .env file (local)")
+        print(f"  {C_BOLD}[5]{C_RESET} Export to GitHub secrets (deploy)")
+        print(f"  {C_BOLD}[0]{C_RESET} Back\n")
+
+        choice = prompt("Choice")
+        if choice == "0":
+            return
+        elif choice == "1":
+            try:
+                import urllib.request
+                test_url = url.rstrip('/') + '/rest/v1/'
+                req = urllib.request.Request(test_url, headers={
+                    "apikey": key,
+                    "Authorization": f"Bearer {key}",
+                })
+                urllib.request.urlopen(req, timeout=10)
+                success("Connected to Supabase!")
+            except Exception as e:
+                error(f"Connection failed: {e}")
+        elif choice == "2":
+            val = prompt("Supabase URL")
+            if val:
+                os.environ["SUPABASE_URL"] = val
+                supabase_db.configure(val, os.environ.get("SUPABASE_SERVICE_KEY", ""))
+                success("Set. Use [5] to deploy to GitHub")
+        elif choice == "3":
+            val = prompt("Supabase Service Key")
+            if val:
+                os.environ["SUPABASE_SERVICE_KEY"] = val
+                supabase_db.configure(os.environ.get("SUPABASE_URL", ""), val)
+                success("Set. Use [5] to deploy to GitHub")
+        elif choice == "4":
+            env_path = DATA_DIR / ".env"
+            import urllib.parse
+            existing = ""
+            if env_path.exists():
+                existing = env_path.read_text("utf-8")
+            lines = []
+            found_url = found_key = False
+            for line in existing.split("\n"):
+                if line.startswith("SUPABASE_URL="):
+                    lines.append(f'SUPABASE_URL={url}')
+                    found_url = True
+                elif line.startswith("SUPABASE_SERVICE_KEY="):
+                    lines.append(f'SUPABASE_SERVICE_KEY={key}')
+                    found_key = True
+                else:
+                    if line.strip():
+                        lines.append(line)
+            if not found_url:
+                lines.append(f'SUPABASE_URL={url}')
+            if not found_key:
+                lines.append(f'SUPABASE_SERVICE_KEY={key}')
+            env_path.write_text("\n".join(lines) + "\n")
+            success(f"Saved to {env_path}")
+        elif choice == "5":
+            gh_accounts = load_github_accounts()
+            settings = load_settings()
+            active_gh = settings.get("active_github")
+            if not active_gh or active_gh not in gh_accounts:
+                error("No active GitHub account. Set one up first via [2] GitHub accounts")
+                continue
+            gh = gh_accounts[active_gh]
+            token = gh["token"]
+            deps = load_deployments()
+            active_dep = settings.get("active_deployment") or (list(deps.keys())[0] if deps else None)
+            if not active_dep:
+                error("No deployment found. Deploy first via [4] Deploy")
+                continue
+            dep = deps.get(active_dep)
+            if not dep:
+                error(f"Deployment '{active_dep}' not found")
+                continue
+            repo = dep.get("repo", "")
+            if not repo:
+                error("No repo in deployment config")
+                continue
+            try:
+                import urllib.request
+                secrets_to_set = {
+                    "SUPABASE_URL": url,
+                    "SUPABASE_SERVICE_KEY": key,
+                }
+                for sname, sval in secrets_to_set.items():
+                    req = urllib.request.Request(
+                        f"https://api.github.com/repos/{repo}/actions/secrets/{sname}",
+                        data=json.dumps({"encrypted_value": sval, "key_id": ""}).encode(),
+                        headers={
+                            "Authorization": f"token {token}",
+                            "Content-Type": "application/json",
+                            "User-Agent": "yt-mirror-cli",
+                        },
+                        method="PUT",
+                    )
+                    try:
+                        urllib.request.urlopen(req)
+                        info(f"Set {sname}")
+                    except Exception as e:
+                        error(f"Failed to set {sname}: {e}")
+                success("Database secrets deployed to GitHub!")
+            except Exception as e:
+                error(f"Failed: {e}")
 
 
 # ─── Entry Point ──────────────────────────────────────────────────────────────

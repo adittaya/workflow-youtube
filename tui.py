@@ -287,8 +287,9 @@ FIELD_SPEC = [
 ]
 
 def _display_val(val, sensitive=False):
-    if not val:
+    if val is None or val == "":
         return f"{C_DIM}(empty){C_RESET}"
+    val = str(val)
     if sensitive:
         return "*" * 8 + (val[-4:] if len(val) > 4 else "")
     return val if len(val) < 50 else val[:20] + "..." + val[-10:]

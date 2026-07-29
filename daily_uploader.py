@@ -220,9 +220,11 @@ def upload_daily(video_path, title=None, description=None,
 
     config.log(f"uploading: {title}")
 
-    upload_desc = description or ""
-    if short_url:
-        upload_desc += f"\n\nOriginal: {video_url}"
+    upload_desc = "Download link in pinned comment\n\n"
+    if description:
+        upload_desc += description + "\n\n"
+    if short_url or video_url:
+        upload_desc += "Original: " + (short_url or video_url)
 
     video_id = youtube_api.upload_video(
         youtube, video_path,

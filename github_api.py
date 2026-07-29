@@ -228,6 +228,7 @@ def git_push(local_dir, remote_url, branch="main"):
         ["git", "init", "-b", branch],
         ["git", "config", "user.email", "yt-mirror@deploy"],
         ["git", "config", "user.name", "YT Mirror Deploy"],
+        ["git", "remote", "remove", "origin"],
         ["git", "remote", "add", "origin", remote_url],
         ["git", "add", "-A"],
         ["git", "commit", "-m", "init: youtube mirror bot"],

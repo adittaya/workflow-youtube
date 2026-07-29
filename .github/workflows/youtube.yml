@@ -237,31 +237,31 @@ jobs:
             echo "No proxy database configured — running without proxy"
             exit 0
           fi
-          python3 << 'PYEOF'
+          python3 << PYEOF
           import json, urllib.request, os, time
           supabase_url = "$PROXY_SUPABASE_URL"
           supabase_key = "$PROXY_SUPABASE_SERVICE_KEY"
-          api_url = f"{supabase_url}/rest/v1/proxy_results?select=ip,port,latency_ms&vplink_ok=eq.true&order=latency_ms.asc&limit=200"
+          api_url = supabase_url + "/rest/v1/proxy_results?select=ip,port,latency_ms&vplink_ok=eq.true&order=latency_ms.asc&limit=200"
           req = urllib.request.Request(api_url, headers={
               "apikey": supabase_key,
-              "Authorization": f"Bearer {supabase_key}",
+              "Authorization": "Bearer " + supabase_key,
           })
           proxies = json.loads(urllib.request.urlopen(req, timeout=15).read())
-          print(f"Fetched {len(proxies)} proxies")
+          print("Fetched %d proxies" % len(proxies))
           working = []
           for p in proxies:
-              p_url = f"http://{p['ip']}:{p['port']}"
+              p_url = "http://%s:%s" % (p["ip"], p["port"])
               try:
                   t0 = time.time()
                   urllib.request.urlopen(
                       urllib.request.Request("http://www.gstatic.com/generate_204"),
                       timeout=5
                   )
-                  lat = round((time.time() - t0) * 1000)
+                  lat = int((time.time() - t0) * 1000)
                   working.append({"url": p_url, "latency_ms": lat})
-                  print(f"  OK {lat}ms  {p_url}")
+                  print("  OK %dms  %s" % (lat, p_url))
               except Exception:
-                  print(f"  FAIL {p_url}")
+                  print("  FAIL %s" % p_url)
               if len(working) >= 10:
                   break
           if not working:
@@ -271,10 +271,10 @@ jobs:
           proxy_list = [w["url"] for w in working]
           print("Working proxies (best first):")
           for w in working:
-              print(f"  {w['latency_ms']}ms  {w['url']}")
+              print("  %dms  %s" % (w["latency_ms"], w["url"]))
           with open(os.environ["GITHUB_ENV"], "a") as f:
-              f.write(f"WORKING_PROXIES={json.dumps(proxy_list)}\n")
-              f.write(f"YT_PROXY={proxy_list[0]}\n")
+              f.write("WORKING_PROXIES=" + json.dumps(proxy_list) + "\n")
+              f.write("YT_PROXY=" + proxy_list[0] + "\n")
           PYEOF
 
       - name: Process and upload

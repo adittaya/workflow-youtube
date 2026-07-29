@@ -153,28 +153,14 @@ jobs:
           echo "warmup_day=${WARMUP_DAY:-0}" >> $GITHUB_OUTPUT
           echo "can_upload=${CAN_UPLOAD}" >> $GITHUB_OUTPUT
 
-      - name: Process and upload
-        id: process
-        if: steps.warmup.outputs.can_upload == 'true' || inputs.dry_run == 'true'
+      - name: Detect new videos (always)
+        id: detect
         run: |
-          cd ~/.yt-mirror
-
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
-            python3 -c "
-          import json
-          s = json.loads(open('settings.json').read())
-          s['dry_run'] = True
-          open('settings.json', 'w').write(json.dumps(s, indent=2))
-          "
-          fi
-
           python3 -c "
-          import sys
+          import sys, os
           sys.path.insert(0, '$GITHUB_WORKSPACE')
-          import json, time, os
           import config
           import daily_uploader
-          import download_helpers
           import youtube_api
           import supabase_db
 
@@ -182,8 +168,10 @@ jobs:
           youtube = youtube_api.get_client()
           pid = os.environ.get('PROJECT_ID', '')
           up_state = daily_uploader.load_upload_state()
+          pending_hashes = list(up_state.get('pending_hashes', []))
+          processed_hashes = set(up_state.get('processed_hashes', []))
           cursors = supabase_db.get_all_cursors(project_id=pid)
-          uploaded = 0
+          found_new = False
 
           for ch_id, ch in channels.items():
               try:
@@ -194,77 +182,154 @@ jobs:
                   if not recent:
                       continue
 
-                  # Find new videos since last cursor
                   cursor = (cursors.get(ch_id) or {}).get('last_video_id', '')
-                  new_vids = []
+                  latest_id = recent[0]['video_id']
+
+                  # Collect all new videos since cursor (newest-first order)
+                  new_ids = []
                   for v in recent:
                       if v['video_id'] == cursor:
                           break
-                      new_vids.append(v)
+                      if v['video_id'] not in processed_hashes and v['video_id'] not in pending_hashes:
+                          new_ids.append(v['video_id'])
 
-                  if not new_vids:
-                      config.log(f'no new videos from {ch.get("name", ch_id)}')
-                      # Update cursor even if no new (ensures tracking)
-                      supabase_db.save_channel_cursor(ch_id, {'last_video_id': recent[0]['video_id']}, project_id=pid)
-                      continue
+                  if new_ids:
+                      found_new = True
+                      # Prepend reversed (oldest-first) to pending queue
+                      pending_hashes = new_ids[::-1] + pending_hashes
+                      config.log(f'{len(new_ids)} new video(s) from {ch.get("name", ch_id)}: {new_ids[::-1]}')
 
-                  config.log(f'found {len(new_vids)} new video(s) from {ch.get("name", ch_id)}')
+                  # Update cursor to latest
+                  supabase_db.save_channel_cursor(ch_id, {'last_video_id': latest_id}, project_id=pid)
 
-                  # Process oldest first
-                  for vid in reversed(new_vids):
-                      if vid['video_id'] in up_state.get('processed_hashes', []):
-                          continue
-                      config.log(f'downloading: {vid["video_id"]}')
-                      result = download_helpers.download_video(
-                          f'https://www.youtube.com/watch?v={vid["video_id"]}',
-                          f'/tmp/daily_{vid["video_id"]}'
-                      )
-                      if not result:
-                          config.log(f'download failed: {vid["video_id"]}')
-                          continue
-                      path = result['path'] if isinstance(result, dict) else result
-
-                      config.log(f'processing: {vid["video_id"]}')
-                      processed = daily_uploader.process_video(path)
-                      if not processed:
-                          config.log(f'processing failed: {vid["video_id"]}')
-                          continue
-
-                      title = vid.get('title', f'Daily Upload {vid["video_id"]}')
-                      desc = vid.get('description', '')
-                      tags = vid.get('tags', [])
-                      source_url = f'https://www.youtube.com/watch?v={vid["video_id"]}'
-                      config.log(f'uploading: {title}')
-                      video_id = daily_uploader.upload_daily(processed, title, desc, tags, source_url=source_url)
-                      if video_id:
-                          config.log(f'uploaded: {video_id}')
-                          uploaded += 1
-                          up_state['processed_hashes'].append(vid['video_id'])
-                          daily_uploader.save_upload_state(up_state)
-                      else:
-                          config.log(f'upload failed: {title}')
-                      time.sleep(2)
-
-                  # Save cursor as latest video seen
-                  supabase_db.save_channel_cursor(ch_id, {'last_video_id': recent[0]['video_id']}, project_id=pid)
               except Exception as e:
-                  config.log(f'error processing {ch_id}: {e}')
-                  continue
+                  config.log(f'detect error {ch_id}: {e}')
 
-          if uploaded:
-              config.log(f'uploaded {uploaded} video(s) this cycle')
+          # Persist pending_hashes
+          up_state['pending_hashes'] = pending_hashes
+          daily_uploader.save_upload_state(up_state)
+
+          if found_new:
+              print('new_detected=true')
           else:
-              config.log('no new videos to upload')
+              print('new_detected=false')
+          " 2>&1
+
+      - name: Process and upload
+        run: |
+          cd ~/.yt-mirror
+          CAN_UPLOAD=${{ steps.warmup.outputs.can_upload }}
+
+          if [ "$CAN_UPLOAD" != "true" ] && [ "${{ inputs.dry_run }}" != "true" ]; then
+              echo "Warmup/cooldown — skipping upload"
+              echo "## Can't upload yet" >> $GITHUB_STEP_SUMMARY
+              exit 0
+          fi
+
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+              python3 -c "
+          import json
+          s = json.loads(open('settings.json').read())
+          s['dry_run'] = True
+          open('settings.json', 'w').write(json.dumps(s, indent=2))
+          "
+          fi
+
+          python3 -c "
+          import sys, os
+          sys.path.insert(0, '$GITHUB_WORKSPACE')
+          import config
+          import daily_uploader
+          import download_helpers
+          import youtube_api
+          import supabase_db
+
+          youtube = youtube_api.get_client()
+          pid = os.environ.get('PROJECT_ID', '')
+          up_state = daily_uploader.load_upload_state()
+          pending_hashes = list(up_state.get('pending_hashes', []))
+          processed_hashes = list(up_state.get('processed_hashes', []))
+
+          # Pop oldest pending video (first in list)
+          target_id = None
+          while pending_hashes:
+              candidate = pending_hashes.pop(0)
+              if candidate not in processed_hashes:
+                  target_id = candidate
+                  break
+
+          if not target_id:
+              config.log('nothing pending — all detected videos already uploaded')
+              up_state['pending_hashes'] = []
+              daily_uploader.save_upload_state(up_state)
+              exit(0)
+
+          config.log(f'processing pending video: {target_id}')
+
+          source_url = f'https://www.youtube.com/watch?v={target_id}'
+
+          try:
+              # Fetch video info by ID directly
+              vid = {'video_id': target_id, 'title': f'Video {target_id}', 'description': '', 'tags': []}
+              try:
+                  resp = youtube.videos().list(part='snippet', id=target_id).execute()
+                  items = resp.get('items', [])
+                  if items:
+                      sn = items[0]['snippet']
+                      vid = {
+                          'video_id': target_id,
+                          'title': sn.get('title', vid['title']),
+                          'description': sn.get('description', ''),
+                          'tags': sn.get('tags', []),
+                      }
+              except Exception as e:
+                  config.log(f'could not fetch video info: {e}')
+
+              config.log(f'uploading: {vid[\"title\"]} ({target_id})')
+              result = download_helpers.download_video(source_url, f'/tmp/daily_{target_id}')
+              if not result:
+                  config.log(f'download failed: {target_id}')
+                  up_state['pending_hashes'] = pending_hashes
+                  daily_uploader.save_upload_state(up_state)
+                  exit(1)
+              path = result['path'] if isinstance(result, dict) else result
+
+              config.log(f'processing: {target_id}')
+              processed = daily_uploader.process_video(path)
+              if not processed:
+                  config.log(f'processing failed: {target_id}')
+                  up_state['pending_hashes'] = pending_hashes
+                  daily_uploader.save_upload_state(up_state)
+                  exit(1)
+
+              title = vid.get('title', f'Daily Upload {target_id}')
+              desc = vid.get('description', '')
+              tags = vid.get('tags', [])
+              video_id = daily_uploader.upload_daily(processed, title, desc, tags, source_url=source_url)
+              if video_id:
+                  config.log(f'uploaded: {video_id}')
+                  processed_hashes.append(target_id)
+                  up_state['processed_hashes'] = processed_hashes
+                  up_state['pending_hashes'] = pending_hashes
+                  daily_uploader.save_upload_state(up_state)
+              else:
+                  config.log(f'upload failed: {title}')
+                  # Keep in pending for retry next cycle
+                  pending_hashes.insert(0, target_id)
+                  up_state['pending_hashes'] = pending_hashes
+                  daily_uploader.save_upload_state(up_state)
+                  exit(1)
+          except Exception as e:
+              config.log(f'error: {e}')
+              pending_hashes.insert(0, target_id)
+              up_state['pending_hashes'] = pending_hashes
+              daily_uploader.save_upload_state(up_state)
+              exit(1)
+
+          config.log('upload successful')
           " 2>&1 | tee /tmp/process_output.txt
 
           echo "exit_code=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
-
-      - name: Skip upload (warmup)
-        if: steps.warmup.outputs.can_upload == 'false' && inputs.dry_run != 'true'
-        run: |
-          echo "Warmup day ${{ steps.warmup.outputs.warmup_day }} — skipping upload"
-          echo "## Warmup Progress" >> $GITHUB_STEP_SUMMARY
-          echo "Day ${{ steps.warmup.outputs.warmup_day }} — uploads will begin after warmup completes." >> $GITHUB_STEP_SUMMARY
 
       - name: Persist state
         if: always()

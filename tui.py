@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """YouTube Mirror Bot — Multi-project management TUI (all data in Supabase)."""
 
-import json, os, shutil, sys, time, http.server, urllib.request, urllib.error, urllib.parse
+import json, os, sys, time, http.server, urllib.request, urllib.error, urllib.parse
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -31,7 +31,6 @@ except ImportError:
 DATA_DIR = Path(os.environ.get("YT_DATA_DIR", os.path.expanduser("~/.yt-mirror")))
 BOOTSTRAP_PATH = DATA_DIR / "config.json"
 LOG_MAX_LINES = 80
-TEMPLATE_REPO = "adittaya/workflow-shorturl-yt"
 
 SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
@@ -130,6 +129,13 @@ def _parse_channel(raw):
     raw = raw.strip().rstrip("/")
     if "/@" in raw:
         handle = raw.split("/@")[-1].split("?")[0].split("/")[0]
+        return f"@{handle}"
+    if "/channel/" in raw:
+        cid = raw.split("/channel/")[-1].split("?")[0].split("/")[0]
+        if cid.startswith("UC"):
+            return cid
+    if "/c/" in raw:
+        handle = raw.split("/c/")[-1].split("?")[0].split("/")[0]
         return f"@{handle}"
     if raw.startswith("UC") and len(raw) > 15:
         return raw
@@ -281,6 +287,8 @@ FIELD_SPEC = [
     ("channels", "Channel URLs (comma-separated, @abc,@xyz)", False),
     ("shortlink_provider", "Shortlink provider (vplink/cleanuri/tinyurl)", False),
     ("shortlink_api_key", "Shortlink API key", False),
+    ("proxy_supabase_url", "Proxy Supabase URL (optional)", False),
+    ("proxy_supabase_key", "Proxy Supabase Service Key (optional)", False),
     ("warmup_days", "Warmup days (before first upload)", True),
     ("comment_moderation", "Comment mode (heldForReview/published)", False),
     ("mirror_title_prefix", "Title prefix (optional)", False),
@@ -380,7 +388,6 @@ def screen_setup(project):
 # ─── Auto-detect GitHub username and suggest repo ──────────────────────────
 
 def _auto_suggest_repo(pid, token, project_name):
-    import urllib.request, urllib.error, json
     try:
         req = urllib.request.Request("https://api.github.com/user",
             headers={"Authorization": f"token {token}", "User-Agent": "yt-mirror-cli"})
@@ -452,6 +459,8 @@ def _do_deploy(project):
         "PROJECT_ID": str(project["id"]),
         "SUPABASE_URL": su_url,
         "SUPABASE_SERVICE_KEY": su_key,
+        "PROXY_SUPABASE_URL": project.get("proxy_supabase_url", ""),
+        "PROXY_SUPABASE_SERVICE_KEY": project.get("proxy_supabase_key", ""),
         "YT_CLIENT_ID": project.get("yt_client_id", ""),
         "YT_CLIENT_SECRET": project.get("yt_client_secret", ""),
         "YT_REFRESH_TOKEN": project.get("yt_refresh_token", ""),
@@ -761,8 +770,12 @@ def screen_status(project):
                 secret_names = [s["name"] for s in data.get("secrets", [])]
                 required = ["SUPABASE_URL", "SUPABASE_SERVICE_KEY", "YT_CLIENT_ID",
                             "YT_CLIENT_SECRET", "YT_REFRESH_TOKEN", "GH_PAT", "CHANNELS", "SETTINGS"]
+                optional = ["PROXY_SUPABASE_URL", "PROXY_SUPABASE_SERVICE_KEY"]
                 for s in required:
                     _ok(f"Secret: {s}") if s in secret_names else _fail(f"Secret: {s} missing", fix="Run [D]eploy")
+                for s in optional:
+                    if s in secret_names:
+                        _ok(f"Secret: {s}")
         except Exception as e:
             _warn(f"Could not check secrets: {e}")
     else:

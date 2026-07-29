@@ -403,6 +403,7 @@ def _do_deploy(project):
             }
 
     secrets = {
+        "PROJECT_ID": project["id"],
         "SUPABASE_URL": su_url,
         "SUPABASE_SERVICE_KEY": su_key,
         "YT_CLIENT_ID": project.get("yt_client_id", ""),
@@ -633,7 +634,7 @@ def screen_status(project):
     # 2. Supabase connection
     print(f"\n  {C_DIM}── Supabase Database ──{C_RESET}")
     try:
-        test = supabase_db.get_upload_state()
+        test = supabase_db.get_upload_state(project_id=project["id"])
         _ok("Connected to Supabase")
         ws = test.get("warmup_start")
         wc = test.get("warmup_complete", False)

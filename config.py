@@ -13,6 +13,8 @@ STATE_PATH = DATA_DIR / "state.json"
 ACCOUNTS_PATH = DATA_DIR / "accounts.json"
 SETTINGS_PATH = DATA_DIR / "settings.json"
 
+PROJECT_ID = os.environ.get("PROJECT_ID", "")
+
 DEFAULTS = {
     "yt_client_id": "",
     "yt_client_secret": "",
@@ -73,7 +75,7 @@ def save(config):
 
 
 def load_channels():
-    if supabase_db.is_enabled():
+    if supabase_db.is_enabled() and not PROJECT_ID:
         rows = supabase_db.get_all_channels()
         return {r["id"]: {
             "url": r.get("url", ""),
@@ -89,7 +91,7 @@ def load_channels():
 
 
 def save_channels(channels):
-    if supabase_db.is_enabled():
+    if supabase_db.is_enabled() and not PROJECT_ID:
         for ch_id, ch in channels.items():
             supabase_db.save_channel(ch_id, {
                 "name": ch.get("alias", ch_id),
@@ -104,8 +106,9 @@ def save_channels(channels):
 
 def load_state():
     if supabase_db.is_enabled():
-        processed_rows = supabase_db.get_all_mirror_states()
-        stats = supabase_db.get_mirror_stats()
+        pid = PROJECT_ID
+        processed_rows = supabase_db.get_all_mirror_states(project_id=pid)
+        stats = supabase_db.get_mirror_stats(project_id=pid)
         processed = {}
         for r in processed_rows:
             key = f"{r['source_channel']}:{r['source_video_id']}"
@@ -126,6 +129,7 @@ def load_state():
 
 def save_state(state):
     if supabase_db.is_enabled():
+        pid = PROJECT_ID
         for key, entry in state.get("processed", {}).items():
             if ":" in key:
                 source, vid = key.split(":", 1)
@@ -137,15 +141,15 @@ def save_state(state):
                 "mirrored_at": entry.get("mirrored_at"),
                 "comment_id": entry.get("comment_id", ""),
                 "shortened_urls": entry.get("shortened_urls", {}),
-            })
-        supabase_db.update_mirror_stats(state.get("stats", {}))
+            }, project_id=pid)
+        supabase_db.update_mirror_stats(state.get("stats", {}), project_id=pid)
         return
     _ensure_dir()
     _write_json(STATE_PATH, state)
 
 
 def load_accounts():
-    if supabase_db.is_enabled():
+    if supabase_db.is_enabled() and not PROJECT_ID:
         rows = supabase_db.get_all_accounts()
         return {r["name"]: {
             "client_id": r["client_id"],
@@ -162,7 +166,7 @@ def load_accounts():
 
 
 def save_accounts(accounts):
-    if supabase_db.is_enabled():
+    if supabase_db.is_enabled() and not PROJECT_ID:
         for name, acct in accounts.items():
             supabase_db.save_account(name, {
                 "client_id": acct.get("client_id", ""),
@@ -193,7 +197,7 @@ def load_tui_settings():
         "comment_moderation": "heldForReview",
         "warmup_days": 14,
     }
-    if supabase_db.is_enabled():
+    if supabase_db.is_enabled() and not PROJECT_ID:
         for key in defaults:
             val = supabase_db.get_setting(f"tui_{key}")
             if val is not None:

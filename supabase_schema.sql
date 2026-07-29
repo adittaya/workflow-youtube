@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS channels (
 
 -- 4. Mirror state — processed videos (replaces state.json "processed")
 CREATE TABLE IF NOT EXISTS mirror_state (
-  id SERIAL PRIMARY KEY,
+  id SERIAL,
   source_channel TEXT NOT NULL,
   source_video_id TEXT NOT NULL,
   mirrored_video_id TEXT,
@@ -42,24 +42,22 @@ CREATE TABLE IF NOT EXISTS mirror_state (
   mirrored_at TIMESTAMPTZ,
   comment_id TEXT DEFAULT '',
   shortened_urls JSONB DEFAULT '{}',
-  UNIQUE(source_channel, source_video_id)
+  project_id TEXT NOT NULL DEFAULT '',
+  UNIQUE(project_id, source_channel, source_video_id)
 );
 
 -- 5. Mirror stats (replaces state.json "stats")
 CREATE TABLE IF NOT EXISTS mirror_stats (
-  id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  project_id TEXT NOT NULL DEFAULT '' PRIMARY KEY,
   total_mirrored INTEGER DEFAULT 0,
   total_comments INTEGER DEFAULT 0,
   total_shortened INTEGER DEFAULT 0,
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Insert default stats row
-INSERT INTO mirror_stats (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
-
 -- 6. Upload / warmup state (replaces upload_state.json)
 CREATE TABLE IF NOT EXISTS upload_state (
-  id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  project_id TEXT NOT NULL DEFAULT '' PRIMARY KEY,
   account_created TIMESTAMPTZ,
   warmup_start TIMESTAMPTZ,
   warmup_complete BOOLEAN DEFAULT false,
@@ -71,9 +69,6 @@ CREATE TABLE IF NOT EXISTS upload_state (
   yt_client_id TEXT DEFAULT '',
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
-
--- Insert default upload_state row
-INSERT INTO upload_state (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
 
 -- 7. Projects — multi-project management (all credentials per project, no local files)
 CREATE TABLE IF NOT EXISTS projects (
@@ -105,18 +100,54 @@ CREATE TABLE IF NOT EXISTS upload_logs (
   title TEXT DEFAULT '',
   short_url TEXT DEFAULT '',
   comment_id TEXT DEFAULT '',
+  project_id TEXT DEFAULT '',
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- 10. Channel cursor — last checked video per channel (from monitor)
 CREATE TABLE IF NOT EXISTS channel_cursors (
-  channel_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL DEFAULT '',
+  channel_id TEXT NOT NULL,
   last_video_id TEXT DEFAULT '',
   last_checked TIMESTAMPTZ,
-  updated_at TIMESTAMPTZ DEFAULT NOW()
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  PRIMARY KEY (project_id, channel_id)
 );
 
 -- Indexes for performance
-CREATE INDEX IF NOT EXISTS idx_mirror_state_source ON mirror_state(source_channel, source_video_id);
-CREATE INDEX IF NOT EXISTS idx_upload_logs_date ON upload_logs(upload_date DESC);
+CREATE INDEX IF NOT EXISTS idx_mirror_state_source ON mirror_state(project_id, source_channel, source_video_id);
+CREATE INDEX IF NOT EXISTS idx_upload_logs_date ON upload_logs(project_id, upload_date DESC);
 CREATE INDEX IF NOT EXISTS idx_upload_logs_time ON upload_logs(upload_time DESC);
+
+-- ─── Migration: add project_id to existing tables ─────────────────────────
+ALTER TABLE mirror_state ADD COLUMN IF NOT EXISTS project_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE mirror_stats ADD COLUMN IF NOT EXISTS project_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE upload_state ADD COLUMN IF NOT EXISTS project_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE upload_logs ADD COLUMN IF NOT EXISTS project_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE channel_cursors ADD COLUMN IF NOT EXISTS project_id TEXT NOT NULL DEFAULT '';
+
+-- Update constraints for multi-project isolation
+ALTER TABLE mirror_state DROP CONSTRAINT IF EXISTS mirror_state_source_channel_source_video_id_key;
+-- The new CREATE TABLE statement handles the new UNIQUE(project_id, source_channel, source_video_id)
+-- For existing tables, add it explicitly:
+ALTER TABLE mirror_state ADD CONSTRAINT mirror_state_pid_source UNIQUE (project_id, source_channel, source_video_id);
+
+ALTER TABLE channel_cursors DROP CONSTRAINT IF EXISTS channel_cursors_pkey;
+ALTER TABLE channel_cursors ADD PRIMARY KEY (project_id, channel_id);
+
+-- Handle upload_state and mirror_stats transitioning from id-based to project_id-based PK
+-- These were single-row tables (id=1), now project_id is the PK
+-- Only needed if the old definition was used:
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'upload_state') THEN
+    ALTER TABLE upload_state DROP CONSTRAINT IF EXISTS upload_state_pkey;
+    ALTER TABLE upload_state DROP CONSTRAINT IF EXISTS upload_state_id_check;
+    ALTER TABLE upload_state ALTER COLUMN id DROP DEFAULT;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'mirror_stats') THEN
+    ALTER TABLE mirror_stats DROP CONSTRAINT IF EXISTS mirror_stats_pkey;
+    ALTER TABLE mirror_stats DROP CONSTRAINT IF EXISTS mirror_stats_id_check;
+    ALTER TABLE mirror_stats ALTER COLUMN id DROP DEFAULT;
+  END IF;
+END$$;

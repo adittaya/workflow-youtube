@@ -122,48 +122,50 @@ def delete_channel(channel_id):
 
 # ─── Mirror State ────────────────────────────────────────────────────────
 
-def get_mirror_state(source_channel, source_video_id):
+def get_mirror_state(source_channel, source_video_id, project_id=""):
     row = _request("GET",
-        f"mirror_state?source_channel=eq.{source_channel}&source_video_id=eq.{source_video_id}&select=*")
+        f"mirror_state?project_id=eq.{project_id}&source_channel=eq.{source_channel}&source_video_id=eq.{source_video_id}&select=*")
     return row[0] if row else None
 
 
-def get_all_mirror_states():
-    return _request("GET", "mirror_state?select=*") or []
+def get_all_mirror_states(project_id=""):
+    return _request("GET", f"mirror_state?project_id=eq.{project_id}&select=*") or []
 
 
-def save_mirror_state(source_channel, source_video_id, data):
+def save_mirror_state(source_channel, source_video_id, data, project_id=""):
+    data["project_id"] = project_id
     data["source_channel"] = source_channel
     data["source_video_id"] = source_video_id
     data["mirrored_at"] = data.get("mirrored_at") or datetime.utcnow().isoformat()
-    _upsert("mirror_state", data, on_conflict="source_channel,source_video_id")
+    _upsert("mirror_state", data, on_conflict="project_id,source_channel,source_video_id")
 
 
 # ─── Mirror Stats ────────────────────────────────────────────────────────
 
-def get_mirror_stats():
-    row = _request("GET", "mirror_stats?id=eq.1&select=*")
+def get_mirror_stats(project_id=""):
+    row = _request("GET", f"mirror_stats?project_id=eq.{project_id}&select=*")
     if row:
         return row[0]
     return {"total_mirrored": 0, "total_comments": 0, "total_shortened": 0}
 
 
-def update_mirror_stats(stats):
-    stats["id"] = 1
+def update_mirror_stats(stats, project_id=""):
+    stats["project_id"] = project_id
     stats["updated_at"] = datetime.utcnow().isoformat()
-    _upsert("mirror_stats", stats, on_conflict="id")
+    _upsert("mirror_stats", stats, on_conflict="project_id")
 
 
 # ─── Upload State ────────────────────────────────────────────────────────
 
-def get_upload_state():
-    row = _request("GET", "upload_state?id=eq.1&select=*")
+def get_upload_state(project_id=""):
+    row = _request("GET", f"upload_state?project_id=eq.{project_id}&select=*")
     if row:
         s = row[0]
         if isinstance(s.get("processed_hashes"), list):
             s["processed_hashes"] = [h for h in s["processed_hashes"]]
         return s
     return {
+        "project_id": project_id,
         "account_created": None, "warmup_start": None,
         "warmup_complete": False, "first_upload_date": None,
         "total_uploaded": 0, "last_upload_date": None,
@@ -172,9 +174,9 @@ def get_upload_state():
     }
 
 
-def save_upload_state(state):
+def save_upload_state(state, project_id=""):
     row = {
-        "id": 1,
+        "project_id": project_id,
         "account_created": state.get("account_created"),
         "warmup_start": state.get("warmup_start"),
         "warmup_complete": state.get("warmup_complete", False),
@@ -186,44 +188,46 @@ def save_upload_state(state):
         "yt_client_id": state.get("yt_client_id", ""),
         "updated_at": datetime.utcnow().isoformat(),
     }
-    _upsert("upload_state", row, on_conflict="id")
+    _upsert("upload_state", row, on_conflict="project_id")
 
 
 # ─── Upload Logs ─────────────────────────────────────────────────────────
 
-def get_upload_logs(limit=100):
-    return _request("GET", f"upload_logs?select=*&order=upload_time.desc&limit={limit}") or []
+def get_upload_logs(limit=100, project_id=""):
+    return _request("GET", f"upload_logs?select=*&project_id=eq.{project_id}&order=upload_time.desc&limit={limit}") or []
 
 
-def get_today_upload_count(date_str):
+def get_today_upload_count(date_str, project_id=""):
     rows = _request("GET",
-        f"upload_logs?select=id&upload_date=eq.{date_str}")
+        f"upload_logs?select=id&project_id=eq.{project_id}&upload_date=eq.{date_str}")
     return len(rows) if rows else 0
 
 
-def add_upload_log(entry):
+def add_upload_log(entry, project_id=""):
+    entry["project_id"] = project_id
     _request("POST", "upload_logs", data=entry)
 
 
 # ─── Channel Cursors (monitor state) ───────────────────────────────────
 
-def get_channel_cursor(channel_id):
-    row = _request("GET", f"channel_cursors?channel_id=eq.{channel_id}&select=*")
+def get_channel_cursor(channel_id, project_id=""):
+    row = _request("GET", f"channel_cursors?project_id=eq.{project_id}&channel_id=eq.{channel_id}&select=*")
     return row[0] if row else None
 
 
-def get_all_cursors():
-    rows = _request("GET", "channel_cursors?select=*")
+def get_all_cursors(project_id=""):
+    rows = _request("GET", f"channel_cursors?project_id=eq.{project_id}&select=*")
     result = {}
     for r in rows or []:
         result[r["channel_id"]] = r
     return result
 
 
-def save_channel_cursor(channel_id, data):
+def save_channel_cursor(channel_id, data, project_id=""):
+    data["project_id"] = project_id
     data["channel_id"] = channel_id
     data["updated_at"] = datetime.utcnow().isoformat()
-    _upsert("channel_cursors", data, on_conflict="channel_id")
+    _upsert("channel_cursors", data, on_conflict="project_id,channel_id")
 
 
 # ─── Projects ───────────────────────────────────────────────────────────────

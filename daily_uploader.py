@@ -26,7 +26,7 @@ MIN_HOURS_BETWEEN = 18
 
 def load_upload_state():
     if supabase_db.is_enabled():
-        return supabase_db.get_upload_state()
+        return supabase_db.get_upload_state(project_id=config.PROJECT_ID)
     try:
         return json.loads(UPLOAD_STATE.read_text("utf-8"))
     except Exception:
@@ -45,7 +45,7 @@ def load_upload_state():
 
 def save_upload_state(state):
     if supabase_db.is_enabled():
-        supabase_db.save_upload_state(state)
+        supabase_db.save_upload_state(state, project_id=config.PROJECT_ID)
         return
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     UPLOAD_STATE.write_text(json.dumps(state, indent=2), "utf-8")
@@ -53,7 +53,7 @@ def save_upload_state(state):
 
 def load_daily_log():
     if supabase_db.is_enabled():
-        logs = supabase_db.get_upload_logs(limit=100)
+        logs = supabase_db.get_upload_logs(limit=100, project_id=config.PROJECT_ID)
         return {"uploads": [{
             "date": l.get("upload_date", ""),
             "time": l.get("upload_time", ""),
@@ -285,7 +285,7 @@ def upload_daily(video_path, title=None, description=None,
             "comment_id": comment_id or "",
         }
         if supabase_db.is_enabled():
-            supabase_db.add_upload_log(entry)
+            supabase_db.add_upload_log(entry, project_id=config.PROJECT_ID)
         else:
             log = load_daily_log()
             log["uploads"].append(entry)

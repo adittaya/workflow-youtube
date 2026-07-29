@@ -9,22 +9,23 @@
 
 ## CI Workflow
 
-1. **Warmup** — auto-starts/completes based on elapsed time; tracks `yt_client_id` for account changes
-2. **Detect** (always runs) — polls each channel's uploads playlist, compares with `channel_cursors.last_video_id`, collects all new IDs into `pending_hashes` queue (oldest-first), updates cursor
-3. **Process** (only if can_upload) — pops oldest from `pending_hashes`, fetches video info via YouTube API by ID, downloads with yt-dlp (android client), processes via `daily_uploader`, uploads; on failure re-queues to pending
+1. **Warmup** (always) — auto-starts/completes based on elapsed time; tracks `yt_client_id` for account changes
+2. **Detect** (always) — polls each channel's uploads playlist, compares with `channel_cursors.last_video_id`, collects new IDs into `pending_hashes` (oldest-first), updates cursor
+3. **Fetch proxy** (always) — queries proxy Supabase (`bytemjjijgwwcrxlgutf`) for VPLINK-verified residential proxies, speed-tests each (5s HTTP timeout), stores top 10 working in `WORKING_PROXIES` env var
+4. **Process** (only if can_upload) — pops oldest from `pending_hashes`, downloads with yt-dlp (`android` client through `--proxy`), processes via `daily_uploader`, uploads; fails → tries next proxy, then re-queues if all proxies exhausted
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
 | `tui.py` | Multi-project TUI with auto-suggest, OAuth, warmup, deploy, dispatch |
-| `supabase_db.py` | Supabase REST wrapper with `resolution=merge-duplicates` Prefer header |
+| `supabase_db.py` | Supabase REST wrapper with `resolution=merge-duplicates` Prefer header; retry with backoff |
 | `daily_uploader.py` | Warmup/scheduling, cursor tracking, tz-safe datetime arithmetic |
-| `download_helpers.py` | yt-dlp download with `--extractor-args youtube:player_client=android` |
+| `download_helpers.py` | yt-dlp download with `--extractor-args youtube:player_client=android`; iterates `WORKING_PROXIES` on failure |
 | `github_api.py` | Repo CRUD, git push (remove origin before add), secret encryption, dispatch |
 | `config.py` | Channels/accounts/state via Supabase |
 | `youtube_api.py` | YouTube Data API v3 wrapper |
-| `.github/workflows/youtube.yml` | 6h cron workflow |
+| `.github/workflows/youtube.yml` | 6h cron + workflow dispatch |
 
 ## State Management
 

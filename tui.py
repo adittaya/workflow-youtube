@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """YouTube Mirror Bot — Multi-project management TUI (all data in Supabase)."""
 
-import json, os, sys, time, http.server, urllib.request, urllib.error, urllib.parse
+import json, os, sys, time, http.server, urllib.request, urllib.error, urllib.parse, re
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -302,6 +302,18 @@ def _display_val(val, sensitive=False):
         return "*" * 8 + (val[-4:] if len(val) > 4 else "")
     return val if len(val) < 50 else val[:20] + "..." + val[-10:]
 
+def _sanitize_field(key, value):
+    if not value or not isinstance(value, str):
+        return value
+    if key == "yt_client_id":
+        m = re.search(r'([\w\-]+\.apps\.googleusercontent\.com)', value)
+        if m:
+            return m.group(1)
+        value = re.sub(r'^https?://', '', value).split('/')[0]
+        value = value.split('?')[0]
+    return value
+
+
 def screen_setup(project):
     pid = project["id"]
 
@@ -325,6 +337,7 @@ def screen_setup(project):
         print()
         print(f"  {C_BOLD}[D]{C_RESET} Deploy to GitHub Actions")
         print(f"  {C_BOLD}[O]{C_RESET} YouTube OAuth login (get refresh token)")
+        print(f"  {C_BOLD}[C]{C_RESET} Doctor — validate & fix all fields")
         print(f"  {C_BOLD}[W]{C_RESET} Reset warmup start to today")
         print(f"  {C_BOLD}[B]{C_RESET} Back")
         print()
@@ -337,6 +350,8 @@ def screen_setup(project):
             _do_deploy(p)
         elif choice == "O":
             _do_oauth(p)
+        elif choice == "C":
+            _do_doctor(p)
         elif choice == "W":
             try:
                 now = datetime.now(timezone.utc)
@@ -363,16 +378,21 @@ def screen_setup(project):
                 old = p.get(key, "")
                 new_val = prompt(f"{label}", old)
                 if new_val is not None:
-                    try:
-                        if is_num:
-                            supabase_db.update_project(pid, **{key: int(new_val)})
-                        else:
-                            supabase_db.update_project(pid, **{key: new_val})
-                        success(f"{label} saved")
-                        p[key] = new_val
-                    except Exception as e:
-                        error(f"Failed: {e}")
-                        continue
+                    new_val = _sanitize_field(key, new_val)
+                    if new_val != old:
+                        hint = ""
+                        if key == "yt_client_id" and new_val != old:
+                            hint = f" (auto-cleaned: {new_val})"
+                        try:
+                            if is_num:
+                                supabase_db.update_project(pid, **{key: int(new_val)})
+                            else:
+                                supabase_db.update_project(pid, **{key: new_val})
+                            success(f"{label} saved{hint}")
+                            p[key] = new_val
+                        except Exception as e:
+                            error(f"Failed: {e}")
+                            continue
 
                 # ── Auto-actions ──────────────────────────────────────────
                 # GitHub token saved → detect username, suggest repo
@@ -402,6 +422,101 @@ def _auto_suggest_repo(pid, token, project_name):
                     success(f"Repo set to {suggested}")
     except Exception as e:
         warn(f"Could not auto-detect GitHub user: {e}")
+
+# ─── Doctor ───────────────────────────────────────────────────────────────────
+
+def _do_doctor(project):
+    clear()
+    banner()
+    print(f"\n  {C_BOLDWHITE}DOCTOR — {project['name']}{C_RESET}")
+    print(f"  {C_DIM}Validating project fields and suggesting fixes...{C_RESET}\n")
+
+    pid = project["id"]
+    p = supabase_db.get_project(pid) or project
+    fixed = 0
+    issues = 0
+
+    def _check(label, ok, fix=""):
+        nonlocal issues, fixed
+        if ok:
+            print(f"  {C_GREEN}[OK]{C_RESET}   {label}")
+            fixed += 1
+        else:
+            print(f"  {C_RED}[ISSUE]{C_RESET} {label}" + (f" — {fix}" if fix else ""))
+            issues += 1
+
+    cid = p.get("yt_client_id", "")
+    csec = p.get("yt_client_secret", "")
+    rt = p.get("yt_refresh_token", "")
+    token = p.get("github_token", "")
+    repo = p.get("github_repo", "")
+
+    # 1. Client ID
+    bad_prefix = False
+    if cid and (cid.startswith("http://") or cid.startswith("https://")):
+        cleaned = _sanitize_field("yt_client_id", cid)
+        supabase_db.update_project(pid, yt_client_id=cleaned)
+        _check("YouTube Client ID has URL prefix", False, f"Auto-fixed → {cleaned}")
+        bad_prefix = True
+        cid = cleaned
+    else:
+        _check(f"YouTube Client ID {'set' if cid else 'missing'}", bool(cid),
+               "Enter your Google Cloud OAuth client ID in field [1]")
+
+    # 2. Client Secret
+    _check(f"YouTube Client Secret {'set' if csec else 'missing'}", bool(csec),
+           "Enter your Google Cloud OAuth client secret in field [2]")
+
+    # 3. Refresh Token
+    _check(f"YouTube Refresh Token {'set' if rt else 'missing'}", bool(rt),
+           "Run [O] OAuth login after setting client ID + secret")
+
+    # 4. GitHub Token
+    _check(f"GitHub Token {'set' if token else 'missing'}", bool(token),
+           "Enter a GitHub PAT with repo scope in field [4]")
+
+    # 5. GitHub Repo
+    if repo:
+        parts = repo.split("/")
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            _check("GitHub Repo format", False, f"Expected owner/repo, got {repo!r}")
+        else:
+            _check(f"GitHub Repo set ({repo})", True)
+    else:
+        _check("GitHub Repo", False, "Set in field [5] or it will be auto-suggested when you set the token")
+
+    # 6. Channels
+    channels_raw = p.get("channels", "")
+    if channels_raw:
+        chs = [c.strip() for c in channels_raw.split(",") if c.strip()]
+        valid = 0
+        invalid = 0
+        for c in chs:
+            parsed = _parse_channel(c)
+            if parsed:
+                valid += 1
+            else:
+                invalid += 1
+                _check(f"Channel URL {c}", False, "Use @handle or /channel/UCxxx format")
+        if invalid == 0:
+            _check(f"Channels: {valid} configured", True)
+    else:
+        _check("Channels", False, "Add channel URLs in field [6]")
+
+    # 7. Provider overlap check
+    if cid and csec:
+        _check("YouTube credentials: client ID + secret both set", True)
+    if cid and csec and rt:
+        _check("YouTube auth: fully configured (ID + secret + token)", True)
+
+    print()
+    if issues > 0:
+        _warn(f"{issues} issue(s) found")
+    if fixed > 0:
+        _success(f"{fixed} auto-fix(es) applied")
+    if issues == 0:
+        _success("All checks passed — ready to deploy!")
+    input(f"\n  Press Enter to continue...")
 
 # ─── Deploy ──────────────────────────────────────────────────────────────────
 

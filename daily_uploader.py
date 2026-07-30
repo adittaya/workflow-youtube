@@ -5,7 +5,7 @@ import time
 import subprocess
 import hashlib
 from pathlib import Path
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import config
 import supabase_db
@@ -22,8 +22,6 @@ WARMUP_STATE = DATA_DIR / "warmup_state.json"
 DAILY_LOG = DATA_DIR / "daily_log.json"
 
 WARMUP_DAYS_DEFAULT = 0
-MAX_VIDEOS_PER_DAY = 1
-MIN_HOURS_BETWEEN = 18
 
 
 def load_upload_state():
@@ -133,6 +131,25 @@ def get_warmup_days():
 _get_warmup_days = get_warmup_days
 
 
+def get_upload_config():
+    try:
+        settings = json.loads((DATA_DIR / "settings.json").read_text("utf-8"))
+        per_day = int(settings.get("uploads_per_day", 2))
+    except Exception:
+        per_day = 2
+    if per_day < 1:
+        per_day = 1
+    return per_day, 24.0 / per_day
+
+
+def get_backfill_count():
+    try:
+        settings = json.loads((DATA_DIR / "settings.json").read_text("utf-8"))
+        return int(settings.get("initial_backfill", 5))
+    except Exception:
+        return 5
+
+
 def get_warmup_day():
     state = load_upload_state()
     if not state.get("warmup_start"):
@@ -159,21 +176,23 @@ def can_upload_today():
         config.log(f"warmup day {day}/{_get_warmup_days()} - no uploads yet")
         return False, f"warmup day {day}/{_get_warmup_days()}"
 
+    max_per_day, hours_between = get_upload_config()
+
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if state.get("last_upload_date") == today:
         log = load_daily_log()
         today_uploads = [u for u in log["uploads"]
                          if u.get("date") == today]
-        if len(today_uploads) >= MAX_VIDEOS_PER_DAY:
-            return False, f"already uploaded {MAX_VIDEOS_PER_DAY} today"
+        if len(today_uploads) >= max_per_day:
+            return False, f"already uploaded {max_per_day} today"
 
     if state.get("last_upload_hour"):
         last = datetime.fromisoformat(state["last_upload_hour"])
         if last.tzinfo is not None:
             last = last.replace(tzinfo=None)
         hours_since = (datetime.now(timezone.utc).replace(tzinfo=None) - last).total_seconds() / 3600
-        if hours_since < MIN_HOURS_BETWEEN:
-            wait = MIN_HOURS_BETWEEN - hours_since
+        if hours_since < hours_between:
+            wait = hours_between - hours_since
             return False, f"wait {wait:.1f}h more"
 
     return True, "ready"

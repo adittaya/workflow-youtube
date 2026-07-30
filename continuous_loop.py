@@ -84,7 +84,20 @@ def detect_and_queue():
             latest_id = recent[0]['video_id']
 
             if not cursor:
-                config.log(f'first run for {ch_id} — setting baseline cursor to {latest_id}, no videos queued')
+                backfill = daily_uploader.get_backfill_count()
+                if backfill > 0:
+                    new_ids = []
+                    for v in recent[:backfill]:
+                        if v['video_id'] not in processed_hashes and v['video_id'] not in pending_hashes:
+                            new_ids.append(v['video_id'])
+                    if new_ids:
+                        pending_hashes = new_ids[::-1] + pending_hashes
+                        config.log(f'initial backfill: queuing {len(new_ids)} video(s) from {ch_id}: {new_ids[::-1]}')
+                        found_new = True
+                    else:
+                        config.log(f'first run for {ch_id} — no new videos to backfill (all already queued/processed)')
+                else:
+                    config.log(f'first run for {ch_id} — setting baseline cursor to {latest_id}, no videos queued')
                 supabase_db.save_channel_cursor(ch_id, {'last_video_id': latest_id}, project_id=pid)
                 continue
 

@@ -299,6 +299,8 @@ FIELD_SPEC = [
     ("warmup_days", "Warmup days (before first upload)", True),
     ("comment_moderation", "Comment mode (heldForReview/published)", False),
     ("mirror_title_prefix", "Title prefix (optional)", False),
+    ("uploads_per_day", "Uploads per day (24/N = hours between)", True),
+    ("initial_backfill", "Initial backfill (videos to queue on first detect)", True),
 ]
 
 def _display_val(val, sensitive=False):
@@ -674,6 +676,8 @@ def _do_deploy(project):
             "comment_moderation": project.get("comment_moderation", "heldForReview"),
             "warmup_days": int(project.get("warmup_days", 0)),
             "mirror_title_prefix": project.get("mirror_title_prefix", ""),
+            "uploads_per_day": int(project.get("uploads_per_day", 2)),
+            "initial_backfill": int(project.get("initial_backfill", 5)),
         }),
         "SHORTLINK_KEYS": json.dumps({"default": {
             "provider": project.get("shortlink_provider", "vplink"),

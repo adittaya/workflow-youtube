@@ -196,6 +196,8 @@ def load_tui_settings():
         "shortener_provider": "vplink",
         "comment_moderation": "heldForReview",
         "warmup_days": 0,
+        "uploads_per_day": 2,
+        "initial_backfill": 5,
     }
     if supabase_db.is_enabled() and not PROJECT_ID:
         for key in defaults:

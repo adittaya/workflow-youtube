@@ -650,7 +650,7 @@ def _do_deploy(project):
     existing = github_api.get_repo(owner, rn, token)
     repo_exists = not (isinstance(existing, dict) and existing.get("error"))
 
-    total_steps = 6 if not repo_exists else 5
+    total_steps = 6
     step_num = 0
 
     def step(msg):
@@ -699,8 +699,19 @@ def _do_deploy(project):
     step("Finding workflow..." if repo_exists else "Finding workflow...")
     wf = github_api.get_mirror_workflow(owner, rn, token)
     if not wf:
-        warn("No youtube.yml workflow found — push may still be in progress")
-    else:
+        if repo_exists:
+            step("Pushing code from local...")
+            src_dir = str(Path(__file__).parent)
+            remote_url = f"https://{token}@github.com/{owner}/{rn}.git"
+            ok, err = github_api.git_push(src_dir, remote_url)
+            if not ok:
+                error(f"Git push failed: {err}")
+                return
+            success("Code pushed")
+            wf = github_api.get_mirror_workflow(owner, rn, token)
+        if not wf:
+            warn("No youtube.yml workflow found — push may still be in progress")
+    if wf:
         # Step 5/3: Enable workflow
         step("Enabling workflow..." if repo_exists else "Enabling workflow...")
         github_api.enable_workflow(owner, rn, wf["id"], token)

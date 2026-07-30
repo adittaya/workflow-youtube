@@ -190,7 +190,11 @@ def project_list_screen():
                     else:
                         error("Failed to create project — name may already exist")
                 except Exception as e:
-                    error(f"Failed: {e}")
+                    msg = str(e)
+                    if "409" in msg or "Conflict" in msg:
+                        error("Project name already exists — choose a different name")
+                    else:
+                        error(f"Failed to create project: {e}")
             continue
         elif choice == "D" and projects:
             for i, p in enumerate(projects, 1):
@@ -201,8 +205,11 @@ def project_list_screen():
                 if 0 <= idx < len(projects):
                     p = projects[idx]
                     if confirm(f"Delete project '{p['name']}' and ALL its data?"):
-                        supabase_db.delete_project(p["id"])
-                        success(f"Deleted '{p['name']}'")
+                        try:
+                            supabase_db.delete_project(p["id"])
+                            success(f"Deleted '{p['name']}'")
+                        except Exception as e:
+                            error(f"Failed to delete: {e}")
             continue
         elif choice == "C":
             su = prompt("Supabase URL", _read_json(BOOTSTRAP_PATH).get("supabase_url", ""))
@@ -355,10 +362,11 @@ def screen_setup(project):
         elif choice == "W":
             try:
                 now = datetime.now(timezone.utc)
+                wd = int(p.get("warmup_days", 0))
                 supabase_db.save_upload_state({
                     "account_created": now.isoformat(),
                     "warmup_start": now.isoformat(),
-                    "warmup_complete": False,
+                    "warmup_complete": wd <= 0,
                     "first_upload_date": None,
                     "total_uploaded": 0,
                     "last_upload_date": None,
@@ -366,7 +374,10 @@ def screen_setup(project):
                     "processed_hashes": [],
                     "yt_client_id": p.get("yt_client_id", ""),
                 }, project_id=pid)
-                success("Warmup reset to today")
+                if wd <= 0:
+                    success("Warmup reset to today — 0 days means uploads start immediately")
+                else:
+                    success(f"Warmup reset to today — {wd} day warmup started")
                 input("\n  Press Enter to continue...")
             except Exception as e:
                 error(f"Failed: {e}")
@@ -385,7 +396,12 @@ def screen_setup(project):
                             hint = f" (auto-cleaned: {new_val})"
                         try:
                             if is_num:
-                                supabase_db.update_project(pid, **{key: int(new_val)})
+                                try:
+                                    num_val = int(new_val)
+                                except (ValueError, TypeError):
+                                    error(f"{label} must be a valid number")
+                                    continue
+                                supabase_db.update_project(pid, **{key: num_val})
                             else:
                                 supabase_db.update_project(pid, **{key: new_val})
                             success(f"{label} saved{hint}")
@@ -552,6 +568,22 @@ def _do_doctor(project):
                     _check(f"GitHub repo {repo}", False, f"HTTP {e.code}")
             except Exception as e:
                 _check(f"GitHub repo {repo}", False, f"{e}")
+
+    # 10. Warmup days
+    wd = p.get("warmup_days")
+    if wd is not None:
+        try:
+            wdv = int(wd)
+            if wdv < 0:
+                _check("Warmup days is negative", False, "Set to 0 or a positive number in field [11]")
+            elif wdv == 0:
+                _check("Warmup days: 0 (no wait — uploads start immediately)", True)
+            else:
+                _check(f"Warmup days: {wdv}", True)
+        except (ValueError, TypeError):
+            _check("Warmup days is not a valid number", False, "Set a valid integer in field [11]")
+    else:
+        _check("Warmup days: default (0 — no wait)", True)
 
     print()
     if issues > 0:
@@ -891,10 +923,10 @@ def screen_status(project):
             if start.tzinfo is None:
                 start = start.replace(tzinfo=timezone.utc)
             days = (now - start).days
-            if wc:
+            wd = int(p.get("warmup_days", 0))
+            if wc or wd <= 0:
                 _ok(f"Warmup complete (started {ws[:10]})")
             else:
-                wd = int(p.get("warmup_days", 0))
                 remain = wd - days
                 if remain < 0:
                     _ok(f"Warmup: day {days}/{wd} — auto-completing soon")

@@ -195,7 +195,7 @@ def load_tui_settings():
         "max_per_cycle": 3,
         "shortener_provider": "vplink",
         "comment_moderation": "heldForReview",
-        "warmup_days": 14,
+        "warmup_days": 0,
     }
     if supabase_db.is_enabled() and not PROJECT_ID:
         for key in defaults:

@@ -82,7 +82,7 @@ CREATE TABLE IF NOT EXISTS projects (
   channels TEXT DEFAULT '',
   shortlink_provider TEXT DEFAULT 'vplink',
   shortlink_api_key TEXT DEFAULT '',
-  warmup_days INTEGER DEFAULT 14,
+  warmup_days INTEGER DEFAULT 0,
   warmup_start TEXT DEFAULT '',
   comment_moderation TEXT DEFAULT 'heldForReview',
   mirror_title_prefix TEXT DEFAULT '',

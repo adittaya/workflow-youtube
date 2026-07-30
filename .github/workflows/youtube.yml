@@ -80,7 +80,7 @@ jobs:
             "max_per_cycle": 3,
             "comment_moderation": "heldForReview",
             "shortener_provider": "vplink",
-            "warmup_days": 14
+            "warmup_days": 0
           }
           EOF
           fi

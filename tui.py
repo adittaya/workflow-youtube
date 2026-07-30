@@ -640,7 +640,7 @@ def _do_deploy(project):
             "shortener_provider": project.get("shortlink_provider", "vplink"),
             "shortener_api_key": project.get("shortlink_api_key", ""),
             "comment_moderation": project.get("comment_moderation", "heldForReview"),
-            "warmup_days": int(project.get("warmup_days", 14)),
+            "warmup_days": int(project.get("warmup_days", 0)),
             "mirror_title_prefix": project.get("mirror_title_prefix", ""),
         }),
         "SHORTLINK_KEYS": json.dumps({"default": {
@@ -894,7 +894,7 @@ def screen_status(project):
             if wc:
                 _ok(f"Warmup complete (started {ws[:10]})")
             else:
-                wd = int(p.get("warmup_days", 14))
+                wd = int(p.get("warmup_days", 0))
                 remain = wd - days
                 if remain < 0:
                     _ok(f"Warmup: day {days}/{wd} — auto-completing soon")

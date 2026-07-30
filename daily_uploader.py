@@ -21,7 +21,7 @@ UPLOAD_STATE = DATA_DIR / "upload_state.json"
 WARMUP_STATE = DATA_DIR / "warmup_state.json"
 DAILY_LOG = DATA_DIR / "daily_log.json"
 
-WARMUP_DAYS_DEFAULT = 14
+WARMUP_DAYS_DEFAULT = 0
 MAX_VIDEOS_PER_DAY = 1
 MIN_HOURS_BETWEEN = 18
 

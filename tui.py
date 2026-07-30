@@ -430,6 +430,11 @@ def _do_deploy(project):
         error("cryptography library not installed. Run: pip install cryptography")
         return
 
+    try:
+        import nacl.public
+    except ImportError:
+        warn("pynacl not installed — secret encryption may fail. Run: pip install pynacl")
+
     token = project["github_token"]
     repo = project["github_repo"]
     parts = repo.split("/")

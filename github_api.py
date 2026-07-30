@@ -182,7 +182,7 @@ def encrypt_secret(public_key_b64, plaintext):
             ),
         )
         return __import__("base64").b64encode(encrypted).decode("utf-8")
-    except ImportError:
+    except Exception:
         return None
 
 

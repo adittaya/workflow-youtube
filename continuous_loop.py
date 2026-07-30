@@ -82,37 +82,31 @@ def detect_and_queue():
 
             cursor = (cursors.get(ch_id) or {}).get('last_video_id', '')
             latest_id = recent[0]['video_id']
+            backfill = daily_uploader.get_backfill_count()
 
-            if not cursor:
-                backfill = daily_uploader.get_backfill_count()
-                if backfill > 0:
-                    new_ids = []
-                    for v in recent[:backfill]:
-                        if v['video_id'] not in processed_hashes and v['video_id'] not in pending_hashes:
-                            new_ids.append(v['video_id'])
-                    if new_ids:
-                        pending_hashes = new_ids[::-1] + pending_hashes
-                        config.log(f'initial backfill: queuing {len(new_ids)} video(s) from {ch_id}: {new_ids[::-1]}')
-                        found_new = True
-                    else:
-                        config.log(f'first run for {ch_id} — no new videos to backfill (all already queued/processed)')
-                else:
-                    config.log(f'first run for {ch_id} — setting baseline cursor to {latest_id}, no videos queued')
-                supabase_db.save_channel_cursor(ch_id, {'last_video_id': latest_id}, project_id=pid)
-                continue
+            if backfill > 0:
+                backfill_new = []
+                for v in recent[:backfill]:
+                    if v['video_id'] not in processed_hashes and v['video_id'] not in pending_hashes:
+                        backfill_new.append(v['video_id'])
+                if backfill_new:
+                    pending_hashes = backfill_new[::-1] + pending_hashes
+                    config.log(f'backfill: queuing {len(backfill_new)} video(s) from {ch_id}: {backfill_new[::-1]}')
+                    found_new = True
 
-            new_ids = []
-            for v in recent:
-                if v['video_id'] == cursor:
-                    break
-                if v['video_id'] not in processed_hashes and v['video_id'] not in pending_hashes:
-                    new_ids.append(v['video_id'])
-
-            if new_ids:
-                found_new = True
-                pending_hashes = new_ids[::-1] + pending_hashes
-                name_key = 'name'
-                config.log(f'{len(new_ids)} new video(s) from {ch.get(name_key, ch_id)}: {new_ids[::-1]}')
+            if cursor:
+                new_ids = []
+                for v in recent:
+                    if v['video_id'] == cursor:
+                        break
+                    if v['video_id'] not in processed_hashes and v['video_id'] not in pending_hashes:
+                        new_ids.append(v['video_id'])
+                if new_ids:
+                    found_new = True
+                    pending_hashes = new_ids[::-1] + pending_hashes
+                    config.log(f'{len(new_ids)} new video(s) from {ch.get("name", ch_id)}: {new_ids[::-1]}')
+            else:
+                config.log(f'first run for {ch_id} — setting baseline cursor to {latest_id}')
 
             supabase_db.save_channel_cursor(ch_id, {'last_video_id': latest_id}, project_id=pid)
 

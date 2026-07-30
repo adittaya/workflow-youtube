@@ -13,7 +13,12 @@ try:
 except ImportError:
     HAS_CRYPTO = False
 
+import config
 import supabase_db
+import youtube_api
+import daily_uploader
+import download_helpers
+import shortener
 
 try:
     from google.oauth2.credentials import Credentials
@@ -259,6 +264,7 @@ def project_menu(project):
         print(f"  {C_BOLD}[S]{C_RESET} Status — check everything is right")
         print(f"  {C_BOLD}[2]{C_RESET} View workflow logs")
         print(f"  {C_BOLD}[3]{C_RESET} Remove deployment")
+        print(f"  {C_BOLD}[I]{C_RESET} Instant upload — upload a video now (bypasses cooldown)")
         print(f"  {C_BOLD}[B]{C_RESET} Back to projects")
         print(f"  {C_BOLD}[0]{C_RESET} Quit")
         summary = _project_summary(p)
@@ -282,6 +288,8 @@ def project_menu(project):
             screen_logs(p)
         elif choice == "3":
             screen_remove_deployment(p)
+        elif choice == "I":
+            _do_instant_upload(p)
 
 # ─── Screen: Setup & Deploy (project-scoped) ─────────────────────────────────
 
@@ -868,6 +876,118 @@ def _do_oauth(project):
             error(f"Token exchange failed: {e}")
     else:
         error("OAuth timed out or no code received")
+
+# ─── Instant Upload ─────────────────────────────────────────────────────────
+
+def _do_instant_upload(project):
+    pid = str(project["id"])
+    if not HAS_GAPI:
+        error("google-api-python-client not installed")
+        return
+
+    raw_channels = project.get("channels", "").strip()
+    if not raw_channels:
+        error("No channels configured for this project")
+        input("\n  Press Enter to continue...")
+        return
+    channels = [_parse_channel(u) for u in raw_channels.replace(",", "\n").split("\n") if u.strip()]
+
+    raw = prompt("Enter YouTube URL to upload (or press Enter to pick from source channels)")
+    video_id = None
+
+    if raw:
+        m = re.search(r'(?:v=|youtu\.be/|youtube\.com/embed/)([\w-]{11})', raw)
+        if not m:
+            error("Invalid YouTube URL")
+            input("\n  Press Enter to continue...")
+            return
+        video_id = m.group(1)
+    else:
+        youtube = youtube_api.get_client()
+        all_vids = []
+        for ch in channels:
+            cid = ch.get("id", "")
+            if not cid:
+                continue
+            playlist_id = youtube_api.get_channel_uploads_playlist(youtube, cid)
+            if not playlist_id:
+                continue
+            recent = youtube_api.get_recent_videos(youtube, playlist_id, max_results=5)
+            for v in recent:
+                all_vids.append(v)
+        if not all_vids:
+            error("No videos found on source channels")
+            input("\n  Press Enter to continue...")
+            return
+        clear()
+        banner()
+        print(f"\n  {C_BOLDWHITE}PICK A VIDEO TO UPLOAD{C_RESET}")
+        divider()
+        for i, v in enumerate(all_vids, 1):
+            print(f"  {C_BOLD}[{i}]{C_RESET} {v.get('title', '?')[:60]}")
+            print(f"       {v['video_id']} — {v.get('channel_title', '?')}")
+        print()
+        pick = prompt("Pick a video (1-{})".format(len(all_vids)))
+        if not pick or not pick.isdigit() or int(pick) < 1 or int(pick) > len(all_vids):
+            error("Invalid choice")
+            input("\n  Press Enter to continue...")
+            return
+        video_id = all_vids[int(pick) - 1]["video_id"]
+
+    old_pid = config.PROJECT_ID
+    config.PROJECT_ID = pid
+    try:
+        source_url = f"https://www.youtube.com/watch?v={video_id}"
+        youtube = youtube_api.get_client()
+        details = youtube_api.get_video_details(youtube, video_id)
+        if not details:
+            error(f"Could not fetch details for {video_id}")
+            input("\n  Press Enter to continue...")
+            return
+        if details.get("duration", 0) < 60:
+            warn(f"This is a short ({details['duration']}s) — only long-form videos recommended")
+            if not confirm("Upload anyway?"):
+                return
+
+        title = details.get("title", "")
+        description = details.get("description", "")
+        tags = details.get("tags", [])
+
+        info(f"Downloading: {title}")
+        dl_result = download_helpers.download_video(source_url)
+        if not dl_result:
+            error("Download failed")
+            input("\n  Press Enter to continue...")
+            return
+        video_path = dl_result["path"]
+
+        info("Processing video (edit + BGM)...")
+        processed = daily_uploader.process_video(video_path)
+        if not processed:
+            error("Processing failed or duplicate")
+            input("\n  Press Enter to continue...")
+            return
+
+        info("Uploading (bypasses cooldown)...")
+        vid = daily_uploader.upload_daily(
+            processed, title=title, description=description,
+            tags=tags, source_url=source_url, force=True,
+        )
+        if vid:
+            success(f"Uploaded: https://www.youtube.com/watch?v={vid}")
+            supabase_db.add_upload_log({
+                "upload_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                "upload_time": datetime.now(timezone.utc).isoformat(),
+                "video_id": vid,
+                "title": title,
+                "short_url": "",
+                "comment_id": "",
+            }, project_id=pid)
+        else:
+            error("Upload failed")
+        input("\n  Press Enter to continue...")
+    finally:
+        config.PROJECT_ID = old_pid
 
 # ─── Screen: Status (project-scoped) ─────────────────────────────────────────
 

@@ -245,11 +245,12 @@ def process_video(input_path, output_dir=None):
 
 
 def upload_daily(video_path, title=None, description=None,
-                 tags=None, category_id="22", source_url=None):
-    can, reason = can_upload_today()
-    if not can:
-        config.log(f"cannot upload: {reason}")
-        return None
+                 tags=None, category_id="22", source_url=None, force=False):
+    if not force:
+        can, reason = can_upload_today()
+        if not can:
+            config.log(f"cannot upload: {reason}")
+            return None
 
     youtube = youtube_api.get_client()
 

@@ -199,12 +199,23 @@ def load_tui_settings():
         "uploads_per_day": 2,
         "initial_backfill": 5,
     }
-    if supabase_db.is_enabled() and not PROJECT_ID:
-        for key in defaults:
-            val = supabase_db.get_setting(f"tui_{key}")
-            if val is not None:
-                defaults[key] = val
-        return defaults
+    if supabase_db.is_enabled():
+        if not PROJECT_ID:
+            for key in defaults:
+                val = supabase_db.get_setting(f"tui_{key}")
+                if val is not None:
+                    defaults[key] = val
+            return defaults
+        _ensure_dir()
+        try:
+            saved = json.loads(SETTINGS_PATH.read_text("utf-8"))
+            return {**defaults, **saved}
+        except Exception:
+            for key in defaults:
+                val = supabase_db.get_setting(f"tui_{key}")
+                if val is not None:
+                    defaults[key] = val
+            return defaults
     _ensure_dir()
     try:
         saved = json.loads(SETTINGS_PATH.read_text("utf-8"))

@@ -111,6 +111,26 @@ def filter_long_form_videos(youtube, videos):
         return videos
 
 
+def get_video_details(youtube, video_id):
+    resp = youtube.videos().list(part="snippet,contentDetails", id=video_id).execute()
+    items = resp.get("items", [])
+    if not items:
+        return None
+    item = items[0]
+    snippet = item.get("snippet", {})
+    dur_str = item.get("contentDetails", {}).get("duration", "PT0S")
+    return {
+        "video_id": video_id,
+        "title": snippet.get("title", ""),
+        "description": snippet.get("description", ""),
+        "tags": snippet.get("tags", []),
+        "channel_title": snippet.get("channelTitle", ""),
+        "duration": _parse_duration_iso8601(dur_str),
+        "thumbnail": snippet.get("thumbnails", {}).get("maxres", {}).get("url", "")
+                      or snippet.get("thumbnails", {}).get("high", {}).get("url", ""),
+    }
+
+
 def upload_video(youtube, file_path, title, description, tags=None, category_id="22",
                  privacy_status="public", thumbnail_path=None, progress_callback=None):
     body = {

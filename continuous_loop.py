@@ -201,7 +201,9 @@ def upload_one_pending():
         config.log(f'{len(pending_hashes)} remaining in queue')
         return True
 
-    video_id = daily_uploader.upload_daily(processed, title, desc, tags, source_url=source_url)
+    can, slot_str, iso_time = daily_uploader.can_upload_today(return_slot=True) if daily_uploader.get_upload_schedule() else (True, None, None)
+    publish_at = iso_time if daily_uploader.get_upload_schedule() and can else None
+    video_id = daily_uploader.upload_daily(processed, title, desc, tags, source_url=source_url, publish_at=publish_at)
     if video_id:
         config.log(f'uploaded: {video_id}')
         processed_hashes.append(target_id)

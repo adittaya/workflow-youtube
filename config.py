@@ -198,6 +198,7 @@ def load_tui_settings():
         "warmup_days": 0,
         "uploads_per_day": 2,
         "initial_backfill": 5,
+        "upload_schedule": "",
     }
     if supabase_db.is_enabled():
         if not PROJECT_ID:

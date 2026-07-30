@@ -132,7 +132,8 @@ def get_video_details(youtube, video_id):
 
 
 def upload_video(youtube, file_path, title, description, tags=None, category_id="22",
-                 privacy_status="public", thumbnail_path=None, progress_callback=None):
+                 privacy_status="public", thumbnail_path=None, progress_callback=None,
+                 publish_at=None):
     body = {
         "snippet": {
             "title": title,
@@ -141,12 +142,17 @@ def upload_video(youtube, file_path, title, description, tags=None, category_id=
             "categoryId": category_id,
         },
         "status": {
-            "privacyStatus": privacy_status,
             "selfDeclaredMadeForKids": False,
         },
     }
+    if publish_at:
+        body["status"]["privacyStatus"] = "private"
+        body["status"]["publishAt"] = publish_at
+    else:
+        body["status"]["privacyStatus"] = privacy_status
+    parts = "snippet,status"
     media = MediaFileUpload(file_path, chunksize=UPLOAD_CHUNK_SIZE, resumable=True, mimetype="video/*")
-    request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
+    request = youtube.videos().insert(part=parts, body=body, media_body=media)
 
     response = None
     retry = 0

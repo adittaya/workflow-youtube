@@ -82,7 +82,8 @@ jobs:
             "shortener_provider": "vplink",
             "warmup_days": 0,
             "uploads_per_day": 2,
-            "initial_backfill": 5
+            "initial_backfill": 5,
+            "upload_schedule": ""
           }
           EOF
           fi

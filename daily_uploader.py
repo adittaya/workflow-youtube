@@ -150,6 +150,49 @@ def get_backfill_count():
         return 5
 
 
+def get_upload_schedule():
+    try:
+        settings = json.loads((DATA_DIR / "settings.json").read_text("utf-8"))
+        raw = settings.get("upload_schedule", "").strip()
+    except Exception:
+        raw = ""
+    if not raw:
+        return []
+    times = []
+    for part in raw.split(","):
+        part = part.strip()
+        if ":" in part:
+            try:
+                h, m = part.split(":")
+                times.append((int(h), int(m)))
+            except (ValueError, IndexError):
+                continue
+    return times
+
+
+def _minutes_since_midnight(dt=None):
+    if dt is None:
+        dt = datetime.now(timezone.utc)
+    return dt.hour * 60 + dt.minute
+
+
+def get_next_scheduled_slot():
+    schedule = get_upload_schedule()
+    if not schedule:
+        return None, None
+    state = load_upload_state()
+    filled = state.get("filled_slots", [])
+    now_min = _minutes_since_midnight()
+    now = datetime.now(timezone.utc)
+    for h, m in schedule:
+        slot_str = f"{h:02d}:{m:02d}"
+        slot_min = h * 60 + m
+        if slot_str not in filled and now_min >= slot_min - 180:
+            iso_time = now.replace(hour=h, minute=m, second=0, microsecond=0).isoformat()
+            return slot_str, iso_time
+    return None, None
+
+
 def get_warmup_day():
     state = load_upload_state()
     if not state.get("warmup_start"):
@@ -168,13 +211,38 @@ def is_warmup_complete():
     return get_warmup_day() >= _get_warmup_days()
 
 
-def can_upload_today():
+def can_upload_today(return_slot=False):
     state = load_upload_state()
 
     if not is_warmup_complete():
         day = get_warmup_day()
         config.log(f"warmup day {day}/{_get_warmup_days()} - no uploads yet")
-        return False, f"warmup day {day}/{_get_warmup_days()}"
+        if return_slot:
+            return (False, f"warmup day {day}/{_get_warmup_days()}", "")
+        return (False, f"warmup day {day}/{_get_warmup_days()}")
+
+    schedule = get_upload_schedule()
+    if schedule:
+        slot_str, iso_time = get_next_scheduled_slot()
+        if slot_str is None:
+            filled = state.get("filled_slots", [])
+            if len(filled) >= len(schedule):
+                if return_slot:
+                    return (False, f"all {len(schedule)} schedule slots filled today", "")
+                return (False, f"all {len(schedule)} schedule slots filled today")
+            next_slot = None
+            for h, m in schedule:
+                s = f"{h:02d}:{m:02d}"
+                if s not in filled:
+                    next_slot = s
+                    break
+            msg = f"next upload at {next_slot} (wait until closer to time)" if next_slot else "all schedule slots filled"
+            if return_slot:
+                return (False, msg, "")
+            return (False, msg)
+        if return_slot:
+            return (True, slot_str, iso_time)
+        return (True, "ready")
 
     max_per_day, hours_between = get_upload_config()
 
@@ -184,7 +252,9 @@ def can_upload_today():
         today_uploads = [u for u in log["uploads"]
                          if u.get("date") == today]
         if len(today_uploads) >= max_per_day:
-            return False, f"already uploaded {max_per_day} today"
+            if return_slot:
+                return (False, f"already uploaded {max_per_day} today", "")
+            return (False, f"already uploaded {max_per_day} today")
 
     if state.get("last_upload_hour"):
         last = datetime.fromisoformat(state["last_upload_hour"])
@@ -193,9 +263,13 @@ def can_upload_today():
         hours_since = (datetime.now(timezone.utc).replace(tzinfo=None) - last).total_seconds() / 3600
         if hours_since < hours_between:
             wait = hours_between - hours_since
-            return False, f"wait {wait:.1f}h more"
+            if return_slot:
+                return (False, f"wait {wait:.1f}h more", "")
+            return (False, f"wait {wait:.1f}h more")
 
-    return True, "ready"
+    if return_slot:
+        return (True, "", "")
+    return (True, "ready")
 
 
 def process_video(input_path, output_dir=None):
@@ -245,12 +319,16 @@ def process_video(input_path, output_dir=None):
 
 
 def upload_daily(video_path, title=None, description=None,
-                 tags=None, category_id="22", source_url=None, force=False):
+                 tags=None, category_id="22", source_url=None, force=False,
+                 publish_at=None):
     if not force:
-        can, reason = can_upload_today()
-        if not can:
-            config.log(f"cannot upload: {reason}")
-            return None
+        if publish_at:
+            can = True
+        else:
+            can, reason = can_upload_today()
+            if not can:
+                config.log(f"cannot upload: {reason}")
+                return None
 
     youtube = youtube_api.get_client()
 
@@ -289,8 +367,9 @@ def upload_daily(video_path, title=None, description=None,
         description=upload_desc,
         tags=tags or [],
         category_id=category_id,
-        privacy_status="public",
+        privacy_status="private" if publish_at else "public",
         thumbnail_path=thumbnail_path,
+        publish_at=publish_at,
     )
 
     if video_id:
@@ -313,6 +392,13 @@ def upload_daily(video_path, title=None, description=None,
         state["last_upload_date"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         state["last_upload_hour"] = datetime.now(timezone.utc).isoformat()
         state["total_uploaded"] = state.get("total_uploaded", 0) + 1
+        if publish_at:
+            slot_str = datetime.fromisoformat(publish_at).strftime("%H:%M")
+            filled = state.get("filled_slots", [])
+            if slot_str not in filled:
+                filled.append(slot_str)
+            state["filled_slots"] = filled
+            state["last_upload_date"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         save_upload_state(state)
 
         entry = {

@@ -309,6 +309,7 @@ FIELD_SPEC = [
     ("mirror_title_prefix", "Title prefix (optional)", False),
     ("uploads_per_day", "Uploads per day (24/N = hours between)", True),
     ("initial_backfill", "Initial backfill (videos to queue on first detect)", True),
+    ("upload_schedule", "Upload schedule (comma-separated HH:MM, empty=cooldown)", False),
 ]
 
 def _display_val(val, sensitive=False):
@@ -686,6 +687,7 @@ def _do_deploy(project):
             "mirror_title_prefix": project.get("mirror_title_prefix", ""),
             "uploads_per_day": int(project.get("uploads_per_day", 2)),
             "initial_backfill": int(project.get("initial_backfill", 5)),
+            "upload_schedule": project.get("upload_schedule", ""),
         }),
         "SHORTLINK_KEYS": json.dumps({"default": {
             "provider": project.get("shortlink_provider", "vplink"),

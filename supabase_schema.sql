@@ -100,6 +100,7 @@ ALTER TABLE projects ADD COLUMN IF NOT EXISTS proxy_supabase_key TEXT DEFAULT ''
 -- Migration: add upload scheduling columns
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS uploads_per_day INTEGER DEFAULT 2;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS initial_backfill INTEGER DEFAULT 5;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS upload_schedule TEXT DEFAULT '';
 
 -- 9. Daily upload logs (replaces daily_log.json)
 CREATE TABLE IF NOT EXISTS upload_logs (

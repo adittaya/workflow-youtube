@@ -13,6 +13,52 @@ import supabase_db
 RUN_DURATION = 5.5 * 3600
 SLEEP_INTERVAL = 900
 DRY_RUN = os.environ.get('INPUT_DRY_RUN', 'false') == 'true'
+PROXY_REFRESH_COOLDOWN = 300
+
+
+def refresh_proxies():
+    su_url = os.environ.get('PROXY_SUPABASE_URL', '')
+    su_key = os.environ.get('PROXY_SUPABASE_SERVICE_KEY', '')
+    if not su_url or not su_key:
+        config.log('no proxy database configured — cannot refresh proxies')
+        return False
+    try:
+        import urllib.request
+        import urllib.error
+        api_url = su_url.rstrip('/') + '/rest/v1/proxy_results?select=ip,port,latency_ms&vplink_ok=eq.true&order=latency_ms.asc&limit=200'
+        req = urllib.request.Request(api_url, headers={
+            'apikey': su_key,
+            'Authorization': 'Bearer ' + su_key,
+        })
+        proxies = json.loads(urllib.request.urlopen(req, timeout=15).read())
+        config.log(f're-fetched {len(proxies)} proxies from database')
+        working = []
+        for p in proxies:
+            p_url = 'http://%s:%s' % (p['ip'], p['port'])
+            try:
+                t0 = time.time()
+                urllib.request.urlopen(
+                    urllib.request.Request('http://www.gstatic.com/generate_204'),
+                    timeout=5
+                )
+                lat = int((time.time() - t0) * 1000)
+                working.append({'url': p_url, 'latency_ms': lat})
+            except Exception:
+                pass
+            if len(working) >= 10:
+                break
+        if not working:
+            config.log('no working proxies found after refresh')
+            return False
+        working.sort(key=lambda x: x['latency_ms'])
+        proxy_list = [w['url'] for w in working]
+        os.environ['WORKING_PROXIES'] = json.dumps(proxy_list)
+        os.environ['YT_PROXY'] = proxy_list[0]
+        config.log(f'refreshed proxies: {len(proxy_list)} working, best {proxy_list[0]} ({working[0]["latency_ms"]}ms)')
+        return True
+    except Exception as e:
+        config.log(f'proxy refresh failed: {e}')
+        return False
 
 
 def detect_and_queue():
@@ -116,10 +162,14 @@ def upload_one_pending():
     config.log('uploading: ' + vid['title'] + ' (' + target_id + ')')
     result = download_helpers.download_video(source_url, f'/tmp/daily_{target_id}')
     if not result:
-        config.log(f'download failed: {target_id} — removing from queue, trying next')
-        up_state['pending_hashes'] = pending_hashes
-        daily_uploader.save_upload_state(up_state)
-        return False
+        config.log(f'all proxies failed for {target_id} — refreshing proxy pool and retrying...')
+        if refresh_proxies():
+            result = download_helpers.download_video(source_url, f'/tmp/daily_{target_id}')
+        if not result:
+            config.log(f'download failed: {target_id} — removing from queue, trying next')
+            up_state['pending_hashes'] = pending_hashes
+            daily_uploader.save_upload_state(up_state)
+            return False
 
     path = result['path'] if isinstance(result, dict) else result
     config.log(f'processing: {target_id}')

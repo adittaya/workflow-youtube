@@ -93,6 +93,9 @@ def detect_and_queue():
                 if backfill_new:
                     pending_hashes = backfill_new[::-1] + pending_hashes
                     config.log(f'backfill: queuing {len(backfill_new)} video(s) from {ch_id}: {backfill_new[::-1]}')
+                    for vid in backfill_new:
+                        supabase_db.add_work_item('detect', project_id=pid,
+                            video_id=vid, title='', status='pending')
                     found_new = True
 
             if cursor:
@@ -106,6 +109,10 @@ def detect_and_queue():
                     found_new = True
                     pending_hashes = new_ids[::-1] + pending_hashes
                     config.log(f'{len(new_ids)} new video(s) from {ch.get("name", ch_id)}: {new_ids[::-1]}')
+                    for v in recent:
+                        if v['video_id'] in new_ids:
+                            supabase_db.add_work_item('detect', project_id=pid,
+                                video_id=v['video_id'], title=v.get('title', ''), status='pending')
             else:
                 config.log(f'first run for {ch_id} — setting baseline cursor to {latest_id}')
 
@@ -117,6 +124,14 @@ def detect_and_queue():
     up_state['pending_hashes'] = pending_hashes
     daily_uploader.save_upload_state(up_state)
     return found_new
+
+
+def _find_work_item(pid, video_id):
+    items = supabase_db.get_work_queue(project_id=pid, status='pending', limit=20)
+    for it in items:
+        if it.get('video_id') == video_id:
+            return it.get('id')
+    return None
 
 
 def upload_one_pending():
@@ -141,6 +156,10 @@ def upload_one_pending():
         up_state['pending_hashes'] = []
         daily_uploader.save_upload_state(up_state)
         return False
+
+    item_id = _find_work_item(pid, target_id)
+    if item_id:
+        supabase_db.update_work_item(item_id, status='in_progress')
 
     can_upload, reason = daily_uploader.can_upload_today()
     if not can_upload:
@@ -175,6 +194,8 @@ def upload_one_pending():
             result = download_helpers.download_video(source_url, f'/tmp/daily_{target_id}')
         if not result:
             config.log(f'download failed: {target_id} — removing from queue, trying next')
+            if item_id:
+                supabase_db.update_work_item(item_id, status='failed', error='download failed')
             up_state['pending_hashes'] = pending_hashes
             daily_uploader.save_upload_state(up_state)
             return False
@@ -184,6 +205,8 @@ def upload_one_pending():
     processed = daily_uploader.process_video(path)
     if not processed:
         config.log(f'processing failed: {target_id}')
+        if item_id:
+            supabase_db.update_work_item(item_id, status='failed', error='processing failed')
         up_state['pending_hashes'] = [target_id] + pending_hashes
         daily_uploader.save_upload_state(up_state)
         return False
@@ -198,7 +221,6 @@ def upload_one_pending():
         up_state['processed_hashes'] = processed_hashes
         up_state['pending_hashes'] = pending_hashes
         daily_uploader.save_upload_state(up_state)
-        config.log(f'{len(pending_hashes)} remaining in queue')
         return True
 
     can, slot_str, iso_time = daily_uploader.can_upload_today(return_slot=True) if daily_uploader.get_upload_schedule() else (True, None, None)
@@ -206,6 +228,8 @@ def upload_one_pending():
     video_id = daily_uploader.upload_daily(processed, title, desc, tags, source_url=source_url, publish_at=publish_at)
     if video_id:
         config.log(f'uploaded: {video_id}')
+        if item_id:
+            supabase_db.update_work_item(item_id, status='done')
         processed_hashes.append(target_id)
         up_state['processed_hashes'] = processed_hashes
         up_state['pending_hashes'] = pending_hashes
@@ -214,6 +238,8 @@ def upload_one_pending():
         return True
     else:
         config.log(f'upload failed: {title}')
+        if item_id:
+            supabase_db.update_work_item(item_id, status='failed', error='upload_daily returned None')
         up_state['pending_hashes'] = [target_id] + pending_hashes
         daily_uploader.save_upload_state(up_state)
         return False

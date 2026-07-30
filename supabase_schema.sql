@@ -125,10 +125,26 @@ CREATE TABLE IF NOT EXISTS channel_cursors (
   PRIMARY KEY (project_id, channel_id)
 );
 
+-- 11. Work queue / checklist — tracks each work item (detect/upload) with status
+CREATE TABLE IF NOT EXISTS work_queue (
+  id BIGSERIAL PRIMARY KEY,
+  project_id TEXT NOT NULL DEFAULT '',
+  work_type TEXT NOT NULL DEFAULT 'upload',
+  status TEXT NOT NULL DEFAULT 'pending',
+  video_id TEXT DEFAULT '',
+  source_url TEXT DEFAULT '',
+  title TEXT DEFAULT '',
+  slot_time TEXT DEFAULT '',
+  error TEXT DEFAULT '',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_mirror_state_source ON mirror_state(project_id, source_channel, source_video_id);
 CREATE INDEX IF NOT EXISTS idx_upload_logs_date ON upload_logs(project_id, upload_date DESC);
 CREATE INDEX IF NOT EXISTS idx_upload_logs_time ON upload_logs(upload_time DESC);
+CREATE INDEX IF NOT EXISTS idx_work_queue_status ON work_queue(project_id, status, created_at DESC);
 
 -- ─── Migration: add project_id to existing tables ─────────────────────────
 ALTER TABLE mirror_state ADD COLUMN IF NOT EXISTS project_id TEXT NOT NULL DEFAULT '';

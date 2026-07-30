@@ -176,6 +176,18 @@ def _minutes_since_midnight(dt=None):
     return dt.hour * 60 + dt.minute
 
 
+def _schedule_min_gap(schedule):
+    if len(schedule) < 2:
+        _, hours_between = get_upload_config()
+        return hours_between
+    sorted_slots = sorted(h * 60 + m for h, m in schedule)
+    min_gap = min(
+        (sorted_slots[(i + 1) % len(sorted_slots)] - sorted_slots[i]) % 1440
+        for i in range(len(sorted_slots))
+    )
+    return min_gap / 60.0
+
+
 def get_next_scheduled_slot():
     schedule = get_upload_schedule()
     if not schedule:
@@ -240,6 +252,18 @@ def can_upload_today(return_slot=False):
             if return_slot:
                 return (False, msg, "")
             return (False, msg)
+        if state.get("last_upload_hour"):
+            gap = _schedule_min_gap(schedule)
+            last = datetime.fromisoformat(state["last_upload_hour"])
+            if last.tzinfo is not None:
+                last = last.replace(tzinfo=None)
+            hours_since = (datetime.now(timezone.utc).replace(tzinfo=None) - last).total_seconds() / 3600
+            if hours_since < gap:
+                wait = gap - hours_since
+                msg = f"schedule gap: wait {wait:.1f}h more"
+                if return_slot:
+                    return (False, msg, "")
+                return (False, msg)
         if return_slot:
             return (True, slot_str, iso_time)
         return (True, "ready")

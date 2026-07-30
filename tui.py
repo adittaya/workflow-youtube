@@ -265,6 +265,7 @@ def project_menu(project):
         print(f"  {C_BOLD}[2]{C_RESET} View workflow logs")
         print(f"  {C_BOLD}[3]{C_RESET} Remove deployment")
         print(f"  {C_BOLD}[I]{C_RESET} Instant upload — upload a video now (bypasses cooldown)")
+        print(f"  {C_BOLD}[W]{C_RESET} Work queue — view pending/done items")
         print(f"  {C_BOLD}[B]{C_RESET} Back to projects")
         print(f"  {C_BOLD}[0]{C_RESET} Quit")
         summary = _project_summary(p)
@@ -290,6 +291,8 @@ def project_menu(project):
             screen_remove_deployment(p)
         elif choice == "I":
             _do_instant_upload(p)
+        elif choice == "W":
+            _show_work_queue(p)
 
 # ─── Screen: Setup & Deploy (project-scoped) ─────────────────────────────────
 
@@ -878,6 +881,39 @@ def _do_oauth(project):
             error(f"Token exchange failed: {e}")
     else:
         error("OAuth timed out or no code received")
+
+# ─── Work Queue Viewer ─────────────────────────────────────────────────────
+
+def _show_work_queue(project):
+    pid = str(project["id"])
+    while True:
+        clear()
+        banner()
+        print(f"\n  {C_BOLDWHITE}WORK QUEUE — {project['name']}{C_RESET}")
+        divider()
+        stats = supabase_db.get_work_stats(project_id=pid)
+        print(f"  Today: {stats['done']} done  /  {stats['pending']} pending  /  {stats['failed']} failed  (total {stats['total']})")
+        print()
+        items = supabase_db.get_work_queue(project_id=pid, limit=20)
+        if not items:
+            print(f"  {C_DIM}(no items){C_RESET}")
+        else:
+            print(f"  {C_DIM}{'ID':>4}  {'TYPE':<8}  {'STATUS':<12}  {'TITLE':<50}  {'ERROR'}{C_RESET}")
+            for it in items:
+                iid = it.get('id', '')
+                wtype = it.get('work_type', '')[:8]
+                status = it.get('status', '')
+                title = (it.get('title') or it.get('video_id') or '')[:50]
+                err = (it.get('error') or '')[:30]
+                color = C_GREEN if status == 'done' else (C_RED if status == 'failed' else C_YELLOW if status == 'in_progress' else C_DIM)
+                print(f"  {color}{iid:>4}  {wtype:<8}  {status:<12}  {title:<50}  {err}{C_RESET}")
+        print()
+        print(f"  {C_BOLD}[R]{C_RESET} Refresh  {C_BOLD}[B]{C_RESET} Back")
+        print()
+        choice = prompt("Choice").strip().upper()
+        if choice == "B":
+            return
+
 
 # ─── Instant Upload ─────────────────────────────────────────────────────────
 

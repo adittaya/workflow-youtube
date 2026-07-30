@@ -301,6 +301,56 @@ def delete_project(project_id):
     _request("DELETE", f"projects?id=eq.{project_id}")
 
 
+# ─── Work Queue / Checklist ─────────────────────────────────────────────
+
+def add_work_item(work_type, project_id="", **fields):
+    data = {
+        "project_id": project_id,
+        "work_type": work_type,
+        "status": fields.get("status", "pending"),
+        "video_id": fields.get("video_id", ""),
+        "source_url": fields.get("source_url", ""),
+        "title": fields.get("title", ""),
+        "slot_time": fields.get("slot_time", ""),
+        "error": fields.get("error", ""),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    result = _request("POST", "work_queue", data=data)
+    if isinstance(result, list) and len(result) > 0:
+        return result[0]
+    return result
+
+
+def update_work_item(item_id, **fields):
+    data = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    for k in ("status", "error"):
+        if k in fields:
+            data[k] = fields[k]
+    _request("PATCH", f"work_queue?id=eq.{item_id}", data=data)
+
+
+def get_work_queue(project_id="", limit=50, status=None):
+    filters = [f"project_id=eq.{project_id}"]
+    if status:
+        filters.append(f"status=eq.{status}")
+    query = "&".join(filters) + f"&order=created_at.desc&limit={limit}"
+    return _request("GET", f"work_queue?select=id,work_type,status,video_id,title,slot_time,error,created_at,updated_at&{query}") or []
+
+
+def get_work_stats(project_id=""):
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    rows = _request("GET",
+        f"work_queue?select=status&project_id=eq.{project_id}&created_at=gte.{today}T00:00:00Z")
+    if rows is None:
+        return {"total": 0, "done": 0, "failed": 0, "pending": 0}
+    total = len(rows)
+    done = sum(1 for r in rows if r.get("status") == "done")
+    failed = sum(1 for r in rows if r.get("status") == "failed")
+    pending = total - done - failed
+    return {"total": total, "done": done, "failed": failed, "pending": pending}
+
+
 # ─── Init ────────────────────────────────────────────────────────────────
 
 configure()

@@ -74,7 +74,7 @@ mkdir -p "$INSTALL_DIR/bgm" "$INSTALL_DIR/separated" "$INSTALL_DIR/processed"
 # --- Copy source files ---
 echo "[6/7] Copying source files..."
 mkdir -p "$SRC_DIR"
-for py in config.py mirror.py monitor.py youtube_api.py shortener.py download_helpers.py github_api.py get_refresh_token.py tui.py video_processor.py audio_separator.py bgm_manager.py daily_uploader.py daily_mirror.py supabase_db.py; do
+for py in config.py mirror.py monitor.py youtube_api.py shortener.py download_helpers.py github_api.py get_refresh_token.py tui.py video_processor.py audio_separator.py bgm_manager.py daily_uploader.py daily_mirror.py supabase_db.py continuous_loop.py; do
     cp "$COPY_SRC/$py" "$SRC_DIR/" 2>/dev/null || true
 done
 cp "$COPY_SRC/requirements.txt" "$SRC_DIR/" 2>/dev/null || true
@@ -110,8 +110,8 @@ if [ "\$SKIP_UPDATE" = false ] && [ -n "\$REMOTE" ] && command -v git &>/dev/nul
         git clone --depth 1 "\$REMOTE" "\$TMP_REPO" 2>/dev/null
     fi
     if [ -f "\$TMP_REPO/mirror.py" ]; then
-        for py in config.py mirror.py monitor.py youtube_api.py shortener.py download_helpers.py github_api.py get_refresh_token.py tui.py video_processor.py audio_separator.py bgm_manager.py daily_uploader.py daily_mirror.py supabase_db.py; do
-            cp "\$TMP_REPO/\$py" "\$SRC/" 2>/dev/null
+        for py in config.py mirror.py monitor.py youtube_api.py shortener.py download_helpers.py github_api.py get_refresh_token.py tui.py video_processor.py audio_separator.py bgm_manager.py daily_uploader.py daily_mirror.py supabase_db.py continuous_loop.py; do
+            cp "$TMP_REPO/$py" "$SRC/" 2>/dev/null
         done
         cp "\$TMP_REPO/requirements.txt" "\$SRC/" 2>/dev/null
         if [ -d "\$TMP_REPO/.github" ]; then

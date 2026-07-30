@@ -77,6 +77,7 @@ def detect_and_queue():
             if not playlist_id:
                 continue
             recent = youtube_api.get_recent_videos(youtube, playlist_id, max_results=10)
+            recent = youtube_api.filter_long_form_videos(youtube, recent)
             if not recent:
                 continue
 

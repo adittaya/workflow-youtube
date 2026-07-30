@@ -75,6 +75,42 @@ def get_recent_videos(youtube, playlist_id, max_results=10):
     return videos
 
 
+def _parse_duration_iso8601(duration):
+    import re
+    m = re.match(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?', duration)
+    if not m:
+        return 0
+    h = int(m.group(1)) if m.group(1) else 0
+    m_min = int(m.group(2)) if m.group(2) else 0
+    s = int(m.group(3)) if m.group(3) else 0
+    return h * 3600 + m_min * 60 + s
+
+
+def filter_long_form_videos(youtube, videos):
+    if not videos:
+        return videos
+    ids = [v['video_id'] for v in videos]
+    try:
+        resp = youtube.videos().list(part="contentDetails", id=",".join(ids)).execute()
+        duration_map = {}
+        for item in resp.get("items", []):
+            vid = item["id"]
+            dur_str = item.get("contentDetails", {}).get("duration", "PT0S")
+            duration_map[vid] = _parse_duration_iso8601(dur_str)
+        long_form = []
+        for v in videos:
+            vid = v['video_id']
+            dur = duration_map.get(vid, 0)
+            if dur >= 60:
+                long_form.append(v)
+            else:
+                config.log(f"skipping short video: {vid} ({dur}s)")
+        return long_form
+    except Exception as e:
+        config.log(f"video details fetch failed: {e}")
+        return videos
+
+
 def upload_video(youtube, file_path, title, description, tags=None, category_id="22",
                  privacy_status="public", thumbnail_path=None, progress_callback=None):
     body = {

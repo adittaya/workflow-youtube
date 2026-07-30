@@ -2,8 +2,7 @@ name: YouTube Mirror Bot
 
 on:
   schedule:
-    # Check every 6 hours for new videos
-    - cron: '0 */6 * * *'
+    - cron: '*/30 * * * *'
   workflow_dispatch:
     inputs:
       dry_run:

@@ -5,7 +5,7 @@
 - **Project:** YouTube Mirror Bot — monitors target channels via Supabase, mirrors to own channel
 - **GitHub:** `adittaya/workflow-shorturl-yt` (private); deployed to `joymoy767/main`
 - **Supabase:** Multi-project management via `upload_state`, `channel_cursors`, `upload_logs` tables
-- **CI cron:** `0 */6 * * *` (every 6h) — always detects new videos, only uploads when can_upload
+- **CI cron:** `*/30 * * * *` (every 30min) — always detects new videos and queues them, only uploads when can_upload
 
 ## CI Workflow
 

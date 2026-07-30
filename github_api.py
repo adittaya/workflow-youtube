@@ -2,6 +2,7 @@ import json
 import io
 import os
 import re
+import time
 import subprocess
 import urllib.request
 import urllib.error
@@ -224,14 +225,14 @@ def git_push(local_dir, remote_url, branch="main"):
     env["GIT_COMMITTER_EMAIL"] = "yt-mirror@deploy"
     env["GIT_COMMITTER_NAME"] = "YT Mirror Deploy"
 
+    ts = time.strftime("%Y%m%d%H%M%S")
     commands = [
-        ["git", "init", "-b", branch],
         ["git", "config", "user.email", "yt-mirror@deploy"],
         ["git", "config", "user.name", "YT Mirror Deploy"],
         ["git", "remote", "remove", "origin"],
         ["git", "remote", "add", "origin", remote_url],
         ["git", "add", "-A"],
-        ["git", "commit", "-m", "init: youtube mirror bot"],
+        ["git", "commit", "--allow-empty", "-m", f"deploy: youtube mirror bot@{ts}"],
         ["git", "push", "--force", "origin", branch],
     ]
     for cmd in commands:

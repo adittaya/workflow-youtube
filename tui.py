@@ -509,13 +509,53 @@ def _do_doctor(project):
     if cid and csec and rt:
         _check("YouTube auth: fully configured (ID + secret + token)", True)
 
+    # 8. Proxy connectivity test
+    pu = p.get("proxy_supabase_url", "")
+    pk = p.get("proxy_supabase_key", "")
+    if pu and pk:
+        try:
+            api = pu.rstrip("/") + "/rest/v1/proxy_results?select=ip&vplink_ok=eq.true&limit=1"
+            req = urllib.request.Request(api, headers={
+                "apikey": pk, "Authorization": f"Bearer {pk}"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+                if data:
+                    _check("Proxy Supabase: connected, proxies available", True)
+                else:
+                    _check("Proxy Supabase: connected but no VPLINK-verified proxies", False,
+                           "Run VPLINK first to populate proxy_results table")
+        except Exception as e:
+            _check(f"Proxy Supabase connection failed", False, f"{e}")
+    else:
+        _check("Proxy Supabase: not configured (optional)", True)
+
+    # 9. GitHub repo accessibility
+    if token and repo:
+        parts = repo.split("/")
+        if len(parts) == 2:
+            try:
+                req = urllib.request.Request(
+                    f"https://api.github.com/repos/{parts[0]}/{parts[1]}",
+                    headers={"Authorization": f"token {token}", "User-Agent": "yt-mirror-cli"})
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    _check(f"GitHub repo {repo} accessible", True)
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    _check(f"GitHub repo {repo}", False, "Repo not found — create it or check field [5]")
+                elif e.code == 403:
+                    _check(f"GitHub repo {repo}", False, "Token lacks access — check PAT scope")
+                else:
+                    _check(f"GitHub repo {repo}", False, f"HTTP {e.code}")
+            except Exception as e:
+                _check(f"GitHub repo {repo}", False, f"{e}")
+
     print()
     if issues > 0:
-        _warn(f"{issues} issue(s) found")
+        warn(f"{issues} issue(s) found")
     if fixed > 0:
-        _success(f"{fixed} auto-fix(es) applied")
+        success(f"{fixed} auto-fix(es) applied")
     if issues == 0:
-        _success("All checks passed — ready to deploy!")
+        success("All checks passed — ready to deploy!")
     input(f"\n  Press Enter to continue...")
 
 # ─── Deploy ──────────────────────────────────────────────────────────────────

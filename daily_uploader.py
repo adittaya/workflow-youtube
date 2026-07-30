@@ -101,7 +101,7 @@ def start_warmup(force=False):
             start = start.replace(tzinfo=None)
         naive_now = now.replace(tzinfo=None)
         days = (naive_now - start).days
-        warmup_total = _get_warmup_days()
+        warmup_total = get_warmup_days()
         if days >= warmup_total and not state.get("warmup_complete"):
             state["warmup_complete"] = True
             save_upload_state(state)
@@ -123,12 +123,14 @@ def reset_warmup(reason="account changed"):
     return state
 
 
-def _get_warmup_days():
+def get_warmup_days():
     try:
         settings = json.loads((DATA_DIR / "settings.json").read_text("utf-8"))
         return int(settings.get("warmup_days", WARMUP_DAYS_DEFAULT))
     except Exception:
         return WARMUP_DAYS_DEFAULT
+
+_get_warmup_days = get_warmup_days
 
 
 def get_warmup_day():

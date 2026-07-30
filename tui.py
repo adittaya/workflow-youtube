@@ -433,14 +433,15 @@ def _do_doctor(project):
 
     pid = project["id"]
     p = supabase_db.get_project(pid) or project
+    passed = 0
     fixed = 0
     issues = 0
 
     def _check(label, ok, fix=""):
-        nonlocal issues, fixed
+        nonlocal passed, issues
         if ok:
             print(f"  {C_GREEN}[OK]{C_RESET}   {label}")
-            fixed += 1
+            passed += 1
         else:
             print(f"  {C_RED}[ISSUE]{C_RESET} {label}" + (f" — {fix}" if fix else ""))
             issues += 1
@@ -451,13 +452,16 @@ def _do_doctor(project):
     token = p.get("github_token", "")
     repo = p.get("github_repo", "")
 
+    def _autofixed(label, detail=""):
+        nonlocal fixed
+        fixed += 1
+        print(f"  {C_GREEN}[FIX]{C_RESET}  {label} — {detail}")
+
     # 1. Client ID
-    bad_prefix = False
     if cid and (cid.startswith("http://") or cid.startswith("https://")):
         cleaned = _sanitize_field("yt_client_id", cid)
         supabase_db.update_project(pid, yt_client_id=cleaned)
-        _check("YouTube Client ID has URL prefix", False, f"Auto-fixed → {cleaned}")
-        bad_prefix = True
+        _autofixed("YouTube Client ID had URL prefix", cleaned)
         cid = cleaned
     else:
         _check(f"YouTube Client ID {'set' if cid else 'missing'}", bool(cid),
@@ -554,6 +558,8 @@ def _do_doctor(project):
         warn(f"{issues} issue(s) found")
     if fixed > 0:
         success(f"{fixed} auto-fix(es) applied")
+    if passed > 0:
+        info(f"{passed} check(s) passed")
     if issues == 0:
         success("All checks passed — ready to deploy!")
     input(f"\n  Press Enter to continue...")

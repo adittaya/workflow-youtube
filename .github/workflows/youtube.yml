@@ -177,8 +177,12 @@ jobs:
               "apikey": supabase_key,
               "Authorization": "Bearer " + supabase_key,
           })
-          proxies = json.loads(urllib.request.urlopen(req, timeout=15).read())
-          print("Fetched %d proxies" % len(proxies))
+          try:
+              proxies = json.loads(urllib.request.urlopen(req, timeout=15).read())
+              print("Fetched %d proxies" % len(proxies))
+          except Exception as e:
+              print("Proxy database unreachable: %s — running without proxy" % e)
+              exit(0)
           working = []
           for p in proxies:
               p_url = "http://%s:%s" % (p["ip"], p["port"])

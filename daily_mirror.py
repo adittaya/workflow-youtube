@@ -77,7 +77,7 @@ def cmd_warmup(reset=False):
         print(f"\nWarmup started: {state['warmup_start']}")
 
     day = daily_uploader.get_warmup_day()
-    total = daily_uploader._get_warmup_days()
+    total = daily_uploader.get_warmup_days()
     print(f"Current day: {day}/{total}")
     if day >= total:
         print("Warmup is COMPLETE — uploads enabled")

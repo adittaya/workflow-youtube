@@ -5,10 +5,11 @@
 - **Project:** YouTube Mirror Bot — monitors target channels via Supabase, mirrors to own channel
 - **GitHub:** `adittaya/workflow-shorturl-yt` (private); deployed to `joymoy767/main`
 - **Supabase:** Multi-project management via `upload_state`, `channel_cursors`, `upload_logs` tables
-- **CI cron:** `0 */6 * * *` (every 6h) — single long-running job (360min timeout) loops detect→upload for 5.5h continuously
+- **CI:** single long-running job (360min timeout) loops detect→upload for 5.5h; self-sustaining **24/7 chain** — cron `0 */6 * * *` is only a fallback
 
 ## CI Workflow
 
+0. **Pre-schedule follow-up (24/7 chain)** — first step of every run: if no run of this workflow is already queued, dispatch one via `gh workflow run` (`GH_PAT`). Workflow-level `concurrency` group (`cancel-in-progress: false`) serializes runs, so the queued follow-up starts automatically the moment the current one ends — even if cron never fires. At most 1 chain + 1 cron run are queued at once (check prevents pile-up); keep `cancel-in-progress: false` — flipping it back to `true` breaks the chain
 1. **Warmup** (once) — auto-starts/completes based on elapsed time; tracks `yt_client_id` for account changes
 2. **Fetch proxy** (once) — queries proxy Supabase (`bytemjjijgwwcrxlgutf`) for VPLINK-verified residential proxies, speed-tests each (5s HTTP timeout), stores top 10 working in `WORKING_PROXIES` env var
 3. **Continuous loop** (~5.5h) — `continuous_loop.py` runs detect→upload→sleep every 15 minutes:
@@ -28,7 +29,7 @@
 | `config.py` | Channels/accounts/state via Supabase |
 | `youtube_api.py` | YouTube Data API v3 wrapper |
 | `continuous_loop.py` | Continuous 5.5h detect→upload loop |
-| `.github/workflows/youtube.yml` | 6h cron + workflow dispatch |
+| `.github/workflows/youtube.yml` | 24/7 self-chaining workflow (dispatch + cron fallback) |
 
 ## State Management
 

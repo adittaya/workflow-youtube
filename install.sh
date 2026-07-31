@@ -19,6 +19,12 @@ if [ -f "$SCRIPT_DIR/mirror.py" ]; then
     COPY_SRC="$SCRIPT_DIR"
     GIT_REMOTE=$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || echo "$REPO_URL")
     echo "  Source: local clone"
+    # Keep the local clone current before installing (only when clean — the
+    # developer's uncommitted work is the source of truth and is preserved).
+    if git -C "$SCRIPT_DIR" status --porcelain >/dev/null 2>&1 \
+        && [ -z "$(git -C "$SCRIPT_DIR" status --porcelain 2>/dev/null)" ]; then
+        git -C "$SCRIPT_DIR" pull --ff-only 2>/dev/null && echo "  Local clone updated to latest." || true
+    fi
 else
     GIT_REMOTE="$REPO_URL"
     COPY_SRC="$INSTALL_DIR/.repo"
@@ -74,11 +80,14 @@ mkdir -p "$INSTALL_DIR/bgm" "$INSTALL_DIR/separated" "$INSTALL_DIR/processed"
 # --- Copy source files ---
 echo "[6/7] Copying source files..."
 mkdir -p "$SRC_DIR"
-for py in config.py mirror.py monitor.py youtube_api.py shortener.py download_helpers.py github_api.py get_refresh_token.py tui.py video_processor.py audio_separator.py bgm_manager.py daily_uploader.py daily_mirror.py supabase_db.py continuous_loop.py; do
-    cp "$COPY_SRC/$py" "$SRC_DIR/" 2>/dev/null || true
-done
-cp "$COPY_SRC/requirements.txt" "$SRC_DIR/" 2>/dev/null || true
-cp "$COPY_SRC/client_secrets.json" "$SRC_DIR/" 2>/dev/null || true
+# Copy ALL source so new modules (e.g. verify_state.py) are never missing from
+# an existing installation.
+cp "$COPY_SRC"/*.py "$SRC_DIR/" 2>/dev/null || true
+cp "$COPY_SRC"/*.txt "$SRC_DIR/" 2>/dev/null || true
+cp "$COPY_SRC"/*.json "$SRC_DIR/" 2>/dev/null || true
+cp "$COPY_SRC"/*.sql "$SRC_DIR/" 2>/dev/null || true
+cp "$COPY_SRC/install.sh" "$SRC_DIR/" 2>/dev/null || true
+cp "$COPY_SRC/launcher.sh" "$SRC_DIR/" 2>/dev/null || true
 
 # Copy workflows
 if [ -d "$COPY_SRC/.github" ]; then
@@ -87,51 +96,23 @@ fi
 
 # --- Save metadata ---
 META_FILE="$INSTALL_DIR/.install_meta.json"
-echo "{\"remote\": \"$GIT_REMOTE\", \"installed_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" > "$META_FILE"
+COMMIT=$(git -C "$COPY_SRC" rev-parse --short HEAD 2>/dev/null || echo "")
+REQ_SHA=$(sha256sum "$COPY_SRC/requirements.txt" 2>/dev/null | cut -d' ' -f1)
+echo "{\"remote\": \"$GIT_REMOTE\", \"installed_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\", \"commit\": \"$COMMIT\", \"requirements_sha\": \"$REQ_SHA\"}" > "$META_FILE"
 
 # --- Launcher with auto-update ---
 echo "[7/7] Installing launcher with auto-update..."
 mkdir -p "$BIN_DIR"
-cat > "$BIN" << WRAPPER
+if [ -f "$COPY_SRC/launcher.sh" ]; then
+    cp "$COPY_SRC/launcher.sh" "$BIN"
+    chmod +x "$BIN"
+else
+    cat > "$BIN" << 'FALLBACK'
 #!/usr/bin/env bash
-META="\$HOME/.yt-mirror/.install_meta.json"
-SRC="\$HOME/.yt-mirror/src"
-REMOTE=\$(python3 -c "import json; print(json.load(open('\$META')).get('remote',''))" 2>/dev/null)
-
-# Auto-update: pull repo and re-copy (skip with --no-update)
-SKIP_UPDATE=false
-for arg in "\$@"; do [ "\$arg" = "--no-update" ] && SKIP_UPDATE=true; done
-if [ "\$SKIP_UPDATE" = false ] && [ -n "\$REMOTE" ] && command -v git &>/dev/null; then
-    TMP_REPO="\$HOME/.yt-mirror/.repo"
-    if [ -d "\$TMP_REPO/.git" ]; then
-        git -C "\$TMP_REPO" pull --ff-only --depth 1 2>/dev/null
-    else
-        rm -rf "\$TMP_REPO"
-        git clone --depth 1 "\$REMOTE" "\$TMP_REPO" 2>/dev/null
-    fi
-    if [ -f "\$TMP_REPO/mirror.py" ]; then
-        for py in config.py mirror.py monitor.py youtube_api.py shortener.py download_helpers.py github_api.py get_refresh_token.py tui.py video_processor.py audio_separator.py bgm_manager.py daily_uploader.py daily_mirror.py supabase_db.py continuous_loop.py; do
-            cp "$TMP_REPO/$py" "$SRC/" 2>/dev/null
-        done
-        cp "\$TMP_REPO/requirements.txt" "\$SRC/" 2>/dev/null
-        if [ -d "\$TMP_REPO/.github" ]; then
-            cp -r "\$TMP_REPO/.github" "\$SRC/" 2>/dev/null
-        fi
-        # Re-apply PATH fix if needed
-        if ! echo "\$PATH" | grep -q "\$HOME/.local/bin"; then
-            echo 'export PATH="\$HOME/.local/bin:\$PATH"' >> "\$HOME/.bashrc"
-        fi
-    fi
+exec python3 "$HOME/.yt-mirror/src/tui.py" "$@"
+FALLBACK
+    chmod +x "$BIN"
 fi
-
-# Filter --no-update from args before passing to TUI
-ARGS=()
-for arg in "\$@"; do [ "\$arg" != "--no-update" ] && ARGS+=("\$arg"); done
-
-cd "\$SRC"
-exec python3 "\$SRC/tui.py" "\${ARGS[@]}"
-WRAPPER
-chmod +x "$BIN"
 
 if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
     echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"

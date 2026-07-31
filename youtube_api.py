@@ -125,6 +125,7 @@ def get_video_details(youtube, video_id):
         "description": snippet.get("description", ""),
         "tags": snippet.get("tags", []),
         "channel_title": snippet.get("channelTitle", ""),
+        "channel_id": snippet.get("channelId", ""),
         "duration": _parse_duration_iso8601(dur_str),
         "thumbnail": snippet.get("thumbnails", {}).get("maxres", {}).get("url", "")
                       or snippet.get("thumbnails", {}).get("high", {}).get("url", ""),

@@ -886,6 +886,7 @@ def _do_deploy(project):
         "YT_CLIENT_SECRET": project.get("yt_client_secret", ""),
         "YT_REFRESH_TOKEN": project.get("yt_refresh_token", ""),
         "GH_PAT": project.get("github_token", ""),
+        "VPLINK_API_KEY": project.get("shortlink_api_key", ""),
         "CHANNELS": json.dumps(channels_json),
         "SETTINGS": json.dumps({
             "privacy_status": "public",
@@ -923,7 +924,16 @@ def _do_deploy(project):
         print(f"  {C_BOLD}[{step_num}/{total_steps}]{C_RESET} {msg}")
 
     if repo_exists:
-        info(f"Repo {repo} exists — re-deploying (secrets + workflow dispatch)")
+        info(f"Repo {repo} exists — re-deploying (push code + secrets + workflow dispatch)")
+        # Always push the latest local code so the deployed repo never runs stale
+        step("Pushing latest code...")
+        src_dir = str(Path(__file__).parent)
+        remote_url = f"https://{token}@github.com/{owner}/{rn}.git"
+        ok, err = github_api.git_push(src_dir, remote_url)
+        if not ok:
+            warn(f"Git push failed: {err} — continuing with secrets + dispatch")
+        else:
+            success("Latest code pushed")
         # Cancel any running/queued runs so the latest code takes effect
         step("Cancelling active workflow runs...")
         cancelled = github_api.cancel_active_runs(owner, rn, token)
@@ -1240,17 +1250,10 @@ def _do_instant_upload(project):
         vid = daily_uploader.upload_daily(
             processed, title=title, description=description,
             tags=tags, source_url=source_url, force=True,
+            source_channel=details.get("channel_id", ""),
         )
         if vid:
             success(f"Uploaded: https://www.youtube.com/watch?v={vid}")
-            supabase_db.add_upload_log({
-                "upload_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-                "upload_time": datetime.now(timezone.utc).isoformat(),
-                "video_id": vid,
-                "title": title,
-                "short_url": "",
-                "comment_id": "",
-            }, project_id=pid)
         else:
             error("Upload failed")
         input("\n  Press Enter to continue...")

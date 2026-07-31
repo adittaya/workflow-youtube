@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS upload_state (
   last_upload_hour TIMESTAMPTZ,
   processed_hashes TEXT[] DEFAULT '{}',
   filled_slots TEXT[] DEFAULT '{}',
+  filled_slots_date DATE,
   yt_client_id TEXT DEFAULT '',
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -105,6 +106,9 @@ ALTER TABLE projects ADD COLUMN IF NOT EXISTS upload_schedule TEXT DEFAULT '';
 
 -- Migration: add filled_slots to upload_state (persist completed schedule slots)
 ALTER TABLE upload_state ADD COLUMN IF NOT EXISTS filled_slots TEXT[] DEFAULT '{}';
+
+-- Migration: track which date filled_slots belongs to (resets schedule daily)
+ALTER TABLE upload_state ADD COLUMN IF NOT EXISTS filled_slots_date DATE;
 
 -- 9. Daily upload logs (replaces daily_log.json)
 CREATE TABLE IF NOT EXISTS upload_logs (

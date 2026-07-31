@@ -5,7 +5,7 @@ import time
 import subprocess
 import hashlib
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import config
 import supabase_db
@@ -22,6 +22,8 @@ WARMUP_STATE = DATA_DIR / "warmup_state.json"
 DAILY_LOG = DATA_DIR / "daily_log.json"
 
 WARMUP_DAYS_DEFAULT = 0
+UPLOAD_LEAD_MIN = 90
+SLOT_GRACE_MIN = 30
 
 _project_settings_cache = {}
 
@@ -204,21 +206,44 @@ def _schedule_min_gap(schedule):
     return min_gap / 60.0
 
 
+def _today_filled(state):
+    filled = list(state.get("filled_slots", []))
+    filled_date = state.get("filled_slots_date", "")
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if filled_date != today:
+        return []
+    return filled
+
+
 def get_next_scheduled_slot():
     schedule = get_upload_schedule()
     if not schedule:
         return None, None
     state = load_upload_state()
-    filled = state.get("filled_slots", [])
-    now_min = _minutes_since_midnight()
+    filled = _today_filled(state)
     now = datetime.now(timezone.utc)
+    now_min = now.hour * 60 + now.minute
+    best = None
     for h, m in schedule:
         slot_str = f"{h:02d}:{m:02d}"
+        if slot_str in filled:
+            continue
         slot_min = h * 60 + m
-        if slot_str not in filled and now_min >= slot_min - 180:
-            iso_time = now.replace(hour=h, minute=m, second=0, microsecond=0).isoformat()
-            return slot_str, iso_time
-    return None, None
+        mins_until = slot_min - now_min
+        target_day = now
+        if mins_until < 0:
+            mins_until += 1440
+            target_day = now + timedelta(days=1)
+        if mins_until > UPLOAD_LEAD_MIN:
+            continue
+        if best is None or mins_until < best[0]:
+            iso_time = target_day.replace(
+                hour=h, minute=m, second=0, microsecond=0, tzinfo=None
+            ).isoformat() + 'Z'
+            best = (mins_until, slot_str, iso_time)
+    if best is None:
+        return None, None
+    return best[1], best[2]
 
 
 def get_warmup_day():
@@ -253,18 +278,11 @@ def can_upload_today(return_slot=False):
     if schedule:
         slot_str, iso_time = get_next_scheduled_slot()
         if slot_str is None:
-            filled = state.get("filled_slots", [])
+            filled = _today_filled(state)
             if len(filled) >= len(schedule):
-                if return_slot:
-                    return (False, f"all {len(schedule)} schedule slots filled today", "")
-                return (False, f"all {len(schedule)} schedule slots filled today")
-            next_slot = None
-            for h, m in schedule:
-                s = f"{h:02d}:{m:02d}"
-                if s not in filled:
-                    next_slot = s
-                    break
-            msg = f"next upload at {next_slot} (wait until closer to time)" if next_slot else "all schedule slots filled"
+                msg = f"all {len(schedule)} schedule slots filled today"
+            else:
+                msg = f"next upload window not open yet (starts {UPLOAD_LEAD_MIN}min before slot)"
             if return_slot:
                 return (False, msg, "")
             return (False, msg)
@@ -429,16 +447,20 @@ def upload_daily(video_path, title=None, description=None,
                 config.log(f"comment failed: {e}")
 
         state = load_upload_state()
-        state["last_upload_date"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        state["last_upload_date"] = today
         state["last_upload_hour"] = datetime.now(timezone.utc).isoformat()
         state["total_uploaded"] = state.get("total_uploaded", 0) + 1
         if publish_at:
-            slot_str = datetime.fromisoformat(publish_at).strftime("%H:%M")
+            slot_str = publish_at[11:16]
+            filled_date = state.get("filled_slots_date", "")
             filled = state.get("filled_slots", [])
+            if filled_date != today:
+                filled = []
             if slot_str not in filled:
                 filled.append(slot_str)
             state["filled_slots"] = filled
-            state["last_upload_date"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            state["filled_slots_date"] = today
         save_upload_state(state)
 
         entry = {

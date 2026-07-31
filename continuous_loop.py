@@ -245,25 +245,15 @@ def upload_one_pending():
         return False
 
 
-def main():
+def continuous_detect():
     pid = os.environ.get('PROJECT_ID', '')
-    run_id = os.environ.get('GITHUB_RUN_ID', f'local-{time.time():.0f}')
-    owner = f'{pid}:{run_id}'
-
-    acquired, current_owner = supabase_db.acquire_run_lock(project_id=pid, owner=owner, ttl_hours=6)
-    if not acquired:
-        config.log(f'another run is active ({current_owner}) — skipping this run to avoid duplicate uploads')
-        print(f'SUMMARY: skipped — run already active: {current_owner}')
-        return
-    config.log(f'run lock acquired: {owner}')
-
     start_time = time.time()
     end_time = start_time + RUN_DURATION
     iteration = 0
     total_detected = 0
     total_uploaded = 0
 
-    config.log(f'continuous loop started — running for {RUN_DURATION / 3600:.1f}h')
+    config.log(f'continuous detect loop started — running for {RUN_DURATION / 3600:.1f}h')
 
     while time.time() < end_time:
         iteration += 1
@@ -275,7 +265,7 @@ def main():
             found = detect_and_queue()
             if found:
                 total_detected += 1
-            config.log(f'detect: {"new videos found" if found else "nothing new"}')
+            config.log(f'detect: {"new videos queued" if found else "nothing new"}')
         except Exception as e:
             config.log(f'detect error: {e}')
 
@@ -283,11 +273,10 @@ def main():
             uploaded = upload_one_pending()
             if uploaded:
                 total_uploaded += 1
-            config.log(f'upload: {"uploaded" if uploaded else "skipped (cooldown/nothing)"}')
+            config.log(f'upload: {"uploaded for next slot" if uploaded else "no upload (waiting for slot/cooldown or nothing pending)"}')
         except Exception as e:
             config.log(f'upload error: {e}')
 
-        elapsed = time.time() - start_time
         if time.time() >= end_time:
             break
 
@@ -300,14 +289,30 @@ def main():
                 config.log('interrupted')
                 break
 
-    config.log(f'\ncontinuous loop finished — {iteration} iterations, {total_uploaded} uploaded')
+    config.log(f'\ncontinuous detect loop finished — {iteration} iterations, {total_detected} new, {total_uploaded} uploaded')
     print(f'\nSUMMARY: iterations={iteration} detected={total_detected} uploaded={total_uploaded}')
 
+
+def main():
+    pid = os.environ.get('PROJECT_ID', '')
+    run_id = os.environ.get('GITHUB_RUN_ID', f'local-{time.time():.0f}')
+    owner = f'{pid}:{run_id}'
+
+    acquired, current_owner = supabase_db.acquire_run_lock(project_id=pid, owner=owner, ttl_hours=6)
+    if not acquired:
+        config.log(f'another run is active ({current_owner}) — skipping this run to avoid duplicate uploads')
+        print(f'SUMMARY: skipped — run already active: {current_owner}')
+        return
+    config.log(f'run lock acquired: {owner}')
+
     try:
-        supabase_db.release_run_lock(project_id=pid, owner=owner)
-        config.log('run lock released')
-    except Exception as e:
-        config.log(f'lock release failed: {e}')
+        continuous_detect()
+    finally:
+        try:
+            supabase_db.release_run_lock(project_id=pid, owner=owner)
+            config.log('run lock released')
+        except Exception as e:
+            config.log(f'lock release failed: {e}')
 
 
 if __name__ == '__main__':

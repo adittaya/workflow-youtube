@@ -29,6 +29,21 @@ def _headers():
     }
 
 
+def table_exists(table):
+    """True if the table exists. Returns False (never raises) for a missing
+    relation so the verifier can warn instead of crash before schema.sql has
+    been applied."""
+    try:
+        _request("GET", f"{table}?select=id&limit=1")
+        return True
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return False
+        return True
+    except Exception:
+        return True
+
+
 def _api(path):
     return f"{_SUPABASE_URL.rstrip('/')}/rest/v1/{path.lstrip('/')}"
 
@@ -244,7 +259,16 @@ def get_today_upload_count(date_str, project_id=""):
 
 def add_upload_log(entry, project_id=""):
     entry["project_id"] = project_id
-    _request("POST", "upload_logs", data=entry)
+    try:
+        _request("POST", "upload_logs", data=entry)
+    except urllib.error.HTTPError as e:
+        if e.code == 400 and ("source_video_id" in str(e) or "source_channel" in str(e)):
+            # schema.sql not applied yet (columns missing) — log without them
+            entry.pop("source_video_id", None)
+            entry.pop("source_channel", None)
+            _request("POST", "upload_logs", data=entry)
+        else:
+            raise
 
 
 # ─── Channel Cursors (monitor state) ───────────────────────────────────
@@ -359,6 +383,36 @@ def get_work_stats(project_id=""):
 
 # ─── Run Locks (parallel-run guard) ─────────────────────────────────────
 
+def _parse_ts(v):
+    try:
+        t = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        return t
+    except Exception:
+        return None
+
+
+HEARTBEAT_STALE_MINUTES = 90
+LOCK_STEAL_GRACE_MIN = 15  # owner needs time to write its first heartbeat
+
+
+def _lock_owner_alive(project_id="", lock_owner=""):
+    """A run can only prove it is alive by heartbeating. No fresh heartbeat
+    from the lock owner means it crashed/hung (cancel skips the finally
+    block, so the lock would otherwise block new runs for the full TTL)."""
+    hb = _request("GET", f"run_heartbeats?project_id=eq.{project_id}&select=run_id,last_seen")
+    if not hb:
+        return False
+    row = hb[0]
+    if row.get("run_id") != lock_owner:
+        return False
+    t = _parse_ts(row.get("last_seen"))
+    if not t:
+        return False
+    return (datetime.now(timezone.utc) - t).total_seconds() < HEARTBEAT_STALE_MINUTES * 60
+
+
 def acquire_run_lock(project_id="", owner="", ttl_hours=6):
     now = datetime.now(timezone.utc)
     rows = _request("GET", f"run_locks?project_id=eq.{project_id}&select=*")
@@ -367,17 +421,21 @@ def acquire_run_lock(project_id="", owner="", ttl_hours=6):
         acquired = lock.get("acquired_at")
         owner_now = lock.get("owner", "")
         if acquired:
-            try:
-                t = datetime.fromisoformat(str(acquired).replace("Z", "+00:00"))
-                if t.tzinfo is None:
-                    t = t.replace(tzinfo=timezone.utc)
-                expired = (now - t).total_seconds() >= ttl_hours * 3600
-            except Exception:
-                expired = True
+            t = _parse_ts(acquired)
+            expired = (t is None) or ((now - t).total_seconds() >= ttl_hours * 3600)
         else:
             expired = True
-        if owner_now and not expired and owner_now != owner:
+        if owner_now and not expired and owner_now != owner and _lock_owner_alive(project_id, owner_now):
             return False, owner_now
+        acquired_t = _parse_ts(acquired) if owner_now and not expired and owner_now != owner else None
+        if acquired_t and (now - acquired_t).total_seconds() >= LOCK_STEAL_GRACE_MIN * 60:
+            # Lock owner stopped heartbeating (crashed/hung — its finally
+            # block never ran) so it is safe to steal the lock.
+            try:
+                update_heartbeat(project_id=project_id, run_id=owner_now,
+                                 status="crashed", message="lock stolen — owner heartbeat went stale")
+            except Exception:
+                pass
         _request("PATCH", f"run_locks?project_id=eq.{project_id}", data={
             "owner": owner,
             "acquired_at": now.isoformat(),
@@ -399,6 +457,96 @@ def release_run_lock(project_id="", owner=""):
     rows = _request("GET", f"run_locks?project_id=eq.{project_id}&select=owner")
     if rows and (not owner or rows[0].get("owner") == owner):
         _request("DELETE", f"run_locks?project_id=eq.{project_id}")
+
+
+def clear_expired_locks():
+    """Delete run locks whose TTL has passed (a crashed run can never release
+    its own lock, so this prevents them from lingering past their TTL)."""
+    rows = _request("GET", "run_locks?select=project_id,expires_at")
+    removed = 0
+    for r in rows or []:
+        t = _parse_ts(r.get("expires_at"))
+        if t and t < datetime.now(timezone.utc):
+            _request("DELETE", f"run_locks?project_id=eq.{r['project_id']}")
+            removed += 1
+    return removed
+
+
+# ─── Heartbeats (liveness proof — see run_locks) ──────────────────────────
+
+def update_heartbeat(project_id="", run_id="", iteration=0, status="running", message=""):
+    now = datetime.now(timezone.utc).isoformat()
+    _upsert("run_heartbeats", {
+        "project_id": project_id,
+        "run_id": run_id,
+        "iteration": iteration,
+        "status": status,
+        "message": message,
+        "last_seen": now,
+        "updated_at": now,
+    }, on_conflict="project_id")
+
+
+def get_heartbeat(project_id=""):
+    row = _request("GET", f"run_heartbeats?project_id=eq.{project_id}&select=*")
+    return row[0] if row else None
+
+
+# ─── Work queue hygiene ────────────────────────────────────────────────────
+
+def close_stale_work_items(project_id="", stale_minutes=45):
+    """Mark in_progress work items that have not been touched for a long time
+    as failed, so they never sit 'in_progress' forever (which would break
+    queue accounting and block re-dispatch of that video)."""
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=stale_minutes)
+    rows = _request("GET",
+        f"work_queue?project_id=eq.{project_id}&status=eq.in_progress"
+        f"&select=id,updated_at&order=updated_at.asc&limit=100")
+    closed = 0
+    for r in rows or []:
+        t = _parse_ts(r.get("updated_at"))
+        if t and t < cutoff:
+            update_work_item(r["id"], status="failed", error="stale — in_progress too long")
+            closed += 1
+    return closed
+
+
+# ─── Verify checks (self-verification audit trail) ────────────────────────
+
+def record_verify_check(project_id="", check_name="", status="ok", message="", details=None):
+    now = datetime.now(timezone.utc).isoformat()
+    _upsert("verify_checks", {
+        "project_id": project_id,
+        "check_name": check_name,
+        "status": status,
+        "message": message,
+        "details": details or {},
+        "checked_at": now,
+    }, on_conflict="project_id,check_name")
+
+
+# ─── Alerts (recurring issues surfaced until fixed) ───────────────────────
+
+def add_alert(project_id="", severity="warn", check_name="", message="", details=None):
+    _request("POST", "alerts", data={
+        "project_id": project_id,
+        "severity": severity,
+        "check_name": check_name,
+        "message": message,
+        "details": details or {},
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+
+def get_open_alerts(project_id="", limit=50):
+    return _request("GET",
+        f"alerts?project_id=eq.{project_id}&resolved_at=is.null"
+        f"&select=*&order=created_at.desc&limit={limit}") or []
+
+
+def resolve_alert(alert_id, by="bot"):
+    now = datetime.now(timezone.utc).isoformat()
+    _request("PATCH", f"alerts?id=eq.{alert_id}", data={"resolved_at": now, "resolved_by": by})
 
 
 # ─── Init ────────────────────────────────────────────────────────────────

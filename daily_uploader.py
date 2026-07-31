@@ -406,7 +406,7 @@ def process_video(input_path, output_dir=None):
 
 def upload_daily(video_path, title=None, description=None,
                  tags=None, category_id="22", source_url=None, force=False,
-                 publish_at=None):
+                 publish_at=None, source_channel=""):
     if not force:
         if publish_at:
             can = True
@@ -490,12 +490,14 @@ def upload_daily(video_path, title=None, description=None,
             state["filled_slots"] = filled
             state["filled_slots_date"] = today
         # Mark the SOURCE video as processed only after a successful upload
+        source_vid = ""
         if video_url:
             m = re.search(r'(?:v=|youtu\.be/)([\w-]{11})', video_url)
             if m:
+                source_vid = m.group(1)
                 processed = state.get("processed_hashes", [])
-                if m.group(1) not in processed:
-                    processed.append(m.group(1))
+                if source_vid not in processed:
+                    processed.append(source_vid)
                     state["processed_hashes"] = processed
         save_upload_state(state)
 
@@ -506,9 +508,21 @@ def upload_daily(video_path, title=None, description=None,
             "title": title,
             "short_url": short_url or "",
             "comment_id": comment_id or "",
+            "source_video_id": source_vid,
+            "source_channel": source_channel or "",
         }
         if supabase_db.is_enabled():
             supabase_db.add_upload_log(entry, project_id=config.PROJECT_ID)
+            if source_vid and source_channel:
+                try:
+                    supabase_db.save_mirror_state(source_channel, source_vid, {
+                        "mirrored_video_id": video_id,
+                        "original_title": title,
+                        "mirrored_at": datetime.now(timezone.utc).isoformat(),
+                        "comment_id": comment_id or "",
+                    }, project_id=config.PROJECT_ID)
+                except Exception as e:
+                    config.log(f"mirror_state record failed: {e}")
         else:
             log = load_daily_log()
             log["uploads"].append(entry)

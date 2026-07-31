@@ -10,6 +10,7 @@ import daily_uploader
 import youtube_api
 import download_helpers
 import supabase_db
+import verify_state
 
 RUN_DURATION = 5.5 * 3600
 SLEEP_INTERVAL = 900
@@ -187,6 +188,7 @@ def upload_one_pending():
                 'title': sn.get('title', vid['title']),
                 'description': sn.get('description', ''),
                 'tags': sn.get('tags', []),
+                'channel_id': sn.get('channelId', ''),
             }
     except Exception as e:
         config.log(f'could not fetch video info: {e}')
@@ -232,7 +234,8 @@ def upload_one_pending():
 
         can, slot_str, iso_time = daily_uploader.can_upload_today(return_slot=True)
         publish_at = iso_time if daily_uploader.get_upload_schedule() and can else None
-        video_id = daily_uploader.upload_daily(processed, title, desc, tags, source_url=source_url, publish_at=publish_at)
+        video_id = daily_uploader.upload_daily(processed, title, desc, tags, source_url=source_url, publish_at=publish_at,
+                                               source_channel=vid.get('channel_id', ''))
         if video_id:
             config.log(f'uploaded: {video_id}')
             if item_id:
@@ -259,7 +262,7 @@ def upload_one_pending():
             config.log(f'cleanup failed: {e}')
 
 
-def continuous_detect():
+def continuous_detect(owner=""):
     pid = os.environ.get('PROJECT_ID', '')
     start_time = time.time()
     end_time = start_time + RUN_DURATION
@@ -274,6 +277,14 @@ def continuous_detect():
         elapsed = (time.time() - start_time) / 3600
         remaining = (end_time - time.time()) / 3600
         config.log(f'\n--- iteration {iteration} ({elapsed:.1f}h elapsed, {remaining:.1f}h remaining) ---')
+
+        # Prove this run is alive so the run_lock can be stolen by the next
+        # run if this one crashes mid-loop (cancels never reach the finally).
+        try:
+            supabase_db.update_heartbeat(project_id=pid, run_id=owner, iteration=iteration,
+                                         status='running', message='loop iteration')
+        except Exception as e:
+            config.log(f'heartbeat failed: {e}')
 
         try:
             found = detect_and_queue()
@@ -290,6 +301,14 @@ def continuous_detect():
             config.log(f'upload: {"uploaded for next slot" if uploaded else "no upload (waiting for slot/cooldown or nothing pending)"}')
         except Exception as e:
             config.log(f'upload error: {e}')
+
+        # Verify state against the database and heal safe inconsistencies
+        try:
+            summary = verify_state.run_for(pid, owner=owner, fix=True)
+            config.log(f'verify: {summary["oks"]} ok, {summary["warns"]} warn, '
+                       f'{summary["fails"]} fail, {summary["healed"]} healed')
+        except Exception as e:
+            config.log(f'verify error: {e}')
 
         if time.time() >= end_time:
             break
@@ -320,8 +339,19 @@ def main():
     config.log(f'run lock acquired: {owner}')
 
     try:
-        continuous_detect()
+        try:
+            summary = verify_state.run_for(pid, owner=owner, fix=True)
+            config.log(f'start verify: {summary["oks"]} ok, {summary["warns"]} warn, '
+                       f'{summary["fails"]} fail, {summary["healed"]} healed')
+        except Exception as e:
+            config.log(f'start verify failed: {e}')
+        continuous_detect(owner=owner)
     finally:
+        try:
+            supabase_db.update_heartbeat(project_id=pid, run_id=owner,
+                                         status='done', message='loop finished')
+        except Exception as e:
+            config.log(f'heartbeat final failed: {e}')
         try:
             supabase_db.release_run_lock(project_id=pid, owner=owner)
             config.log('run lock released')

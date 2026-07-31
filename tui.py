@@ -19,6 +19,7 @@ import youtube_api
 import daily_uploader
 import download_helpers
 import shortener
+import verify_state
 
 try:
     from google.oauth2.credentials import Credentials
@@ -262,6 +263,7 @@ def project_menu(project):
         divider()
         print(f"  {C_BOLD}[1]{C_RESET} Setup & Deploy (all credentials)")
         print(f"  {C_BOLD}[S]{C_RESET} Status — check everything is right")
+        print(f"  {C_BOLD}[V]{C_RESET} Verify — full self-check against the database")
         print(f"  {C_BOLD}[2]{C_RESET} View workflow logs")
         print(f"  {C_BOLD}[3]{C_RESET} Remove deployment")
         print(f"  {C_BOLD}[I]{C_RESET} Instant upload — upload a video now (bypasses cooldown)")
@@ -285,6 +287,8 @@ def project_menu(project):
         elif choice == "S":
             p = supabase_db.get_project(project["id"])
             screen_status(p)
+        elif choice == "V":
+            _show_verify(p)
         elif choice == "2":
             screen_logs(p)
         elif choice == "3":
@@ -1092,6 +1096,24 @@ def _do_oauth(project):
         error("OAuth timed out or no code received")
 
 # ─── Work Queue Viewer ─────────────────────────────────────────────────────
+
+def _show_verify(project):
+    pid = str(project["id"])
+    clear()
+    banner()
+    print(f"\n  {C_BOLDWHITE}VERIFY — {project['name']} (auto-heals safe inconsistencies){C_RESET}")
+    divider()
+    try:
+        res = verify_state.run_for(pid, owner="", fix=True)
+        print()
+        print(f"  {C_GREEN}{res['oks']} ok{C_RESET}  {C_YELLOW}{res['warns']} warn{C_RESET}  "
+              f"{C_RED}{res['fails']} fail{C_RESET}  {C_BOLD}{res['healed']} healed{C_RESET}")
+    except Exception as e:
+        error(f"Verify failed: {e}")
+    print()
+    prompt("Press Enter to return", default="")
+    return
+
 
 def _show_work_queue(project):
     pid = str(project["id"])

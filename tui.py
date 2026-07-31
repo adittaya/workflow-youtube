@@ -335,6 +335,100 @@ def _sanitize_field(key, value):
     return value
 
 
+def _normalize_channels(raw):
+    parts = [c.strip() for c in str(raw or "").split(",") if c.strip()]
+    out = []
+    changed = False
+    for c in parts:
+        parsed = _parse_channel(c)
+        if not parsed:
+            continue
+        if parsed != c:
+            changed = True
+        out.append(parsed)
+    return out, changed
+
+
+def _validate_schedule(raw):
+    raw = str(raw or "").strip()
+    if not raw:
+        return None, ""
+    times = []
+    invalid = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if ":" not in part:
+            invalid.append(part)
+            continue
+        try:
+            h, m = part.split(":")
+            h, m = int(h), int(m)
+            if not (0 <= h <= 23 and 0 <= m <= 59):
+                raise ValueError
+            times.append(f"{h:02d}:{m:02d}")
+        except (ValueError, IndexError):
+            invalid.append(part)
+    return times, ", ".join(invalid)
+
+
+def _test_yt_token(cid, csec, rt):
+    if not (cid and csec and rt):
+        return False, "missing credentials", False
+    try:
+        data = urllib.parse.urlencode({
+            "client_id": cid, "client_secret": csec,
+            "refresh_token": rt, "grant_type": "refresh_token",
+        }).encode()
+        req = urllib.request.Request("https://oauth2.googleapis.com/token", data=data, method="POST")
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            tokens = json.loads(resp.read())
+            if tokens.get("access_token"):
+                return True, "refresh OK", False
+            return False, "no access_token returned", False
+    except urllib.error.HTTPError as e:
+        if e.code == 400:
+            return False, "expired/invalid — re-run [O] OAuth", True
+        return False, f"HTTP {e.code}", False
+    except Exception as e:
+        return False, str(e)[:60], False
+
+
+def _test_github_token(token):
+    if not token:
+        return False, "", ""
+    try:
+        req = urllib.request.Request("https://api.github.com/user",
+            headers={"Authorization": f"token {token}", "User-Agent": "yt-mirror-cli"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            user = json.loads(resp.read())
+            return True, user.get("login", ""), ""
+    except urllib.error.HTTPError as e:
+        return False, "", f"HTTP {e.code}"
+    except Exception as e:
+        return False, "", str(e)[:60]
+
+
+def _validate_upload_schedule_field(v):
+    if not str(v or "").strip():
+        return True, ""
+    times, invalid = _validate_schedule(v)
+    if invalid:
+        return False, f"invalid slot(s): {invalid}"
+    return True, ""
+
+
+FIELD_VALIDATORS = {
+    "shortlink_provider": lambda v: (v in ("vplink", "cleanuri", "tinyurl"),
+                                     "use one of vplink / cleanuri / tinyurl"),
+    "comment_moderation": lambda v: (v in ("heldForReview", "published"),
+                                     "use heldForReview or published"),
+    "upload_schedule": _validate_upload_schedule_field,
+}
+
+
 def screen_setup(project):
     pid = project["id"]
 
@@ -403,11 +497,23 @@ def screen_setup(project):
                 old = p.get(key, "")
                 new_val = prompt(f"{label}", old)
                 if new_val is not None:
+                    new_val = new_val.strip()
+                    if key == "channels":
+                        normalized, _changed = _normalize_channels(new_val)
+                        if normalized:
+                            new_val = ",".join(normalized)
                     new_val = _sanitize_field(key, new_val)
                     if new_val != old:
+                        if key in FIELD_VALIDATORS:
+                            ok, msg = FIELD_VALIDATORS[key](new_val)
+                            if not ok:
+                                error(f"{label}: {msg}")
+                                continue
                         hint = ""
                         if key == "yt_client_id" and new_val != old:
                             hint = f" (auto-cleaned: {new_val})"
+                        if key == "channels" and new_val != old:
+                            hint = f" (normalized: {new_val})"
                         try:
                             if is_num:
                                 try:
@@ -459,21 +565,25 @@ def _do_doctor(project):
     clear()
     banner()
     print(f"\n  {C_BOLDWHITE}DOCTOR — {project['name']}{C_RESET}")
-    print(f"  {C_DIM}Validating project fields and suggesting fixes...{C_RESET}\n")
+    print(f"  {C_DIM}Validating all fields with live checks + auto-correction...{C_RESET}\n")
 
     pid = project["id"]
     p = supabase_db.get_project(pid) or project
     passed = 0
     fixed = 0
     issues = 0
+    fixes = []
 
-    def _check(label, ok, fix=""):
+    def report(label, ok, note="", fix=None):
         nonlocal passed, issues
         if ok:
-            print(f"  {C_GREEN}[OK]{C_RESET}   {label}")
+            print(f"  {C_GREEN}[OK]{C_RESET}   {label}" + (f" — {note}" if note else ""))
             passed += 1
+        elif fix is not None:
+            fixes.append((label, fix[0], fix[1], fix[2]))
+            print(f"  {C_GREEN}[FIX]{C_RESET}  {label} — {fix[2]}")
         else:
-            print(f"  {C_RED}[ISSUE]{C_RESET} {label}" + (f" — {fix}" if fix else ""))
+            print(f"  {C_RED}[ISSUE]{C_RESET} {label}" + (f" — {note}" if note else ""))
             issues += 1
 
     cid = p.get("yt_client_id", "")
@@ -482,68 +592,177 @@ def _do_doctor(project):
     token = p.get("github_token", "")
     repo = p.get("github_repo", "")
 
-    def _autofixed(label, detail=""):
-        nonlocal fixed
-        fixed += 1
-        print(f"  {C_GREEN}[FIX]{C_RESET}  {label} — {detail}")
-
-    # 1. Client ID
-    if cid and (cid.startswith("http://") or cid.startswith("https://")):
-        cleaned = _sanitize_field("yt_client_id", cid)
-        supabase_db.update_project(pid, yt_client_id=cleaned)
-        _autofixed("YouTube Client ID had URL prefix", cleaned)
+    # ── 1. YouTube Client ID ──
+    cleaned = _sanitize_field("yt_client_id", cid)
+    if cleaned and cleaned != cid:
+        report("YouTube Client ID", False, fix=("yt_client_id", cleaned, f"URL prefix stripped → {cleaned}"))
         cid = cleaned
-    else:
-        _check(f"YouTube Client ID {'set' if cid else 'missing'}", bool(cid),
-               "Enter your Google Cloud OAuth client ID in field [1]")
-
-    # 2. Client Secret
-    _check(f"YouTube Client Secret {'set' if csec else 'missing'}", bool(csec),
-           "Enter your Google Cloud OAuth client secret in field [2]")
-
-    # 3. Refresh Token
-    _check(f"YouTube Refresh Token {'set' if rt else 'missing'}", bool(rt),
-           "Run [O] OAuth login after setting client ID + secret")
-
-    # 4. GitHub Token
-    _check(f"GitHub Token {'set' if token else 'missing'}", bool(token),
-           "Enter a GitHub PAT with repo scope in field [4]")
-
-    # 5. GitHub Repo
-    if repo:
-        parts = repo.split("/")
-        if len(parts) != 2 or not parts[0] or not parts[1]:
-            _check("GitHub Repo format", False, f"Expected owner/repo, got {repo!r}")
+    elif cid:
+        if ".apps.googleusercontent.com" not in cid:
+            report("YouTube Client ID format", False,
+                   "should end with .apps.googleusercontent.com — check field [1]")
         else:
-            _check(f"GitHub Repo set ({repo})", True)
+            report("YouTube Client ID", True)
     else:
-        _check("GitHub Repo", False, "Set in field [5] or it will be auto-suggested when you set the token")
+        report("YouTube Client ID", False, "enter your OAuth client ID in field [1]")
 
-    # 6. Channels
-    channels_raw = p.get("channels", "")
-    if channels_raw:
-        chs = [c.strip() for c in channels_raw.split(",") if c.strip()]
-        valid = 0
-        invalid = 0
-        for c in chs:
-            parsed = _parse_channel(c)
-            if parsed:
-                valid += 1
+    # ── 2. Client Secret ──
+    report("YouTube Client Secret", bool(csec), "" if csec else "enter it in field [2]")
+
+    # ── 3. Refresh Token (live test) ──
+    ok_yt, yt_note, yt_expired = _test_yt_token(cid, csec, rt)
+    if ok_yt:
+        report("YouTube Refresh Token", True, "valid — refresh OK")
+    elif rt:
+        report("YouTube Refresh Token", False,
+               yt_note + (". Re-run [O] OAuth to get a fresh token" if yt_expired else ""))
+    else:
+        report("YouTube Refresh Token", False,
+               "run [O] OAuth login after setting client ID + secret")
+
+    # ── 4. GitHub Token (live test) ──
+    ok_gh, gh_user, gh_err = _test_github_token(token)
+    if ok_gh:
+        report("GitHub Token", True, f"authenticated as @{gh_user}")
+    elif token:
+        report("GitHub Token", False, f"invalid ({gh_err or 'failed'}) — regenerate PAT with repo scope")
+    else:
+        report("GitHub Token", False, "enter a GitHub PAT with repo scope in field [4]")
+
+    # ── 5. GitHub Repo ──
+    if ok_gh and gh_user:
+        suggested = f"{gh_user}/{str(p.get('name', '')).replace(' ', '-').lower()}"
+        if not repo:
+            report("GitHub Repo", False,
+                   fix=("github_repo", suggested, f"auto-suggested {suggested}"))
+            repo = suggested
+        elif "/" not in repo:
+            report("GitHub Repo format", False,
+                   fix=("github_repo", suggested, f"invalid {repo!r} → {suggested}"))
+            repo = suggested
+        elif not repo.startswith(gh_user + "/"):
+            fixed_repo = f"{gh_user}/{repo.split('/', 1)[-1]}"
+            report("GitHub Repo owner", False,
+                   fix=("github_repo", fixed_repo, f"token user is {gh_user} → {fixed_repo}"))
+            repo = fixed_repo
+        else:
+            report("GitHub Repo", True, repo)
+    elif repo:
+        parts = repo.split("/")
+        if len(parts) == 2 and parts[0] and parts[1]:
+            report("GitHub Repo format", True, repo)
+        else:
+            report("GitHub Repo format", False, f"expected owner/repo, got {repo!r}")
+    else:
+        report("GitHub Repo", False, "set it in field [5]")
+
+    # Repo accessibility
+    if ok_gh and repo and "/" in repo:
+        parts = repo.split("/")
+        try:
+            req = urllib.request.Request(
+                f"https://api.github.com/repos/{parts[0]}/{parts[1]}",
+                headers={"Authorization": f"token {token}", "User-Agent": "yt-mirror-cli"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                report("GitHub repo accessible", True, repo)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                report("GitHub repo accessible", False,
+                       f"{repo} not found — create it, then run [D]eploy")
+            elif e.code == 403:
+                report("GitHub repo accessible", False, "token lacks access — check PAT scope")
             else:
-                invalid += 1
-                _check(f"Channel URL {c}", False, "Use @handle or /channel/UCxxx format")
-        if invalid == 0:
-            _check(f"Channels: {valid} configured", True)
+                report("GitHub repo accessible", False, f"HTTP {e.code}")
+        except Exception as e:
+            report("GitHub repo accessible", False, str(e)[:60])
+
+    # ── 6. Channels ──
+    channels_raw = p.get("channels", "")
+    normalized, changed = _normalize_channels(channels_raw)
+    if channels_raw and normalized:
+        if changed:
+            report("Channels", False,
+                   fix=("channels", ",".join(normalized),
+                        f"{len(normalized)} normalized: {','.join(normalized)}"))
+        else:
+            report("Channels", True, f"{len(normalized)} configured")
+    elif channels_raw and not normalized:
+        report("Channels", False, "none parsed — use @handle or /channel/UCxxx, comma-separated")
     else:
-        _check("Channels", False, "Add channel URLs in field [6]")
+        report("Channels", False, "add channel URLs in field [6]")
 
-    # 7. Provider overlap check
-    if cid and csec:
-        _check("YouTube credentials: client ID + secret both set", True)
-    if cid and csec and rt:
-        _check("YouTube auth: fully configured (ID + secret + token)", True)
+    # ── 7. Shortlink provider / key ──
+    provider = p.get("shortlink_provider", "")
+    if provider and provider not in ("vplink", "cleanuri", "tinyurl"):
+        report("Shortlink provider", False,
+               fix=("shortlink_provider", "vplink", f"invalid {provider!r} → vplink"))
+    else:
+        report("Shortlink provider", True, provider or "default: vplink")
+    if provider == "vplink" and not p.get("shortlink_api_key"):
+        report("Shortlink API key", False,
+               "vplink requires an API key — set it in field [8]")
+    else:
+        report("Shortlink API key", True, "set" if p.get("shortlink_api_key") else "not needed")
 
-    # 8. Proxy connectivity test
+    # ── 8. Comment mode ──
+    cm = p.get("comment_moderation", "")
+    if cm and cm not in ("heldForReview", "published"):
+        report("Comment mode", False,
+               fix=("comment_moderation", "published", f"invalid {cm!r} → published"))
+    else:
+        report("Comment mode", True, cm or "default: published")
+
+    # ── 9. Warmup days ──
+    wd = p.get("warmup_days")
+    try:
+        wdv = int(wd)
+        if wdv < 0:
+            report("Warmup days", False,
+                   fix=("warmup_days", 0, f"negative {wdv} → 0"))
+        else:
+            report("Warmup days", True, f"{wdv} day{'s' if wdv != 1 else ''}")
+    except (ValueError, TypeError):
+        report("Warmup days", False, fix=("warmup_days", 0, f"invalid {wd!r} → 0"))
+
+    # ── 10. Uploads per day ──
+    upd = p.get("uploads_per_day")
+    try:
+        updv = int(upd)
+        if updv < 1:
+            report("Uploads per day", False,
+                   fix=("uploads_per_day", 2, f"{updv} < 1 → 2"))
+        else:
+            report("Uploads per day", True, str(updv))
+    except (ValueError, TypeError):
+        report("Uploads per day", False, fix=("uploads_per_day", 2, f"invalid {upd!r} → 2"))
+
+    # ── 11. Initial backfill ──
+    bf = p.get("initial_backfill")
+    try:
+        bfv = int(bf)
+        if bfv < 0:
+            report("Initial backfill", False,
+                   fix=("initial_backfill", 0, f"negative {bfv} → 0"))
+        else:
+            report("Initial backfill", True, str(bfv))
+    except (ValueError, TypeError):
+        report("Initial backfill", False,
+               fix=("initial_backfill", 5, f"invalid {bf!r} → 5"))
+
+    # ── 12. Upload schedule ──
+    sched_raw = str(p.get("upload_schedule", "") or "").strip()
+    sched_times, sched_invalid = _validate_schedule(sched_raw)
+    if sched_invalid:
+        good = ",".join(sched_times) if sched_times else ""
+        report("Upload schedule", False,
+               fix=("upload_schedule", good,
+                    f"dropped invalid slot(s): {sched_invalid}" + (f" → {good}" if good else "")))
+    elif sched_times:
+        report("Upload schedule", True, ", ".join(sched_times))
+    else:
+        report("Upload schedule", True, "cooldown mode (uploads_per_day)")
+
+    # ── 13. Proxy Supabase ──
     pu = p.get("proxy_supabase_url", "")
     pk = p.get("proxy_supabase_key", "")
     if pu and pk:
@@ -551,62 +770,48 @@ def _do_doctor(project):
             api = pu.rstrip("/") + "/rest/v1/proxy_results?select=ip&vplink_ok=eq.true&limit=1"
             req = urllib.request.Request(api, headers={
                 "apikey": pk, "Authorization": f"Bearer {pk}"})
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with urllib.request.urlopen(req, timeout=15) as resp:
                 data = json.loads(resp.read())
                 if data:
-                    _check("Proxy Supabase: connected, proxies available", True)
+                    report("Proxy Supabase", True, "connected, proxies available")
                 else:
-                    _check("Proxy Supabase: connected but no VPLINK-verified proxies", False,
-                           "Run VPLINK first to populate proxy_results table")
+                    report("Proxy Supabase", False, "connected but no VPLINK-verified proxies")
         except Exception as e:
-            _check(f"Proxy Supabase connection failed", False, f"{e}")
+            report("Proxy Supabase", False, f"connection failed: {str(e)[:60]}")
     else:
-        _check("Proxy Supabase: not configured (optional)", True)
+        report("Proxy Supabase", True, "not configured (optional)")
 
-    # 9. GitHub repo accessibility
-    if token and repo:
-        parts = repo.split("/")
-        if len(parts) == 2:
-            try:
-                req = urllib.request.Request(
-                    f"https://api.github.com/repos/{parts[0]}/{parts[1]}",
-                    headers={"Authorization": f"token {token}", "User-Agent": "yt-mirror-cli"})
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    _check(f"GitHub repo {repo} accessible", True)
-            except urllib.error.HTTPError as e:
-                if e.code == 404:
-                    _check(f"GitHub repo {repo}", False, "Repo not found — create it or check field [5]")
-                elif e.code == 403:
-                    _check(f"GitHub repo {repo}", False, "Token lacks access — check PAT scope")
-                else:
-                    _check(f"GitHub repo {repo}", False, f"HTTP {e.code}")
-            except Exception as e:
-                _check(f"GitHub repo {repo}", False, f"{e}")
-
-    # 10. Warmup days
-    wd = p.get("warmup_days")
-    if wd is not None:
-        try:
-            wdv = int(wd)
-            if wdv < 0:
-                _check("Warmup days is negative", False, "Set to 0 or a positive number in field [11]")
-            elif wdv == 0:
-                _check("Warmup days: 0 (no wait — uploads start immediately)", True)
-            else:
-                _check(f"Warmup days: {wdv}", True)
-        except (ValueError, TypeError):
-            _check("Warmup days is not a valid number", False, "Set a valid integer in field [11]")
+    # ── 14. Deploy status ──
+    if p.get("deployed_at"):
+        report("Deployment", True, f"last deploy {p['deployed_at'][:16].replace('T', ' ')}")
     else:
-        _check("Warmup days: default (0 — no wait)", True)
+        report("Deployment", False, "run [D]eploy after fields pass")
 
+    # ── Summary + apply fixes ──
     print()
-    if issues > 0:
-        warn(f"{issues} issue(s) found")
+    if fixes:
+        print(f"  {C_GREEN}{len(fixes)} auto-fix(es) available{C_RESET}:")
+        for i, (label, _k, _v, desc) in enumerate(fixes, 1):
+            print(f"     {i}. {label} — {desc}")
+        print()
+        if confirm("Apply all auto-fixes now?"):
+            applied = 0
+            for _label, key, val, _desc in fixes:
+                try:
+                    supabase_db.update_project(pid, **{key: val})
+                    applied += 1
+                    print(f"  {C_GREEN}✓{C_RESET} {key} = {val if key != 'yt_client_id' else '(cleaned)'}")
+                except Exception as e:
+                    error(f"Failed to set {key}: {e}")
+            fixed = applied
+            p = supabase_db.get_project(pid) or p
     if fixed > 0:
         success(f"{fixed} auto-fix(es) applied")
+    if issues > 0:
+        warn(f"{issues} issue(s) remain — fix manually from the hints above")
     if passed > 0:
         info(f"{passed} check(s) passed")
-    if issues == 0:
+    if not fixes and issues == 0:
         success("All checks passed — ready to deploy!")
     input(f"\n  Press Enter to continue...")
 
@@ -944,10 +1149,9 @@ def _do_instant_upload(project):
         youtube = youtube_api.get_client()
         all_vids = []
         for ch in channels:
-            cid = ch.get("id", "")
-            if not cid:
+            if not ch:
                 continue
-            playlist_id = youtube_api.get_channel_uploads_playlist(youtube, cid)
+            playlist_id = youtube_api.get_channel_uploads_playlist(youtube, ch)
             if not playlist_id:
                 continue
             recent = youtube_api.get_recent_videos(youtube, playlist_id, max_results=5)

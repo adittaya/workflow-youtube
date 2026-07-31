@@ -223,7 +223,7 @@ def save_upload_state(state, project_id=""):
         "last_upload_hour": state.get("last_upload_hour"),
         "processed_hashes": state.get("processed_hashes", []),
         "filled_slots": state.get("filled_slots", []),
-        "filled_slots_date": state.get("filled_slots_date", ""),
+        "filled_slots_date": state.get("filled_slots_date") or None,
         "yt_client_id": state.get("yt_client_id", ""),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }

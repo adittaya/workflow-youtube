@@ -306,16 +306,36 @@ def can_upload_today(return_slot=False):
     max_per_day, hours_between = get_upload_config()
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    if state.get("last_upload_date") == today:
-        log = load_daily_log()
-        today_uploads = [u for u in log["uploads"]
-                         if u.get("date") == today]
-        if len(today_uploads) >= max_per_day:
-            if return_slot:
-                return (False, f"already uploaded {max_per_day} today", "")
-            return (False, f"already uploaded {max_per_day} today")
 
-    if state.get("last_upload_hour"):
+    # Quota and cooldown come from upload_logs (the authoritative record),
+    # never from upload_state fields, which can drift stale. If state says
+    # the last upload was yesterday but logs prove 2 uploads today, the cap
+    # still holds — this is what stops duplicate re-uploads after any drift.
+    log = load_daily_log()
+    today_uploads = [u for u in log["uploads"]
+                     if u.get("date") == today]
+    if len(today_uploads) >= max_per_day:
+        if return_slot:
+            return (False, f"already uploaded {max_per_day} today", "")
+        return (False, f"already uploaded {max_per_day} today")
+
+    if today_uploads:
+        # Gap from the most recent upload today (logs are newest-first)
+        last_time = today_uploads[0].get("time", "")
+        try:
+            last = datetime.fromisoformat(last_time) if last_time else None
+        except (ValueError, TypeError):
+            last = None
+        if last is not None:
+            if last.tzinfo is not None:
+                last = last.replace(tzinfo=None)
+            hours_since = (datetime.now(timezone.utc).replace(tzinfo=None) - last).total_seconds() / 3600
+            if hours_since < hours_between:
+                wait = hours_between - hours_since
+                if return_slot:
+                    return (False, f"wait {wait:.1f}h more", "")
+                return (False, f"wait {wait:.1f}h more")
+    elif state.get("last_upload_hour"):
         last = datetime.fromisoformat(state["last_upload_hour"])
         if last.tzinfo is not None:
             last = last.replace(tzinfo=None)

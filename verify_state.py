@@ -321,8 +321,26 @@ class Verifier:
                 self._ok("today_quota", f"{today_count}/{max_per_day} uploaded today")
         else:
             if today_count > 0:
-                self._warn("today_quota",
-                           f"{today_count} upload(s) today but last_upload_date={last_date}")
+                if self.fix:
+                    # Logs PROVE uploads happened today even though state is
+                    # stale — heal the drift so quota/dedup stay correct.
+                    logs = supabase_db.get_upload_logs(limit=200, project_id=self.pid)
+                    today_logs = [l for l in logs
+                                  if (l.get("upload_date") or "")[:10] == _today()]
+                    latest = today_logs[0].get("upload_time") if today_logs else None
+                    if latest:
+                        state["last_upload_hour"] = latest
+                    state["last_upload_date"] = _today()
+                    total_logs = len([l for l in logs if l.get("upload_date")])
+                    if total_logs > int(state.get("total_uploaded") or 0):
+                        state["total_uploaded"] = total_logs
+                    self._save_state(state)
+                    self._warn("today_quota",
+                               f"healed stale state from {len(today_logs)} log row(s) today",
+                               healed=True)
+                else:
+                    self._warn("today_quota",
+                               f"{today_count} upload(s) today but last_upload_date={last_date}")
             else:
                 self._ok("today_quota", f"no uploads today (last {last_date})")
 

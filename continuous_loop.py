@@ -167,6 +167,23 @@ def upload_one_pending():
     if item_id:
         supabase_db.update_work_item(item_id, status='in_progress')
 
+    # Defense-in-depth dedup: even if processed_hashes drifted stale, never
+    # re-upload a source that upload_logs proves was already mirrored.
+    try:
+        logged = supabase_db.get_upload_logs(limit=500, project_id=pid)
+        logged_sources = {l.get('source_video_id') for l in logged if l.get('source_video_id')}
+        if target_id in logged_sources:
+            config.log(f'{target_id} already mirrored before (upload_logs) — skipping')
+            processed_hashes.append(target_id)
+            up_state['processed_hashes'] = processed_hashes
+            up_state['pending_hashes'] = pending_hashes
+            daily_uploader.save_upload_state(up_state)
+            if item_id:
+                supabase_db.update_work_item(item_id, status='done', error='already mirrored before')
+            return False
+    except Exception as e:
+        config.log(f'dedup log check failed: {e}')
+
     can_upload, reason = daily_uploader.can_upload_today()
     if not can_upload:
         config.log(f'cooldown: {reason}')

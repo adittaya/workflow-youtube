@@ -23,6 +23,25 @@ DAILY_LOG = DATA_DIR / "daily_log.json"
 
 WARMUP_DAYS_DEFAULT = 0
 
+_project_settings_cache = {}
+
+
+def get_project_settings():
+    if config.PROJECT_ID in _project_settings_cache:
+        return _project_settings_cache[config.PROJECT_ID]
+    settings = {}
+    if supabase_db.is_enabled() and config.PROJECT_ID:
+        project = supabase_db.get_project(config.PROJECT_ID)
+        if project:
+            settings = project
+    else:
+        try:
+            settings = json.loads((DATA_DIR / "settings.json").read_text("utf-8"))
+        except Exception:
+            settings = {}
+    _project_settings_cache[config.PROJECT_ID] = settings
+    return settings
+
 
 def load_upload_state():
     if supabase_db.is_enabled():
@@ -42,6 +61,7 @@ def load_upload_state():
             "last_upload_hour": None,
             "processed_hashes": [],
             "pending_hashes": [],
+            "filled_slots": [],
             "yt_client_id": "",
         }
 
@@ -123,8 +143,7 @@ def reset_warmup(reason="account changed"):
 
 def get_warmup_days():
     try:
-        settings = json.loads((DATA_DIR / "settings.json").read_text("utf-8"))
-        return int(settings.get("warmup_days", WARMUP_DAYS_DEFAULT))
+        return int(get_project_settings().get("warmup_days", WARMUP_DAYS_DEFAULT))
     except Exception:
         return WARMUP_DAYS_DEFAULT
 
@@ -133,8 +152,7 @@ _get_warmup_days = get_warmup_days
 
 def get_upload_config():
     try:
-        settings = json.loads((DATA_DIR / "settings.json").read_text("utf-8"))
-        per_day = int(settings.get("uploads_per_day", 2))
+        per_day = int(get_project_settings().get("uploads_per_day", 2))
     except Exception:
         per_day = 2
     if per_day < 1:
@@ -144,16 +162,14 @@ def get_upload_config():
 
 def get_backfill_count():
     try:
-        settings = json.loads((DATA_DIR / "settings.json").read_text("utf-8"))
-        return int(settings.get("initial_backfill", 5))
+        return int(get_project_settings().get("initial_backfill", 5))
     except Exception:
         return 5
 
 
 def get_upload_schedule():
     try:
-        settings = json.loads((DATA_DIR / "settings.json").read_text("utf-8"))
-        raw = settings.get("upload_schedule", "").strip()
+        raw = str(get_project_settings().get("upload_schedule", "") or "").strip()
     except Exception:
         raw = ""
     if not raw:

@@ -12,6 +12,10 @@ on:
         type: choice
         options: ['false', 'true']
 
+concurrency:
+  group: yt-mirror-${{ github.repository }}
+  cancel-in-progress: true
+
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -99,22 +103,12 @@ jobs:
             echo "YT_COOKIES_FILE=$HOME/.yt-mirror/cookies.txt" >> $GITHUB_ENV
           fi
 
-          # Restore mirror state from repo (only if no Supabase)
-          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_SERVICE_KEY" ]; then
-            if [ -f state.json ]; then
-              cp state.json ~/.yt-mirror/state.json
-            else
-              echo '{"processed":{},"stats":{"total_mirrored":0,"total_comments":0,"total_shortened":0}}' > ~/.yt-mirror/state.json
-            fi
-
-            if [ -f upload_state.json ]; then
-              cp upload_state.json ~/.yt-mirror/upload_state.json
-            else
-              echo '{"warmup_start":null,"warmup_complete":false,"total_uploaded":0,"last_upload_date":null,"last_upload_hour":null,"processed_hashes":[],"pending_hashes":[]}' > ~/.yt-mirror/upload_state.json
-            fi
-          else
-            echo "Supabase configured — state loaded from database"
+          # DB-only mode: state and settings always come from Supabase
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_SERVICE_KEY" ] || [ -z "$PROJECT_ID" ]; then
+            echo "::error::Supabase is required — set SUPABASE_URL, SUPABASE_SERVICE_KEY and PROJECT_ID secrets"
+            exit 1
           fi
+          echo "Supabase configured — state and settings loaded from database"
 
           python3 -c "
           import json, time, os
@@ -225,20 +219,7 @@ jobs:
       - name: Persist state
         if: always()
         run: |
-          # Skip file-based persistence when Supabase is configured
-          if [ -n "$SUPABASE_URL" ] && [ -n "$SUPABASE_SERVICE_KEY" ]; then
-            echo "Supabase configured — state persisted to database"
-            exit 0
-          fi
-
-          git config user.name "yt-mirror[bot]"
-          git config user.email "yt-mirror[bot]@users.noreply.github.com"
-
-          cp ~/.yt-mirror/state.json state.json 2>/dev/null || true
-          cp ~/.yt-mirror/upload_state.json upload_state.json 2>/dev/null || true
-
-          git add state.json upload_state.json
-          git diff --cached --quiet || git commit -m "state: update [skip ci]" && git push || true
+          echo "Supabase configured — state persisted to database"
 
       - name: Summary
         if: always()

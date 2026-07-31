@@ -180,6 +180,19 @@ def save_accounts(accounts):
     _write_json(ACCOUNTS_PATH, accounts)
 
 
+PROJECT_FIELD_MAP = {
+    "warmup_days": "warmup_days",
+    "uploads_per_day": "uploads_per_day",
+    "initial_backfill": "initial_backfill",
+    "upload_schedule": "upload_schedule",
+    "comment_moderation": "comment_moderation",
+    "mirror_title_prefix": "mirror_title_prefix",
+    "mirror_description_suffix": "mirror_description_suffix",
+    "shortener_provider": "shortlink_provider",
+    "shortener_api_key": "shortlink_api_key",
+}
+
+
 def load_tui_settings():
     defaults = {
         "active_account": "",
@@ -201,22 +214,19 @@ def load_tui_settings():
         "upload_schedule": "",
     }
     if supabase_db.is_enabled():
-        if not PROJECT_ID:
-            for key in defaults:
-                val = supabase_db.get_setting(f"tui_{key}")
-                if val is not None:
-                    defaults[key] = val
-            return defaults
-        _ensure_dir()
-        try:
-            saved = json.loads(SETTINGS_PATH.read_text("utf-8"))
-            return {**defaults, **saved}
-        except Exception:
-            for key in defaults:
-                val = supabase_db.get_setting(f"tui_{key}")
-                if val is not None:
-                    defaults[key] = val
-            return defaults
+        if PROJECT_ID:
+            project = supabase_db.get_project(PROJECT_ID)
+            if project:
+                merged = {**defaults}
+                for key, col in PROJECT_FIELD_MAP.items():
+                    if project.get(col) is not None:
+                        merged[key] = project[col]
+                return merged
+        for key in defaults:
+            val = supabase_db.get_setting(f"tui_{key}")
+            if val is not None:
+                defaults[key] = val
+        return defaults
     _ensure_dir()
     try:
         saved = json.loads(SETTINGS_PATH.read_text("utf-8"))

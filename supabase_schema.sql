@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS upload_state (
   last_upload_date DATE,
   last_upload_hour TIMESTAMPTZ,
   processed_hashes TEXT[] DEFAULT '{}',
+  filled_slots TEXT[] DEFAULT '{}',
   yt_client_id TEXT DEFAULT '',
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -102,6 +103,9 @@ ALTER TABLE projects ADD COLUMN IF NOT EXISTS uploads_per_day INTEGER DEFAULT 2;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS initial_backfill INTEGER DEFAULT 5;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS upload_schedule TEXT DEFAULT '';
 
+-- Migration: add filled_slots to upload_state (persist completed schedule slots)
+ALTER TABLE upload_state ADD COLUMN IF NOT EXISTS filled_slots TEXT[] DEFAULT '{}';
+
 -- 9. Daily upload logs (replaces daily_log.json)
 CREATE TABLE IF NOT EXISTS upload_logs (
   id SERIAL PRIMARY KEY,
@@ -137,6 +141,15 @@ CREATE TABLE IF NOT EXISTS work_queue (
   slot_time TEXT DEFAULT '',
   error TEXT DEFAULT '',
   created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 12. Run locks — prevents parallel CI runs from uploading at the same time
+CREATE TABLE IF NOT EXISTS run_locks (
+  project_id TEXT PRIMARY KEY,
+  owner TEXT DEFAULT '',
+  acquired_at TIMESTAMPTZ DEFAULT NOW(),
+  expires_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 

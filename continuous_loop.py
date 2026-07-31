@@ -246,6 +246,17 @@ def upload_one_pending():
 
 
 def main():
+    pid = os.environ.get('PROJECT_ID', '')
+    run_id = os.environ.get('GITHUB_RUN_ID', f'local-{time.time():.0f}')
+    owner = f'{pid}:{run_id}'
+
+    acquired, current_owner = supabase_db.acquire_run_lock(project_id=pid, owner=owner, ttl_hours=6)
+    if not acquired:
+        config.log(f'another run is active ({current_owner}) — skipping this run to avoid duplicate uploads')
+        print(f'SUMMARY: skipped — run already active: {current_owner}')
+        return
+    config.log(f'run lock acquired: {owner}')
+
     start_time = time.time()
     end_time = start_time + RUN_DURATION
     iteration = 0
@@ -291,6 +302,12 @@ def main():
 
     config.log(f'\ncontinuous loop finished — {iteration} iterations, {total_uploaded} uploaded')
     print(f'\nSUMMARY: iterations={iteration} detected={total_detected} uploaded={total_uploaded}')
+
+    try:
+        supabase_db.release_run_lock(project_id=pid, owner=owner)
+        config.log('run lock released')
+    except Exception as e:
+        config.log(f'lock release failed: {e}')
 
 
 if __name__ == '__main__':

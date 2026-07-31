@@ -2,7 +2,7 @@ import os
 import json
 import time
 import urllib.error
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 _SUPABASE_URL = None
 _SUPABASE_KEY = None
@@ -196,6 +196,8 @@ def get_upload_state(project_id=""):
         s = row[0]
         if isinstance(s.get("processed_hashes"), list):
             s["processed_hashes"] = [h for h in s["processed_hashes"]]
+        if isinstance(s.get("filled_slots"), list):
+            s["filled_slots"] = [x for x in s["filled_slots"]]
         return s
     return {
         "project_id": project_id,
@@ -203,6 +205,7 @@ def get_upload_state(project_id=""):
         "warmup_complete": False, "first_upload_date": None,
         "total_uploaded": 0, "last_upload_date": None,
         "last_upload_hour": None, "processed_hashes": [],
+        "filled_slots": [],
         "yt_client_id": "",
     }
 
@@ -218,6 +221,7 @@ def save_upload_state(state, project_id=""):
         "last_upload_date": state.get("last_upload_date"),
         "last_upload_hour": state.get("last_upload_hour"),
         "processed_hashes": state.get("processed_hashes", []),
+        "filled_slots": state.get("filled_slots", []),
         "yt_client_id": state.get("yt_client_id", ""),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -349,6 +353,50 @@ def get_work_stats(project_id=""):
     failed = sum(1 for r in rows if r.get("status") == "failed")
     pending = total - done - failed
     return {"total": total, "done": done, "failed": failed, "pending": pending}
+
+
+# ─── Run Locks (parallel-run guard) ─────────────────────────────────────
+
+def acquire_run_lock(project_id="", owner="", ttl_hours=6):
+    now = datetime.now(timezone.utc)
+    rows = _request("GET", f"run_locks?project_id=eq.{project_id}&select=*")
+    if rows:
+        lock = rows[0]
+        acquired = lock.get("acquired_at")
+        owner_now = lock.get("owner", "")
+        if acquired:
+            try:
+                t = datetime.fromisoformat(str(acquired).replace("Z", "+00:00"))
+                if t.tzinfo is None:
+                    t = t.replace(tzinfo=timezone.utc)
+                expired = (now - t).total_seconds() >= ttl_hours * 3600
+            except Exception:
+                expired = True
+        else:
+            expired = True
+        if owner_now and not expired and owner_now != owner:
+            return False, owner_now
+        _request("PATCH", f"run_locks?project_id=eq.{project_id}", data={
+            "owner": owner,
+            "acquired_at": now.isoformat(),
+            "expires_at": (now + timedelta(hours=ttl_hours)).isoformat(),
+            "updated_at": now.isoformat(),
+        })
+        return True, owner
+    _request("POST", "run_locks", data={
+        "project_id": project_id,
+        "owner": owner,
+        "acquired_at": now.isoformat(),
+        "expires_at": (now + timedelta(hours=ttl_hours)).isoformat(),
+        "updated_at": now.isoformat(),
+    })
+    return True, owner
+
+
+def release_run_lock(project_id="", owner=""):
+    rows = _request("GET", f"run_locks?project_id=eq.{project_id}&select=owner")
+    if rows and (not owner or rows[0].get("owner") == owner):
+        _request("DELETE", f"run_locks?project_id=eq.{project_id}")
 
 
 # ─── Init ────────────────────────────────────────────────────────────────

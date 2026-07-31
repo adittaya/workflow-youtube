@@ -2,6 +2,7 @@ import json
 import os
 import re
 import time
+import shutil
 import subprocess
 import hashlib
 from pathlib import Path
@@ -331,46 +332,73 @@ def can_upload_today(return_slot=False):
 
 
 def process_video(input_path, output_dir=None):
+    # Every video is processed from scratch in its own scratch dir so the
+    # next video never reuses the previous one's artifacts. The caller is
+    # responsible for dedup (processed_hashes holds source video IDs, added
+    # only AFTER a successful upload) — never mark a video processed here.
+    input_path = Path(input_path)
     if output_dir is None:
-        output_dir = DATA_DIR / "processed"
+        output_dir = input_path.parent / ".yt-proc"
     output_dir = Path(output_dir)
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    input_path = Path(input_path)
     video_hash = video_processor.get_video_hash(input_path)
+    config.log(f"processing fresh copy: {input_path.name} (hash {video_hash})")
 
-    state = load_upload_state()
-    if video_hash in state.get("processed_hashes", []):
-        config.log(f"video already processed: {input_path.name}")
-        return None
+    # Step 1: Demucs vocal separation — strip original music, keep vocals
+    base_path = input_path
+    if audio_separator.has_audio(input_path):
+        config.log("  step 1: Demucs vocal separation (remove music, keep vocals)...")
+        try:
+            separated = audio_separator.remove_bgm_keep_vocals(
+                input_path,
+                output_video_path=output_dir / f"vocals_{input_path.name}",
+                output_dir=output_dir / "stems",
+            )
+            base_path = Path(separated["video"])
+        except Exception as e:
+            config.log(f"  vocal separation failed ({e}) — falling back to original audio")
+    else:
+        config.log("  step 1: source has no audio track — skipping separation")
 
-    config.log(f"processing: {input_path.name}")
-
-    config.log("  step 1: applying video edits...")
+    # Step 2: FFmpeg edits
+    config.log("  step 2: applying video edits...")
     edited_path = output_dir / f"edited_{input_path.name}"
-    video_processor.apply_edits(input_path, edited_path)
+    video_processor.apply_edits(base_path, edited_path)
 
-    config.log("  step 2: getting video duration...")
+    # Step 3: get video duration
+    config.log("  step 3: getting video duration...")
     info = video_processor.get_video_info(edited_path)
     duration = float(info.get("format", {}).get("duration", 60))
 
-    config.log("  step 3: adding non-copyright BGM...")
-    bgm_path = bgm_manager.get_bgm_for_duration(duration)
-    if bgm_path:
-        trimmed = bgm_manager.trim_bgm(bgm_path, duration,
-                                        output_dir / "trimmed_bgm.wav")
-        final_path = output_dir / f"final_{input_path.name}"
-        audio_separator.mix_audio(
-            edited_path, trimmed, final_path,
-            original_vol=1.0, bgm_vol=0.30
-        )
+    # Step 4: mix non-copyright BGM under the vocals
+    final_path = edited_path
+    config.log("  step 4: adding non-copyright BGM...")
+    if audio_separator.has_audio(edited_path):
+        bgm_path = bgm_manager.get_bgm_for_duration(duration)
+        if bgm_path:
+            trimmed = bgm_manager.trim_bgm(bgm_path, duration,
+                                           output_dir / "trimmed_bgm.wav")
+            final_path = output_dir / f"final_{input_path.name}"
+            settings = config.load_tui_settings()
+            try:
+                vocal_vol = float(settings.get("vocal_volume", 0.85))
+            except (TypeError, ValueError):
+                vocal_vol = 0.85
+            try:
+                bgm_vol = float(settings.get("bgm_volume", 0.20))
+            except (TypeError, ValueError):
+                bgm_vol = 0.20
+            audio_separator.mix_audio(
+                edited_path, trimmed, final_path,
+                original_vol=vocal_vol, bgm_vol=bgm_vol
+            )
+        else:
+            config.log("  no BGM available — keeping vocals-only audio")
     else:
-        final_path = edited_path
-
-    state["processed_hashes"] = state.get("processed_hashes", []) + [video_hash]
-    if len(state["processed_hashes"]) > 200:
-        state["processed_hashes"] = state["processed_hashes"][-200:]
-    save_upload_state(state)
+        config.log("  no audio to mix — keeping edited video")
 
     config.log(f"  done: {final_path.name}")
     return str(final_path)
@@ -461,6 +489,14 @@ def upload_daily(video_path, title=None, description=None,
                 filled.append(slot_str)
             state["filled_slots"] = filled
             state["filled_slots_date"] = today
+        # Mark the SOURCE video as processed only after a successful upload
+        if video_url:
+            m = re.search(r'(?:v=|youtu\.be/)([\w-]{11})', video_url)
+            if m:
+                processed = state.get("processed_hashes", [])
+                if m.group(1) not in processed:
+                    processed.append(m.group(1))
+                    state["processed_hashes"] = processed
         save_upload_state(state)
 
         entry = {

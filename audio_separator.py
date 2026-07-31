@@ -1,5 +1,6 @@
 import subprocess
 import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -28,6 +29,19 @@ def _run(cmd, desc=""):
     if result.returncode != 0:
         raise RuntimeError(f"Failed ({desc}): {result.stderr[:500]}")
     return result
+
+
+def has_audio(video_path):
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-select_streams", "a",
+             "-show_entries", "stream=codec_type", "-of", "csv=p=0",
+             str(video_path)],
+            capture_output=True, text=True, timeout=30
+        )
+        return result.returncode == 0 and "audio" in result.stdout
+    except Exception:
+        return False
 
 
 def extract_audio(video_path, output_path=None):
@@ -112,8 +126,9 @@ def separate_vocals(audio_path, output_dir=None, model="htdemucs"):
     if _check_demucs():
         try:
             return separate_vocals_demucs(audio_path, output_dir, model)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[audio_separator] demucs failed ({e}) — falling back to ffmpeg center extraction",
+                  file=sys.stderr)
 
     return separate_vocals_ffmpeg(audio_path, output_dir)
 
@@ -169,4 +184,40 @@ def mix_audio(video_path, new_audio_path, output_path,
     ]
     _run(cmd, "mix_audio")
     return output_path
+
+
+def remove_bgm_keep_vocals(video_path, output_video_path=None,
+                            output_dir=None, model="htdemucs"):
+    """Separate vocals from the original music, keep only the vocals.
+
+    Every step writes inside `output_dir` (pass a per-video directory so a
+    video is always processed from scratch and never reuses a previous
+    video's stems/audio files).
+    """
+    output_dir = Path(output_dir or (TEMP_DIR / "vocal_extract"))
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    video_path = Path(video_path)
+    if not has_audio(video_path):
+        raise RuntimeError("source video has no audio track — nothing to separate")
+
+    audio_path = output_dir / "audio.wav"
+    extract_audio(video_path, audio_path)
+
+    stems = separate_vocals(audio_path, output_dir, model)
+    if not stems.get("vocals"):
+        raise RuntimeError("vocal separation failed — no vocals stem produced")
+
+    if output_video_path is None:
+        output_video_path = output_dir / f"{video_path.stem}_vocals_only.mp4"
+    output_video_path = Path(output_video_path)
+
+    replace_audio(video_path, stems["vocals"], output_video_path)
+
+    return {
+        "video": str(output_video_path),
+        "vocals": stems["vocals"],
+        "instrumental": stems["instrumental"],
+        "audio": str(audio_path),
+    }
 

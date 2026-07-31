@@ -2,6 +2,7 @@ import sys
 import os
 import time
 import json
+import shutil
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config
@@ -201,48 +202,57 @@ def upload_one_pending():
             return False
 
     path = result['path'] if isinstance(result, dict) else result
-    config.log(f'processing: {target_id}')
-    processed = daily_uploader.process_video(path)
-    if not processed:
-        config.log(f'processing failed: {target_id}')
-        if item_id:
-            supabase_db.update_work_item(item_id, status='failed', error='processing failed')
-        up_state['pending_hashes'] = [target_id] + pending_hashes
-        daily_uploader.save_upload_state(up_state)
-        return False
+    download_dir = os.path.dirname(path)
+    try:
+        config.log(f'processing from scratch: {target_id}')
+        processed = daily_uploader.process_video(path)
+        if not processed:
+            config.log(f'processing failed: {target_id}')
+            if item_id:
+                supabase_db.update_work_item(item_id, status='failed', error='processing failed')
+            up_state['pending_hashes'] = [target_id] + pending_hashes
+            daily_uploader.save_upload_state(up_state)
+            return False
 
-    title = vid.get('title', f'Daily Upload {target_id}')
-    desc = vid.get('description', '')
-    tags = vid.get('tags', [])
+        title = vid.get('title', f'Daily Upload {target_id}')
+        desc = vid.get('description', '')
+        tags = vid.get('tags', [])
 
-    if DRY_RUN:
-        config.log(f'dry run — would upload: {title}')
-        processed_hashes.append(target_id)
-        up_state['processed_hashes'] = processed_hashes
-        up_state['pending_hashes'] = pending_hashes
-        daily_uploader.save_upload_state(up_state)
-        return True
+        if DRY_RUN:
+            config.log(f'dry run — would upload: {title}')
+            processed_hashes.append(target_id)
+            up_state['processed_hashes'] = processed_hashes
+            up_state['pending_hashes'] = pending_hashes
+            daily_uploader.save_upload_state(up_state)
+            return True
 
-    can, slot_str, iso_time = daily_uploader.can_upload_today(return_slot=True) if daily_uploader.get_upload_schedule() else (True, None, None)
-    publish_at = iso_time if daily_uploader.get_upload_schedule() and can else None
-    video_id = daily_uploader.upload_daily(processed, title, desc, tags, source_url=source_url, publish_at=publish_at)
-    if video_id:
-        config.log(f'uploaded: {video_id}')
-        if item_id:
-            supabase_db.update_work_item(item_id, status='done')
-        processed_hashes.append(target_id)
-        up_state['processed_hashes'] = processed_hashes
-        up_state['pending_hashes'] = pending_hashes
-        daily_uploader.save_upload_state(up_state)
-        config.log(f'{len(pending_hashes)} remaining in queue')
-        return True
-    else:
-        config.log(f'upload failed: {title}')
-        if item_id:
-            supabase_db.update_work_item(item_id, status='failed', error='upload_daily returned None')
-        up_state['pending_hashes'] = [target_id] + pending_hashes
-        daily_uploader.save_upload_state(up_state)
-        return False
+        can, slot_str, iso_time = daily_uploader.can_upload_today(return_slot=True) if daily_uploader.get_upload_schedule() else (True, None, None)
+        publish_at = iso_time if daily_uploader.get_upload_schedule() and can else None
+        video_id = daily_uploader.upload_daily(processed, title, desc, tags, source_url=source_url, publish_at=publish_at)
+        if video_id:
+            config.log(f'uploaded: {video_id}')
+            if item_id:
+                supabase_db.update_work_item(item_id, status='done')
+            fresh = daily_uploader.load_upload_state()
+            fresh['pending_hashes'] = pending_hashes
+            daily_uploader.save_upload_state(fresh)
+            config.log(f'{len(pending_hashes)} remaining in queue')
+            return True
+        else:
+            config.log(f'upload failed: {title}')
+            if item_id:
+                supabase_db.update_work_item(item_id, status='failed', error='upload_daily returned None')
+            up_state['pending_hashes'] = [target_id] + pending_hashes
+            daily_uploader.save_upload_state(up_state)
+            return False
+    finally:
+        # Fresh copy every attempt: remove this video's download dir, which
+        # also contains its .yt-proc scratch (vocal/edited/trimmed/final).
+        try:
+            shutil.rmtree(download_dir, ignore_errors=True)
+            config.log(f'cleaned up: {download_dir}')
+        except Exception as e:
+            config.log(f'cleanup failed: {e}')
 
 
 def continuous_detect():

@@ -354,6 +354,7 @@ def dispatch_followup():
         return False
     gh_token = os.environ.get('GH_TOKEN') or os.environ.get('GH_PAT') or ''
     ref = os.environ.get('GITHUB_REF_NAME', 'main')
+    wf = os.environ.get('WORKFLOW_FILE', 'youtube.yml')
     dry_run = 'true' if os.environ.get('INPUT_DRY_RUN', 'false') == 'true' else 'false'
     import subprocess
     try:
@@ -361,7 +362,7 @@ def dispatch_followup():
         if gh_token:
             env['GH_TOKEN'] = gh_token
         queued = subprocess.run(
-            ['gh', 'run', 'list', '--workflow', 'youtube.yml', '--status', 'queued',
+            ['gh', 'run', 'list', '--workflow', wf, '--status', 'queued',
              '--limit', '10', '--json', 'databaseId'],
             capture_output=True, text=True, timeout=60, env=env)
         if queued.returncode == 0 and queued.stdout.strip() not in ('', '[]'):
@@ -369,7 +370,7 @@ def dispatch_followup():
             return True
         for i in range(1, 4):
             r = subprocess.run(
-                ['gh', 'workflow', 'run', 'youtube.yml', '--ref', ref,
+                ['gh', 'workflow', 'run', wf, '--ref', ref,
                  '--field', f'dry_run={dry_run}'],
                 capture_output=True, text=True, timeout=60, env=env)
             if r.returncode == 0:

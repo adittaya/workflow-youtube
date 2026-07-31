@@ -1,4 +1,4 @@
-name: YouTube Mirror Bot
+name: Score League Mirror Bot
 
 on:
   schedule:
@@ -12,11 +12,10 @@ on:
         type: choice
         options: ['false', 'true']
 
-# Serialize runs: a newly triggered run (chain dispatch or cron) waits in the
-# queue and starts automatically once the current one ends. The run itself
-# queues a follow-up AFTER acquiring its run lock (continuous_loop.py), so the
-# chain self-perpetuates 24/7 even if cron fails, while skipped runs never
-# dispatch (no relay storms when a lock is contended).
+# Same 24/7 self-chaining design as youtube.yml, but for project 2
+# (score-league). Environment-scoped secrets (environment: score-league) keep
+# this project's YouTube credentials/PROJECT_ID separate from youtube.yml's.
+# The per-workflow concurrency group means p1 and p2 chains run independently.
 concurrency:
   group: yt-mirror-${{ github.workflow }}
   cancel-in-progress: false
@@ -25,6 +24,7 @@ jobs:
   run:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    environment: score-league
     env:
       YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
       YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
@@ -221,6 +221,7 @@ jobs:
         env:
           INPUT_DRY_RUN: ${{ inputs.dry_run || 'false' }}
           GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
+          WORKFLOW_FILE: score.yml
         run: |
           python3 $GITHUB_WORKSPACE/continuous_loop.py 2>&1 | tee /tmp/process_output.txt
 
@@ -232,7 +233,7 @@ jobs:
       - name: Summary
         if: always()
         run: |
-          echo "## YouTube Mirror Result" >> $GITHUB_STEP_SUMMARY
+          echo "## Score League Mirror Result" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY

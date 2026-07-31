@@ -3,7 +3,7 @@
 ## Current State
 
 - **Project:** YouTube Mirror Bot — monitors target channels via Supabase, mirrors to own channel
-- **GitHub:** `adittaya/workflow-shorturl-yt` (private); deployed to `joymoy767/main`
+- **GitHub:** `adittaya/workflow-shorturl-yt` (private); deployed there via two workflows: `youtube.yml` = project 1 (main), `score.yml` = project 2 (score-league, env-scoped secrets in the `score-league` environment). The old `joymoy767` repos (`main`, `score-league`) are **suspended** — do not deploy back to them
 - **Supabase:** Multi-project management via `upload_state`, `channel_cursors`, `upload_logs` tables
 - **CI:** single long-running job (360min timeout) loops detect→upload for 5.5h; self-sustaining **24/7 chain** — cron `0 */6 * * *` is only a fallback
 
@@ -28,8 +28,9 @@
 | `github_api.py` | Repo CRUD, git push (remove origin before add), secret encryption, dispatch |
 | `config.py` | Channels/accounts/state via Supabase |
 | `youtube_api.py` | YouTube Data API v3 wrapper |
-| `continuous_loop.py` | Continuous 5.5h detect→upload loop |
-| `.github/workflows/youtube.yml` | 24/7 self-chaining workflow (dispatch + cron fallback) |
+| `continuous_loop.py` | Continuous 5.5h detect→upload loop; `dispatch_followup` targets `WORKFLOW_FILE` env (default `youtube.yml`) |
+| `.github/workflows/youtube.yml` | 24/7 self-chaining workflow for project 1 (dispatch + cron fallback) |
+| `.github/workflows/score.yml` | Same, for project 2 — `environment: score-league` scoped secrets, `WORKFLOW_FILE: score.yml` |
 
 ## State Management
 

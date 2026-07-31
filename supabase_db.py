@@ -401,7 +401,12 @@ def _lock_owner_alive(project_id="", lock_owner=""):
     """A run can only prove it is alive by heartbeating. No fresh heartbeat
     from the lock owner means it crashed/hung (cancel skips the finally
     block, so the lock would otherwise block new runs for the full TTL)."""
-    hb = _request("GET", f"run_heartbeats?project_id=eq.{project_id}&select=run_id,last_seen")
+    try:
+        hb = _request("GET", f"run_heartbeats?project_id=eq.{project_id}&select=run_id,last_seen")
+    except Exception:
+        # heartbeat table missing (schema not applied) — be conservative and
+        # treat the owner as alive rather than stealing the lock or crashing
+        return True
     if not hb:
         return False
     row = hb[0]

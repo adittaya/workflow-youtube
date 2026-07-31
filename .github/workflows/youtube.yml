@@ -13,8 +13,10 @@ on:
         options: ['false', 'true']
 
 # Serialize runs: a newly triggered run (chain dispatch or cron) waits in the
-# queue and starts automatically once the current one ends. Combined with the
-# pre-schedule step below this keeps the bot running 24/7 even if cron fails.
+# queue and starts automatically once the current one ends. The run itself
+# queues a follow-up AFTER acquiring its run lock (continuous_loop.py), so the
+# chain self-perpetuates 24/7 even if cron fails, while skipped runs never
+# dispatch (no relay storms when a lock is contended).
 concurrency:
   group: yt-mirror-${{ github.repository }}
   cancel-in-progress: false
@@ -42,32 +44,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_PAT || github.token }}
-
-      - name: Pre-schedule follow-up run (24/7 chain)
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
-          INPUT_DRY_RUN: ${{ inputs.dry_run || 'false' }}
-        run: |
-          # First thing every run does: make sure one follow-up run is queued.
-          # The concurrency group serializes runs, so the queued one starts
-          # automatically right after this run ends — no dependency on cron.
-          set +e
-          REF="${{ github.ref_name }}"
-          QUEUED=$(gh run list --workflow youtube.yml --status queued --limit 10 --json databaseId 2>/dev/null)
-          if [ -n "$QUEUED" ] && [ "$QUEUED" != "[]" ]; then
-            echo "A follow-up run is already queued ($QUEUED) — skipping pre-schedule"
-            exit 0
-          fi
-          for i in 1 2 3; do
-            if gh workflow run youtube.yml --ref "$REF" --field dry_run="$INPUT_DRY_RUN" 2>/tmp/presched_err.txt; then
-              echo "Pre-scheduled follow-up run (attempt $i)"
-              exit 0
-            fi
-            echo "Pre-schedule attempt $i failed: $(cat /tmp/presched_err.txt)"
-            sleep 15
-          done
-          echo "::warning::Could not pre-schedule a follow-up run — relying on cron backup"
-          exit 0
 
       - name: Validate credentials
         run: |
@@ -244,6 +220,7 @@ jobs:
         id: continuous
         env:
           INPUT_DRY_RUN: ${{ inputs.dry_run || 'false' }}
+          GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
         run: |
           python3 $GITHUB_WORKSPACE/continuous_loop.py 2>&1 | tee /tmp/process_output.txt
 

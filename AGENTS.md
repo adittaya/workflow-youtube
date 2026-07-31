@@ -9,7 +9,7 @@
 
 ## CI Workflow
 
-0. **Pre-schedule follow-up (24/7 chain)** — first step of every run: if no run of this workflow is already queued, dispatch one via `gh workflow run` (`GH_PAT`). Workflow-level `concurrency` group (`cancel-in-progress: false`) serializes runs, so the queued follow-up starts automatically the moment the current one ends — even if cron never fires. At most 1 chain + 1 cron run are queued at once (check prevents pile-up); keep `cancel-in-progress: false` — flipping it back to `true` breaks the chain
+0. **Relay follow-up (24/7 chain)** — `continuous_loop.py` queues one follow-up via `gh workflow run` (`GH_TOKEN`) *after acquiring the run lock*: a run that will actually work guarantees a successor, so the chain survives normal completion, the 360min timeout, and cancels. Skipped runs never dispatch — instead they **wait up to 15min for the lock** (holding the workflow concurrency slot, so no relay storm can form), then relay only in the pathological leaked-lock case. Workflow-level `concurrency` group (`cancel-in-progress: false`) serializes runs, so the queued follow-up starts automatically the moment the current one ends — even if cron never fires. At most 1 chain + 1 cron run are queued at once (check prevents pile-up); keep `cancel-in-progress: false` — flipping it back to `true` breaks the chain
 1. **Warmup** (once) — auto-starts/completes based on elapsed time; tracks `yt_client_id` for account changes
 2. **Fetch proxy** (once) — queries proxy Supabase (`bytemjjijgwwcrxlgutf`) for VPLINK-verified residential proxies, speed-tests each (5s HTTP timeout), stores top 10 working in `WORKING_PROXIES` env var
 3. **Continuous loop** (~5.5h) — `continuous_loop.py` runs detect→upload→sleep every 15 minutes:

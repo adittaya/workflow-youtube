@@ -326,6 +326,68 @@ def continuous_detect(owner=""):
     print(f'\nSUMMARY: iterations={iteration} detected={total_detected} uploaded={total_uploaded}')
 
 
+def dispatch_followup():
+    """Queue one follow-up run for when this run ends (24/7 chain). Must only be
+    called AFTER acquiring the run lock — a run that skipped the loop must never
+    dispatch, otherwise a lock conflict turns into a relay storm of no-op runs.
+    The workflow concurrency group serializes runs, so the queued follow-up
+    starts automatically when this run ends, even on the 360min timeout (it was
+    queued at our start, before the long loop ran)."""
+    if os.environ.get('GITHUB_ACTIONS') != 'true':
+        return False
+    gh_token = os.environ.get('GH_TOKEN') or os.environ.get('GH_PAT') or ''
+    ref = os.environ.get('GITHUB_REF_NAME', 'main')
+    dry_run = 'true' if os.environ.get('INPUT_DRY_RUN', 'false') == 'true' else 'false'
+    import subprocess
+    try:
+        env = dict(os.environ)
+        if gh_token:
+            env['GH_TOKEN'] = gh_token
+        queued = subprocess.run(
+            ['gh', 'run', 'list', '--workflow', 'youtube.yml', '--status', 'queued',
+             '--limit', '10', '--json', 'databaseId'],
+            capture_output=True, text=True, timeout=60, env=env)
+        if queued.returncode == 0 and queued.stdout.strip() not in ('', '[]'):
+            config.log('a follow-up run is already queued — skipping dispatch')
+            return True
+        for i in range(1, 4):
+            r = subprocess.run(
+                ['gh', 'workflow', 'run', 'youtube.yml', '--ref', ref,
+                 '--field', f'dry_run={dry_run}'],
+                capture_output=True, text=True, timeout=60, env=env)
+            if r.returncode == 0:
+                config.log(f'follow-up run scheduled ({ref}, dry_run={dry_run})')
+                return True
+            config.log(f'follow-up dispatch attempt {i} failed: {r.stderr.strip()}')
+            time.sleep(15)
+    except Exception as e:
+        config.log(f'follow-up dispatch error: {e}')
+    config.log('could not schedule a follow-up — relying on cron backup')
+    return False
+
+
+def wait_for_lock(project_id="", owner="", max_wait=900):
+    """Wait for a held lock instead of exiting. A run that couldn't acquire the
+    lock waits here: the previous owner releases it via its finally block on a
+    normal end, its TTL expires a few minutes after a timeout, or a leaked lock
+    is stolen once its heartbeat goes stale. While waiting we hold the workflow
+    concurrency slot, so at most one run is in flight — no relay storm can form
+    even during lock contention windows."""
+    waited = 0
+    current = ""
+    while waited < max_wait:
+        time.sleep(60)
+        waited += 60
+        try:
+            acquired, current = supabase_db.acquire_run_lock(project_id=project_id, owner=owner, ttl_hours=6)
+            if acquired:
+                return True, current
+        except Exception as e:
+            config.log(f'lock re-check error: {e}')
+            current = "?"
+    return False, current
+
+
 def main():
     pid = os.environ.get('PROJECT_ID', '')
     run_id = os.environ.get('GITHUB_RUN_ID', f'local-{time.time():.0f}')
@@ -333,10 +395,25 @@ def main():
 
     acquired, current_owner = supabase_db.acquire_run_lock(project_id=pid, owner=owner, ttl_hours=6)
     if not acquired:
-        config.log(f'another run is active ({current_owner}) — skipping this run to avoid duplicate uploads')
-        print(f'SUMMARY: skipped — run already active: {current_owner}')
+        config.log(f'lock held by {current_owner} — waiting up to 15min for it to free')
+        acquired, current_owner = wait_for_lock(pid, owner)
+    if not acquired:
+        # Pathological case: lock leaked with a long TTL. Keep the chain alive
+        # by relaying anyway — the next run also waits, and the heartbeat-steal
+        # (or cron) recovers the lock. The wait above prevents any storm.
+        config.log(f'lock still held by {current_owner} after waiting — relaying and skipping')
+        try:
+            dispatch_followup()
+        except Exception as e:
+            config.log(f'relay dispatch error: {e}')
+        print(f'SUMMARY: skipped — run still active: {current_owner}')
         return
     config.log(f'run lock acquired: {owner}')
+
+    try:
+        dispatch_followup()
+    except Exception as e:
+        config.log(f'follow-up dispatch error: {e}')
 
     try:
         try:

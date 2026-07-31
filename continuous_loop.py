@@ -86,7 +86,11 @@ def detect_and_queue():
             latest_id = recent[0]['video_id']
             backfill = daily_uploader.get_backfill_count()
 
-            if backfill > 0:
+            if backfill > 0 and not cursor:
+                # Backfill only on the first run (no cursor baseline yet). The
+                # cursor covers every later video, so re-queueing the newest N
+                # every cycle would re-upload old videos after any state reset
+                # (e.g. a warmup reset clearing processed_hashes).
                 backfill_new = []
                 for v in recent[:backfill]:
                     if v['video_id'] not in processed_hashes and v['video_id'] not in pending_hashes:
@@ -226,7 +230,7 @@ def upload_one_pending():
             daily_uploader.save_upload_state(up_state)
             return True
 
-        can, slot_str, iso_time = daily_uploader.can_upload_today(return_slot=True) if daily_uploader.get_upload_schedule() else (True, None, None)
+        can, slot_str, iso_time = daily_uploader.can_upload_today(return_slot=True)
         publish_at = iso_time if daily_uploader.get_upload_schedule() and can else None
         video_id = daily_uploader.upload_daily(processed, title, desc, tags, source_url=source_url, publish_at=publish_at)
         if video_id:

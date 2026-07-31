@@ -245,13 +245,14 @@ SELECT
     p.warmup_days                     AS warmup_days,
     us.total_uploaded                 AS total_uploaded,
     us.last_upload_date               AS last_upload_date,
-    CASE WHEN jsonb_typeof(us.processed_hashes) = 'array'
-         THEN jsonb_array_length(us.processed_hashes) ELSE 0 END AS processed_count,
+    -- to_jsonb() handles both jsonb and legacy text[] processed_hashes columns
+    CASE WHEN jsonb_typeof(to_jsonb(us.processed_hashes)) = 'array'
+         THEN jsonb_array_length(to_jsonb(us.processed_hashes)) ELSE 0 END AS processed_count,
     (SELECT count(*)::int FROM public.upload_logs l
       WHERE l.project_id = p.id::text)              AS log_count,
     (SELECT count(*)::int FROM public.upload_logs l
       WHERE l.project_id = p.id::text
-        AND l.upload_date = to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD'))
+        AND l.upload_date::text = to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD'))
                                                      AS today_uploaded,
     (SELECT count(*)::int FROM public.work_queue w
       WHERE w.project_id = p.id::text AND w.status = 'pending')

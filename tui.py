@@ -927,6 +927,10 @@ def _do_deploy(project):
             success(f"Cancelled {cancelled} active run(s)")
         else:
             info("No active runs to cancel")
+        # Cancelled runs can't release their run_lock (finally never runs), so
+        # orphaned locks block the new run for up to 6h. Clear the lock.
+        supabase_db.release_run_lock(project_id=str(project["id"]))
+        info("Cleared stale run lock")
     else:
         # Step 1: Create repo
         step(f"Creating repo {rn}...")

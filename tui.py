@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""YT VIDEO AUTOMATION — management TUI (hybrid: local JSON or Supabase)."""
+"""YT VIDEO AUTOMATION — management TUI (hybrid: local JSON or Supabase).
+
+Systematic menu layout
+    MAIN
+    ├─ Projects                manage upload projects (configure, status…)
+    ├─ YouTube Accounts        every saved upload account + selection system
+    ├─ Doctor                  full-system check with auto-correction
+    └─ Database connection     local JSON ⇄ Supabase
+"""
 
 import json, os, sys, time, http.server, urllib.request, urllib.error, urllib.parse, re
 from pathlib import Path
@@ -20,6 +28,7 @@ import daily_uploader
 import download_helpers
 import shortener
 import verify_state
+import doctor
 
 try:
     from google.oauth2.credentials import Credentials
@@ -28,15 +37,8 @@ try:
 except ImportError:
     HAS_GAPI = False
 
-try:
-    import github_api
-    HAS_GH = True
-except ImportError:
-    HAS_GH = False
-
 DATA_DIR = Path(os.environ.get("YT_DATA_DIR", os.path.expanduser("~/.yt-mirror")))
 BOOTSTRAP_PATH = DATA_DIR / "config.json"
-LOG_MAX_LINES = 80
 
 SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
@@ -60,12 +62,14 @@ C_BOLDWHITE = "\033[1;37m"
 def _ensure_dir():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+
 def _read_json(path):
     _ensure_dir()
     try:
         return json.loads(path.read_text("utf-8"))
     except Exception:
         return {}
+
 
 def _write_json(path, data):
     _ensure_dir()
@@ -83,10 +87,16 @@ def _write_json(path, data):
             pass
         raise
 
+
+def _is_true(v):
+    return str(v).strip().lower() in ("true", "1", "yes", "on")
+
+
 # ─── UI Helpers ───────────────────────────────────────────────────────────────
 
 def clear():
     os.system("clear" if os.name != "nt" else "cls")
+
 
 def banner():
     mode = "local JSON" if not supabase_db.is_enabled() else "supabase (cloud)"
@@ -97,38 +107,60 @@ def banner():
 ║  {title}  ║
 ╚{box}╝{C_RESET}""")
 
+
 def divider():
     print(f"  {C_DIM}{'─' * 56}{C_RESET}")
+
 
 def prompt(msg, default=None):
     suffix = f" [{default}]" if default else ""
     val = input(f"  {C_CYAN}▸{C_RESET} {msg}{suffix}: ").strip()
     return val if val else (default or "")
 
-def confirm(msg):
-    val = input(f"  {C_YELLOW}?{C_RESET} {msg} (y/N): ").strip().lower()
+
+def confirm(msg, default_no=True):
+    key = "y/N" if default_no else "Y/n"
+    val = input(f"  {C_YELLOW}?{C_RESET} {msg} ({key}): ").strip().lower()
+    if not val:
+        return not default_no
     return val in ("y", "yes")
+
 
 def success(msg):
     print(f"  {C_GREEN}✓ {msg}{C_RESET}")
 
+
 def error(msg):
     print(f"  {C_RED}✗ {msg}{C_RESET}")
+
 
 def info(msg):
     print(f"  {C_BLUE}ℹ {msg}{C_RESET}")
 
+
 def warn(msg):
     print(f"  {C_YELLOW}⚠ {msg}{C_RESET}")
+
 
 def loading(msg):
     print(f"  {C_DIM}⏳ {msg}...{C_RESET}")
 
-# ─── YouTube Helpers ──────────────────────────────────────────────────────────
+
+def pause():
+    input("\n  Press Enter to continue...")
+
+
+def _auto(v):
+    """Mark an auto-corrected value in a prompt hint."""
+    return f" {C_GREEN}(auto-corrected){C_RESET}" if v else ""
+
+
+# ─── YouTube helpers ──────────────────────────────────────────────────────────
 
 def _fetch_youtube_channel_info(refresh_token, client_id, client_secret):
+    """Returns (channel_id, channel_name, avatar_url) or (None, None, '')."""
     if not HAS_GAPI:
-        return None, None
+        return None, None, ""
     try:
         creds = Credentials(
             token=None,
@@ -141,1023 +173,98 @@ def _fetch_youtube_channel_info(refresh_token, client_id, client_secret):
         resp = yt.channels().list(part="id,snippet", mine=True).execute()
         items = resp.get("items", [])
         if items:
-            return items[0]["id"], items[0]["snippet"]["title"]
+            sn = items[0]["snippet"]
+            avatar = sn.get("thumbnails", {}).get("default", {}).get("url", "")
+            return items[0]["id"], sn.get("title", ""), avatar
     except Exception:
         pass
-    return None, None
-
-def _parse_channel(raw):
-    raw = raw.strip().rstrip("/")
-    if "/@" in raw:
-        handle = raw.split("/@")[-1].split("?")[0].split("/")[0]
-        return f"@{handle}"
-    if "/channel/" in raw:
-        cid = raw.split("/channel/")[-1].split("?")[0].split("/")[0]
-        if cid.startswith("UC"):
-            return cid
-    if "/c/" in raw:
-        handle = raw.split("/c/")[-1].split("?")[0].split("/")[0]
-        return f"@{handle}"
-    if raw.startswith("UC") and len(raw) > 15:
-        return raw
-    if raw.startswith("@"):
-        return raw
-    return raw
+    return None, None, ""
 
 
-# ─── Local-mode sync (hybrid DB) ────────────────────────────────────────────
+# ─── Account store (hybrid: cloud accounts table / local accounts.json) ──────
 
-def _local_settings_path():
-    return DATA_DIR / "settings.json"
-
-
-def _is_true(v):
-    return str(v).strip().lower() in ("true", "1", "yes", "on")
+def _accounts_dict():
+    if supabase_db.is_enabled():
+        return {r["name"]: r for r in supabase_db.get_all_accounts()}
+    return config.load_accounts()
 
 
-def _sync_local_project(p):
-    """Local mode: mirror a project's fields onto the files the local daemon
-    reads (settings.json, config.json, channels.json) so the TUI and
-    `yt-auto run` share one source of truth."""
-    if supabase_db.is_enabled() or not p:
-        return
-    settings = {}
-    try:
-        settings = json.loads(_local_settings_path().read_text("utf-8"))
-    except Exception:
-        pass
-    for k in ("uploads_per_day", "warmup_days", "initial_backfill", "upload_schedule",
-              "comment_moderation", "mirror_title_prefix",
-              "custom_title", "custom_description", "custom_comment"):
-        if k in p and p[k] not in (None, ""):
-            settings[k] = p[k]
-    settings["shortlink_provider"] = p.get("shortlink_provider") or "none"
-    if p.get("shortlink_api_key"):
-        settings["shortlink_api_key"] = p["shortlink_api_key"]
-    settings["proxy_enabled"] = _is_true(p.get("proxy_enabled"))
-    if settings["proxy_enabled"]:
-        settings["proxy_supabase_url"] = p.get("proxy_supabase_url", "")
-        settings["proxy_supabase_key"] = p.get("proxy_supabase_key", "")
-    _write_json(_local_settings_path(), settings)
+def _save_account(name, data):
+    if supabase_db.is_enabled():
+        supabase_db.save_account(name, dict(data))
+    else:
+        accounts = config.load_accounts()
+        accounts[name] = dict(data)
+        config.save_accounts(accounts)
 
+
+def _delete_account(name):
+    if supabase_db.is_enabled():
+        supabase_db.delete_account(name)
+    else:
+        accounts = config.load_accounts()
+        accounts.pop(name, None)
+        config.save_accounts(accounts)
+
+
+def _account_status_str(acct):
+    status = acct.get("status", "active") or "active"
+    if status == "active":
+        sc = C_GREEN
+    elif status == "expired":
+        sc = C_RED
+    else:
+        sc = C_YELLOW
+    lv = acct.get("last_verified", "")
+    when = ""
+    if lv:
+        try:
+            t = datetime.fromisoformat(str(lv).replace("Z", "+00:00"))
+            if t.tzinfo is None:
+                t = t.replace(tzinfo=timezone.utc)
+            mins = int((datetime.now(timezone.utc) - t).total_seconds() // 60)
+            if mins < 60:
+                when = f", verified {mins}m ago"
+            else:
+                when = f", verified {mins // 60}h ago"
+        except Exception:
+            pass
+    up = int(acct.get("uploads_count", 0) or 0)
+    return f"{sc}{status}{C_RESET}{when}, {up} upload(s)"
+
+
+def _resolve_client_creds():
+    """Find reusable OAuth client ID/secret: existing account → config → env."""
+    accounts = _accounts_dict()
+    for acct in accounts.values():
+        if acct.get("client_id") and acct.get("client_secret"):
+            return acct["client_id"], acct["client_secret"]
     cfg = config.load()
-    patch = {}
-    for k in ("yt_client_id", "yt_client_secret", "yt_refresh_token"):
-        if p.get(k):
-            patch[k] = p[k]
-    if patch:
-        config.save(patch)
+    if cfg.get("yt_client_id") and cfg.get("yt_client_secret"):
+        return cfg["yt_client_id"], cfg["yt_client_secret"]
+    cid = os.environ.get("YT_CLIENT_ID", "")
+    csec = os.environ.get("YT_CLIENT_SECRET", "")
+    if cid and csec:
+        return cid, csec
+    return "", ""
 
-    if p.get("channels"):
-        channels = {}
-        for raw in str(p["channels"]).split(","):
-            raw = raw.strip()
-            if not raw:
-                continue
-            cid = _parse_channel(raw)
-            channels[cid] = {
-                "alias": cid.lstrip("@"),
-                "url": f"https://www.youtube.com/{cid}",
-                "enabled": True,
-                "added_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            }
-        config.save_channels(channels)
-    else:
-        config.save_channels({})
 
+# ─── OAuth flow (shared by accounts + project setup) ─────────────────────────
 
-# ─── Screen: Project List ─────────────────────────────────────────────────────
-
-def project_list_screen():
-    while True:
-        clear()
-        banner()
-        print(f"\n  {C_BOLDWHITE}PROJECTS{C_RESET}")
-        divider()
-
-        try:
-            projects = supabase_db.list_projects()
-        except Exception as e:
-            error(f"Database unreachable: {str(e)[:60]}")
-            if supabase_db.is_enabled():
-                warn("Supabase connection failed — press [C] to fix or switch to LOCAL mode")
-            projects = None
-
-        if not projects:
-            print(f"\n  {C_DIM}No projects yet. Create one to get started.{C_RESET}")
-        else:
-            for i, p in enumerate(projects, 1):
-                dep = f"  {C_GREEN}deployed{C_RESET}" if p.get("deployed_at") else f"  {C_DIM}not deployed{C_RESET}"
-                print(f"  {C_BOLD}{i:2d}.{C_RESET} {C_BOLD}{p['name']}{C_RESET}{dep}")
-                fields_set = sum(1 for k in ["yt_client_id", "yt_client_secret", "yt_refresh_token", "github_token", "github_repo"] if p.get(k))
-                print(f"       {C_DIM}{fields_set}/5 credentials set{C_RESET}")
-            print()
-
-        print(f"  {C_BOLD}[A]{C_RESET} Add project")
-        if projects:
-            print(f"  {C_BOLD}[D]{C_RESET} Delete project")
-            print(f"  {C_BOLD}[1-{len(projects)}]{C_RESET} Select project")
-        print(f"  {C_BOLD}[C]{C_RESET} Database connection (local ⇄ Supabase)")
-        print(f"  {C_BOLD}[0]{C_RESET} Quit\n")
-        if supabase_db.is_enabled():
-            connected_to = _read_json(BOOTSTRAP_PATH).get("supabase_url", "")
-            print(f"  {C_DIM}Database: Supabase (cloud){C_RESET}" + (f"  —  {connected_to}" if connected_to else ""))
-        else:
-            print(f"  {C_DIM}Database: local JSON — data in {DATA_DIR}{C_RESET}")
-            print(f"  {C_DIM}Press [C] to connect Supabase for cloud mode.{C_RESET}")
-        print()
-
-        choice = prompt("Choice").strip().upper()
-
-        if choice == "0":
-            print(f"\n  {C_DIM}Bye!{C_RESET}\n")
-            break
-        elif choice == "A":
-            name = prompt("Project name")
-            if name:
-                try:
-                    p = supabase_db.create_project(name)
-                    if p and p.get("id"):
-                        success(f"Project '{name}' created")
-                        if not supabase_db.is_enabled():
-                            _sync_local_project(p)
-                    else:
-                        error("Failed to create project — name may already exist")
-                except Exception as e:
-                    msg = str(e)
-                    if "409" in msg or "Conflict" in msg:
-                        error("Project name already exists — choose a different name")
-                    else:
-                        error(f"Failed to create project: {e}")
-            continue
-        elif choice == "D" and projects:
-            for i, p in enumerate(projects, 1):
-                print(f"  {C_BOLD}{i}.{C_RESET} {p['name']}")
-            num = prompt("Number to delete")
-            if num and num.isdigit():
-                idx = int(num) - 1
-                if 0 <= idx < len(projects):
-                    p = projects[idx]
-                    if confirm(f"Delete project '{p['name']}' and ALL its data?"):
-                        try:
-                            supabase_db.delete_project(p["id"])
-                            success(f"Deleted '{p['name']}'")
-                        except Exception as e:
-                            error(f"Failed to delete: {e}")
-            continue
-        elif choice == "C":
-            if supabase_db.is_enabled():
-                if confirm("Disconnect from Supabase and switch to LOCAL mode?"):
-                    supabase_db.disable()
-                    _write_json(BOOTSTRAP_PATH, {})
-                    success("Local mode — data now stored in ~/.yt-mirror/")
-            else:
-                su = prompt("Supabase URL", _read_json(BOOTSTRAP_PATH).get("supabase_url", ""))
-                sk = prompt("Supabase Service Key", _read_json(BOOTSTRAP_PATH).get("supabase_key", ""))
-                if su and sk:
-                    _write_json(BOOTSTRAP_PATH, {"supabase_url": su, "supabase_key": sk})
-                    supabase_db.configure(su, sk)
-                    if supabase_db.is_enabled():
-                        success("Connected to Supabase — cloud mode")
-                    else:
-                        error("Connection failed — check URL and key")
-            continue
-        elif choice.isdigit() and projects:
-            idx = int(choice) - 1
-            if 0 <= idx < len(projects):
-                project_menu(projects[idx])
-            continue
-
-# ─── Screen: Project Menu ────────────────────────────────────────────────────
-
-def _project_summary(p):
-    parts = []
-    for key, label in [("yt_client_id", "YT"), ("yt_client_secret", "YTS"),
-                        ("yt_refresh_token", "RT"), ("github_token", "GH"),
-                        ("github_repo", "REPO")]:
-        if p.get(key):
-            parts.append(f"{C_GREEN}{label}{C_RESET}")
-    nch = len([c for c in p.get("channels", "").split(",") if c.strip()])
-    if nch:
-        parts.append(f"{C_GREEN}{nch}ch{C_RESET}")
-    if p.get("deployed_at"):
-        parts.append(f"{C_DIM}deployed{C_RESET}")
-    return "  ".join(parts) if parts else ""
-
-def project_menu(project):
-    while True:
-        p = supabase_db.get_project(project["id"])
-        if not p:
-            error("Project not found")
-            return
-
-        clear()
-        banner()
-        print(f"\n  {C_BOLDWHITE}PROJECT: {p['name']}{C_RESET}")
-        divider()
-        print(f"  {C_BOLD}[1]{C_RESET} Setup & Deploy (all credentials)")
-        print(f"  {C_BOLD}[S]{C_RESET} Status — check everything is right")
-        print(f"  {C_BOLD}[V]{C_RESET} Verify — full self-check against the database")
-        print(f"  {C_BOLD}[2]{C_RESET} View workflow logs")
-        print(f"  {C_BOLD}[3]{C_RESET} Remove deployment")
-        print(f"  {C_BOLD}[I]{C_RESET} Instant upload — upload a video now (bypasses cooldown)")
-        print(f"  {C_BOLD}[W]{C_RESET} Work queue — view pending/done items")
-        print(f"  {C_BOLD}[B]{C_RESET} Back to projects")
-        print(f"  {C_BOLD}[0]{C_RESET} Quit")
-        summary = _project_summary(p)
-        if summary:
-            print(f"\n  {summary}")
-        print()
-
-        choice = prompt("Choice").strip().upper()
-        if choice == "0":
-            print(f"\n  {C_DIM}Bye!{C_RESET}\n")
-            return
-        elif choice == "B":
-            return
-        elif choice == "1":
-            p = supabase_db.get_project(project["id"])
-            screen_setup(p)
-        elif choice == "S":
-            p = supabase_db.get_project(project["id"])
-            screen_status(p)
-        elif choice == "V":
-            _show_verify(p)
-        elif choice == "2":
-            screen_logs(p)
-        elif choice == "3":
-            screen_remove_deployment(p)
-        elif choice == "I":
-            _do_instant_upload(p)
-        elif choice == "W":
-            _show_work_queue(p)
-
-# ─── Screen: Setup & Deploy (project-scoped) ─────────────────────────────────
-
-FIELD_SPEC = [
-    ("yt_client_id", "YouTube Client ID", "str"),
-    ("yt_client_secret", "YouTube Client Secret", "str"),
-    ("yt_refresh_token", "YouTube Refresh Token", "str"),
-    ("github_token", "GitHub Token (PAT)", "str"),
-    ("github_repo", "GitHub Repo (user/repo)", "str"),
-    ("channels", "Channel URLs (comma-separated, @abc,@xyz)", "str"),
-    ("shortlink_provider", "Shortlink provider (vplink/cleanuri/tinyurl)", "str"),
-    ("shortlink_api_key", "Shortlink API key", "str"),
-    ("proxy_enabled", "Proxy system (pool for downloads)", "bool"),
-    ("proxy_supabase_url", "Proxy Supabase URL", "str"),
-    ("proxy_supabase_key", "Proxy Supabase Service Key", "str"),
-    ("warmup_days", "Warmup days (before first upload)", "int"),
-    ("comment_moderation", "Comment mode (heldForReview/published)", "str"),
-    ("mirror_title_prefix", "Title prefix (optional)", "str"),
-    ("custom_title", "Custom title (optional, {title} {url})", "str"),
-    ("custom_description", "Custom description (optional, {title} {url})", "str"),
-    ("custom_comment", "Custom comment (optional, {url} download link)", "str"),
-    ("uploads_per_day", "Uploads per day (24/N = hours between)", "int"),
-    ("initial_backfill", "Initial backfill (videos to queue on first detect)", "int"),
-    ("upload_schedule", "Upload schedule (comma-separated HH:MM, empty=cooldown)", "str"),
-]
-
-def _display_val(val, sensitive=False):
-    if val is None or val == "":
-        return f"{C_DIM}(empty){C_RESET}"
-    val = str(val)
-    if sensitive:
-        return "*" * 8 + (val[-4:] if len(val) > 4 else "")
-    return val if len(val) < 50 else val[:20] + "..." + val[-10:]
-
-def _sanitize_field(key, value):
-    if not value or not isinstance(value, str):
-        return value
-    if key == "yt_client_id":
-        m = re.search(r'([\w\-]+\.apps\.googleusercontent\.com)', value)
-        if m:
-            return m.group(1)
-        value = re.sub(r'^https?://', '', value).split('/')[0]
-        value = value.split('?')[0]
-    return value
-
-
-def _normalize_channels(raw):
-    parts = [c.strip() for c in str(raw or "").split(",") if c.strip()]
-    out = []
-    changed = False
-    for c in parts:
-        parsed = _parse_channel(c)
-        if not parsed:
-            continue
-        if parsed != c:
-            changed = True
-        out.append(parsed)
-    return out, changed
-
-
-def _validate_schedule(raw):
-    raw = str(raw or "").strip()
-    if not raw:
-        return None, ""
-    times = []
-    invalid = []
-    for part in raw.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        if ":" not in part:
-            invalid.append(part)
-            continue
-        try:
-            h, m = part.split(":")
-            h, m = int(h), int(m)
-            if not (0 <= h <= 23 and 0 <= m <= 59):
-                raise ValueError
-            times.append(f"{h:02d}:{m:02d}")
-        except (ValueError, IndexError):
-            invalid.append(part)
-    return times, ", ".join(invalid)
-
-
-def _test_yt_token(cid, csec, rt):
-    if not (cid and csec and rt):
-        return False, "missing credentials", False
-    try:
-        data = urllib.parse.urlencode({
-            "client_id": cid, "client_secret": csec,
-            "refresh_token": rt, "grant_type": "refresh_token",
-        }).encode()
-        req = urllib.request.Request("https://oauth2.googleapis.com/token", data=data, method="POST")
-        req.add_header("Content-Type", "application/x-www-form-urlencoded")
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            tokens = json.loads(resp.read())
-            if tokens.get("access_token"):
-                return True, "refresh OK", False
-            return False, "no access_token returned", False
-    except urllib.error.HTTPError as e:
-        if e.code == 400:
-            return False, "expired/invalid — re-run [O] OAuth", True
-        return False, f"HTTP {e.code}", False
-    except Exception as e:
-        return False, str(e)[:60], False
-
-
-def _test_github_token(token):
-    if not token:
-        return False, "", ""
-    try:
-        req = urllib.request.Request("https://api.github.com/user",
-            headers={"Authorization": f"token {token}", "User-Agent": "yt-mirror-cli"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            user = json.loads(resp.read())
-            return True, user.get("login", ""), ""
-    except urllib.error.HTTPError as e:
-        return False, "", f"HTTP {e.code}"
-    except Exception as e:
-        return False, "", str(e)[:60]
-
-
-def _validate_upload_schedule_field(v):
-    if not str(v or "").strip():
-        return True, ""
-    times, invalid = _validate_schedule(v)
-    if invalid:
-        return False, f"invalid slot(s): {invalid}"
-    return True, ""
-
-
-FIELD_VALIDATORS = {
-    "shortlink_provider": lambda v: (v in ("vplink", "cleanuri", "tinyurl"),
-                                     "use one of vplink / cleanuri / tinyurl"),
-    "comment_moderation": lambda v: (v in ("heldForReview", "published"),
-                                     "use heldForReview or published"),
-    "upload_schedule": _validate_upload_schedule_field,
-}
-
-
-def screen_setup(project):
-    pid = project["id"]
-
-    while True:
-        p = supabase_db.get_project(pid)
-        if not p:
-            error("Project not found")
-            return
-
-        clear()
-        banner()
-        print(f"\n  {C_BOLDWHITE}SETUP — {p['name']}{C_RESET}")
-        divider()
-
-        for i, (key, label, kind) in enumerate(FIELD_SPEC, 1):
-            val = p.get(key, "")
-            sensitive = "secret" in key or "token" in key or "key" in key or "refresh" in key
-            if kind == "bool":
-                display = f"{C_GREEN}✓ enabled{C_RESET}" if _is_true(val) else f"{C_DIM}✗ disabled{C_RESET}"
-            else:
-                display = _display_val(val, sensitive)
-            print(f"  {C_BOLD}[{i:2d}]{C_RESET} {label:35s} {display}")
-
-        print()
-        print(f"  {C_BOLD}[D]{C_RESET} Deploy to GitHub Actions")
-        print(f"  {C_BOLD}[O]{C_RESET} YouTube OAuth login (get refresh token)")
-        print(f"  {C_BOLD}[C]{C_RESET} Doctor — validate & fix all fields")
-        print(f"  {C_BOLD}[W]{C_RESET} Reset warmup start to today")
-        print(f"  {C_BOLD}[B]{C_RESET} Back")
-        print()
-
-        choice = prompt("Choice").strip().upper()
-
-        if choice == "B":
-            return
-        elif choice == "D":
-            _do_deploy(p)
-        elif choice == "O":
-            _do_oauth(p)
-        elif choice == "C":
-            _do_doctor(p)
-        elif choice == "W":
-            try:
-                now = datetime.now(timezone.utc)
-                wd = int(p.get("warmup_days", 0))
-                supabase_db.save_upload_state({
-                    "account_created": now.isoformat(),
-                    "warmup_start": now.isoformat(),
-                    "warmup_complete": wd <= 0,
-                    "first_upload_date": None,
-                    "total_uploaded": 0,
-                    "last_upload_date": None,
-                    "last_upload_hour": None,
-                    "processed_hashes": [],
-                    "yt_client_id": p.get("yt_client_id", ""),
-                }, project_id=pid)
-                if wd <= 0:
-                    success("Warmup reset to today — 0 days means uploads start immediately")
-                else:
-                    success(f"Warmup reset to today — {wd} day warmup started")
-                input("\n  Press Enter to continue...")
-            except Exception as e:
-                error(f"Failed: {e}")
-                input("\n  Press Enter to continue...")
-        elif choice.isdigit():
-            idx = int(choice) - 1
-            if 0 <= idx < len(FIELD_SPEC):
-                key, label, kind = FIELD_SPEC[idx]
-                old = p.get(key, "")
-                if kind == "bool":
-                    new_val = not _is_true(old)
-                    try:
-                        supabase_db.update_project(pid, **{key: new_val})
-                        success(f"{label}: {'enabled' if new_val else 'disabled'}")
-                        p[key] = new_val
-                        _sync_local_project(supabase_db.get_project(pid) or p)
-                    except Exception as e:
-                        error(f"Failed: {e}")
-                    continue
-                new_val = prompt(f"{label}", old)
-                if new_val is not None:
-                    new_val = new_val.strip()
-                    if key == "channels":
-                        normalized, _changed = _normalize_channels(new_val)
-                        if normalized:
-                            new_val = ",".join(normalized)
-                    new_val = _sanitize_field(key, new_val)
-                    if new_val != old:
-                        if key in FIELD_VALIDATORS:
-                            ok, msg = FIELD_VALIDATORS[key](new_val)
-                            if not ok:
-                                error(f"{label}: {msg}")
-                                continue
-                        hint = ""
-                        if key == "yt_client_id" and new_val != old:
-                            hint = f" (auto-cleaned: {new_val})"
-                        if key == "channels" and new_val != old:
-                            hint = f" (normalized: {new_val})"
-                        try:
-                            if kind == "int":
-                                try:
-                                    num_val = int(new_val)
-                                except (ValueError, TypeError):
-                                    error(f"{label} must be a valid number")
-                                    continue
-                                supabase_db.update_project(pid, **{key: num_val})
-                            else:
-                                supabase_db.update_project(pid, **{key: new_val})
-                            success(f"{label} saved{hint}")
-                            p[key] = new_val
-                            _sync_local_project(supabase_db.get_project(pid) or p)
-                        except Exception as e:
-                            error(f"Failed: {e}")
-                            continue
-
-                # ── Auto-actions ──────────────────────────────────────────
-                # GitHub token saved → detect username, suggest repo
-                if key == "github_token" and new_val:
-                    _auto_suggest_repo(pid, new_val, p.get("name", ""))
-
-                # Client ID or secret saved → if both set, offer OAuth
-                if key in ("yt_client_id", "yt_client_secret") and p.get("yt_client_id") and p.get("yt_client_secret"):
-                    if confirm("Run YouTube OAuth login now to get refresh token?"):
-                        p = supabase_db.get_project(pid) or p
-                        _do_oauth(p)
-
-# ─── Auto-detect GitHub username and suggest repo ──────────────────────────
-
-def _auto_suggest_repo(pid, token, project_name):
-    try:
-        req = urllib.request.Request("https://api.github.com/user",
-            headers={"Authorization": f"token {token}", "User-Agent": "yt-mirror-cli"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            user = json.loads(resp.read())
-            username = user.get("login", "")
-            if username:
-                suggested = f"{username}/{project_name.replace(' ', '-').lower()}"
-                info(f"Detected GitHub user: {username}")
-                if confirm(f"Set repo to {suggested}?"):
-                    supabase_db.update_project(pid, github_repo=suggested)
-                    success(f"Repo set to {suggested}")
-    except Exception as e:
-        warn(f"Could not auto-detect GitHub user: {e}")
-
-# ─── Doctor ───────────────────────────────────────────────────────────────────
-
-def _do_doctor(project):
-    clear()
-    banner()
-    print(f"\n  {C_BOLDWHITE}DOCTOR — {project['name']}{C_RESET}")
-    print(f"  {C_DIM}Validating all fields with live checks + auto-correction...{C_RESET}\n")
-
-    pid = project["id"]
-    p = supabase_db.get_project(pid) or project
-    passed = 0
-    fixed = 0
-    issues = 0
-    fixes = []
-
-    def report(label, ok, note="", fix=None):
-        nonlocal passed, issues
-        if ok:
-            print(f"  {C_GREEN}[OK]{C_RESET}   {label}" + (f" — {note}" if note else ""))
-            passed += 1
-        elif fix is not None:
-            fixes.append((label, fix[0], fix[1], fix[2]))
-            print(f"  {C_GREEN}[FIX]{C_RESET}  {label} — {fix[2]}")
-        else:
-            print(f"  {C_RED}[ISSUE]{C_RESET} {label}" + (f" — {note}" if note else ""))
-            issues += 1
-
-    cid = p.get("yt_client_id", "")
-    csec = p.get("yt_client_secret", "")
-    rt = p.get("yt_refresh_token", "")
-    token = p.get("github_token", "")
-    repo = p.get("github_repo", "")
-
-    # ── 1. YouTube Client ID ──
-    cleaned = _sanitize_field("yt_client_id", cid)
-    if cleaned and cleaned != cid:
-        report("YouTube Client ID", False, fix=("yt_client_id", cleaned, f"URL prefix stripped → {cleaned}"))
-        cid = cleaned
-    elif cid:
-        if ".apps.googleusercontent.com" not in cid:
-            report("YouTube Client ID format", False,
-                   "should end with .apps.googleusercontent.com — check field [1]")
-        else:
-            report("YouTube Client ID", True)
-    else:
-        report("YouTube Client ID", False, "enter your OAuth client ID in field [1]")
-
-    # ── 2. Client Secret ──
-    report("YouTube Client Secret", bool(csec), "" if csec else "enter it in field [2]")
-
-    # ── 3. Refresh Token (live test) ──
-    ok_yt, yt_note, yt_expired = _test_yt_token(cid, csec, rt)
-    if ok_yt:
-        report("YouTube Refresh Token", True, "valid — refresh OK")
-    elif rt:
-        report("YouTube Refresh Token", False,
-               yt_note + (". Re-run [O] OAuth to get a fresh token" if yt_expired else ""))
-    else:
-        report("YouTube Refresh Token", False,
-               "run [O] OAuth login after setting client ID + secret")
-
-    # ── 4. GitHub Token (live test) ──
-    ok_gh, gh_user, gh_err = _test_github_token(token)
-    if ok_gh:
-        report("GitHub Token", True, f"authenticated as @{gh_user}")
-    elif token:
-        report("GitHub Token", False, f"invalid ({gh_err or 'failed'}) — regenerate PAT with repo scope")
-    else:
-        report("GitHub Token", False, "enter a GitHub PAT with repo scope in field [4]")
-
-    # ── 5. GitHub Repo ──
-    if ok_gh and gh_user:
-        suggested = f"{gh_user}/{str(p.get('name', '')).replace(' ', '-').lower()}"
-        if not repo:
-            report("GitHub Repo", False,
-                   fix=("github_repo", suggested, f"auto-suggested {suggested}"))
-            repo = suggested
-        elif "/" not in repo:
-            report("GitHub Repo format", False,
-                   fix=("github_repo", suggested, f"invalid {repo!r} → {suggested}"))
-            repo = suggested
-        elif not repo.startswith(gh_user + "/"):
-            fixed_repo = f"{gh_user}/{repo.split('/', 1)[-1]}"
-            report("GitHub Repo owner", False,
-                   fix=("github_repo", fixed_repo, f"token user is {gh_user} → {fixed_repo}"))
-            repo = fixed_repo
-        else:
-            report("GitHub Repo", True, repo)
-    elif repo:
-        parts = repo.split("/")
-        if len(parts) == 2 and parts[0] and parts[1]:
-            report("GitHub Repo format", True, repo)
-        else:
-            report("GitHub Repo format", False, f"expected owner/repo, got {repo!r}")
-    else:
-        report("GitHub Repo", False, "set it in field [5]")
-
-    # Repo accessibility
-    if ok_gh and repo and "/" in repo:
-        parts = repo.split("/")
-        try:
-            req = urllib.request.Request(
-                f"https://api.github.com/repos/{parts[0]}/{parts[1]}",
-                headers={"Authorization": f"token {token}", "User-Agent": "yt-mirror-cli"})
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                report("GitHub repo accessible", True, repo)
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
-                report("GitHub repo accessible", False,
-                       f"{repo} not found — create it, then run [D]eploy")
-            elif e.code == 403:
-                report("GitHub repo accessible", False, "token lacks access — check PAT scope")
-            else:
-                report("GitHub repo accessible", False, f"HTTP {e.code}")
-        except Exception as e:
-            report("GitHub repo accessible", False, str(e)[:60])
-
-    # ── 6. Channels ──
-    channels_raw = p.get("channels", "")
-    normalized, changed = _normalize_channels(channels_raw)
-    if channels_raw and normalized:
-        if changed:
-            report("Channels", False,
-                   fix=("channels", ",".join(normalized),
-                        f"{len(normalized)} normalized: {','.join(normalized)}"))
-        else:
-            report("Channels", True, f"{len(normalized)} configured")
-    elif channels_raw and not normalized:
-        report("Channels", False, "none parsed — use @handle or /channel/UCxxx, comma-separated")
-    else:
-        report("Channels", False, "add channel URLs in field [6]")
-
-    # ── 7. Shortlink provider / key ──
-    provider = p.get("shortlink_provider", "")
-    if provider and provider not in ("vplink", "cleanuri", "tinyurl"):
-        report("Shortlink provider", False,
-               fix=("shortlink_provider", "vplink", f"invalid {provider!r} → vplink"))
-    else:
-        report("Shortlink provider", True, provider or "default: vplink")
-    if provider == "vplink" and not p.get("shortlink_api_key"):
-        report("Shortlink API key", False,
-               "vplink requires an API key — set it in field [8]")
-    else:
-        report("Shortlink API key", True, "set" if p.get("shortlink_api_key") else "not needed")
-
-    # ── 8. Comment mode ──
-    cm = p.get("comment_moderation", "")
-    if cm and cm not in ("heldForReview", "published"):
-        report("Comment mode", False,
-               fix=("comment_moderation", "published", f"invalid {cm!r} → published"))
-    else:
-        report("Comment mode", True, cm or "default: published")
-
-    # ── 9. Warmup days ──
-    wd = p.get("warmup_days")
-    try:
-        wdv = int(wd)
-        if wdv < 0:
-            report("Warmup days", False,
-                   fix=("warmup_days", 0, f"negative {wdv} → 0"))
-        else:
-            report("Warmup days", True, f"{wdv} day{'s' if wdv != 1 else ''}")
-    except (ValueError, TypeError):
-        report("Warmup days", False, fix=("warmup_days", 0, f"invalid {wd!r} → 0"))
-
-    # ── 10. Uploads per day ──
-    upd = p.get("uploads_per_day")
-    try:
-        updv = int(upd)
-        if updv < 1:
-            report("Uploads per day", False,
-                   fix=("uploads_per_day", 2, f"{updv} < 1 → 2"))
-        else:
-            report("Uploads per day", True, str(updv))
-    except (ValueError, TypeError):
-        report("Uploads per day", False, fix=("uploads_per_day", 2, f"invalid {upd!r} → 2"))
-
-    # ── 11. Initial backfill ──
-    bf = p.get("initial_backfill")
-    try:
-        bfv = int(bf)
-        if bfv < 0:
-            report("Initial backfill", False,
-                   fix=("initial_backfill", 0, f"negative {bfv} → 0"))
-        else:
-            report("Initial backfill", True, str(bfv))
-    except (ValueError, TypeError):
-        report("Initial backfill", False,
-               fix=("initial_backfill", 5, f"invalid {bf!r} → 5"))
-
-    # ── 12. Upload schedule ──
-    sched_raw = str(p.get("upload_schedule", "") or "").strip()
-    sched_times, sched_invalid = _validate_schedule(sched_raw)
-    if sched_invalid:
-        good = ",".join(sched_times) if sched_times else ""
-        report("Upload schedule", False,
-               fix=("upload_schedule", good,
-                    f"dropped invalid slot(s): {sched_invalid}" + (f" → {good}" if good else "")))
-    elif sched_times:
-        report("Upload schedule", True, ", ".join(sched_times))
-    else:
-        report("Upload schedule", True, "cooldown mode (uploads_per_day)")
-
-    # ── 13. Proxy system ──
-    proxy_enabled = _is_true(p.get("proxy_enabled"))
-    pu = p.get("proxy_supabase_url", "")
-    pk = p.get("proxy_supabase_key", "")
-    if not proxy_enabled:
-        report("Proxy system", True, "disabled — toggle field [9] to enable")
-    elif pu and pk:
-        try:
-            api = pu.rstrip("/") + "/rest/v1/proxy_results?select=ip&vplink_ok=eq.true&limit=1"
-            req = urllib.request.Request(api, headers={
-                "apikey": pk, "Authorization": f"Bearer {pk}"})
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                data = json.loads(resp.read())
-                if data:
-                    report("Proxy system", True, "enabled — connected, proxies available")
-                else:
-                    report("Proxy system", False, "enabled but no VPLINK-verified proxies")
-        except Exception as e:
-            report("Proxy system", False, f"enabled but connection failed: {str(e)[:60]}")
-    else:
-        report("Proxy system", False, "enabled but URL/key missing — set fields [10]/[11]")
-
-    # ── 14. Deploy status ──
-    if p.get("deployed_at"):
-        report("Deployment", True, f"last deploy {p['deployed_at'][:16].replace('T', ' ')}")
-    else:
-        report("Deployment", False, "run [D]eploy after fields pass")
-
-    # ── Summary + apply fixes ──
-    print()
-    if fixes:
-        print(f"  {C_GREEN}{len(fixes)} auto-fix(es) available{C_RESET}:")
-        for i, (label, _k, _v, desc) in enumerate(fixes, 1):
-            print(f"     {i}. {label} — {desc}")
-        print()
-        if confirm("Apply all auto-fixes now?"):
-            applied = 0
-            for _label, key, val, _desc in fixes:
-                try:
-                    supabase_db.update_project(pid, **{key: val})
-                    applied += 1
-                    print(f"  {C_GREEN}✓{C_RESET} {key} = {val if key != 'yt_client_id' else '(cleaned)'}")
-                except Exception as e:
-                    error(f"Failed to set {key}: {e}")
-            fixed = applied
-            p = supabase_db.get_project(pid) or p
-            if not supabase_db.is_enabled():
-                _sync_local_project(p)
-    if fixed > 0:
-        success(f"{fixed} auto-fix(es) applied")
-    if issues > 0:
-        warn(f"{issues} issue(s) remain — fix manually from the hints above")
-    if passed > 0:
-        info(f"{passed} check(s) passed")
-    if not fixes and issues == 0:
-        success("All checks passed — ready to deploy!")
-    input(f"\n  Press Enter to continue...")
-
-# ─── Deploy ──────────────────────────────────────────────────────────────────
-
-def _do_deploy(project):
-    if not supabase_db.is_enabled():
-        error("Cloud deploy requires a Supabase connection — press [C] to connect first")
-        info("In local mode the bot runs via `yt-auto run` on this machine instead.")
-        input("\n  Press Enter to continue...")
-        return
-
-    missing = []
-    for key, label in [
-        ("yt_client_id", "YouTube Client ID"),
-        ("yt_client_secret", "YouTube Client Secret"),
-        ("yt_refresh_token", "YouTube Refresh Token"),
-        ("github_token", "GitHub Token"),
-        ("github_repo", "GitHub Repo"),
-    ]:
-        if not project.get(key):
-            missing.append(label)
-
-    if missing:
-        error(f"Missing required fields: {', '.join(missing)}")
-        info("Fill all fields in Setup first, then [D]eploy")
-        return
-
-    if not HAS_GH:
-        error("github_api module not found")
-        return
-
-    if not HAS_CRYPTO:
-        error("cryptography library not installed. Run: pip install cryptography")
-        return
-
-    try:
-        import nacl.public
-    except ImportError:
-        warn("pynacl not installed — secret encryption may fail. Run: pip install pynacl")
-
-    token = project["github_token"]
-    repo = project["github_repo"]
-    parts = repo.split("/")
-    if len(parts) != 2:
-        error(f"Invalid repo format: {repo} (expected owner/name)")
-        return
-    owner, rn = parts[0], parts[1]
-
-    bootstrap = _read_json(BOOTSTRAP_PATH)
-    su_url = os.environ.get("SUPABASE_URL", "") or bootstrap.get("supabase_url", "")
-    su_key = os.environ.get("SUPABASE_SERVICE_KEY", "") or bootstrap.get("supabase_key", "")
-
-    channels_json = {}
-    for ch in project.get("channels", "").split(","):
-        ch = ch.strip()
-        if ch:
-            cid = _parse_channel(ch)
-            channels_json[cid] = {
-                "channel_id": cid,
-                "channel_name": cid.lstrip("@"),
-                "url": f"https://www.youtube.com/{cid}",
-                "enabled": True,
-                "added_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            }
-
-    proxy_enabled = _is_true(project.get("proxy_enabled"))
-    secrets = {
-        "PROJECT_ID": str(project["id"]),
-        "SUPABASE_URL": su_url,
-        "SUPABASE_SERVICE_KEY": su_key,
-        "PROXY_SUPABASE_URL": project.get("proxy_supabase_url", "") if proxy_enabled else "",
-        "PROXY_SUPABASE_SERVICE_KEY": project.get("proxy_supabase_key", "") if proxy_enabled else "",
-        "YT_CLIENT_ID": project.get("yt_client_id", ""),
-        "YT_CLIENT_SECRET": project.get("yt_client_secret", ""),
-        "YT_REFRESH_TOKEN": project.get("yt_refresh_token", ""),
-        "GH_PAT": project.get("github_token", ""),
-        "VPLINK_API_KEY": project.get("shortlink_api_key", ""),
-        "CHANNELS": json.dumps(channels_json),
-        "SETTINGS": json.dumps({
-            "privacy_status": "public",
-            "category_id": "22",
-            "check_interval_minutes": 15,
-            "max_per_cycle": 3,
-            "shortener_provider": project.get("shortlink_provider", "vplink"),
-            "shortener_api_key": project.get("shortlink_api_key", ""),
-            "comment_moderation": project.get("comment_moderation", "heldForReview"),
-            "warmup_days": int(project.get("warmup_days", 0)),
-            "mirror_title_prefix": project.get("mirror_title_prefix", ""),
-            "custom_title": project.get("custom_title", ""),
-            "custom_description": project.get("custom_description", ""),
-            "custom_comment": project.get("custom_comment", ""),
-            "uploads_per_day": int(project.get("uploads_per_day", 2)),
-            "initial_backfill": int(project.get("initial_backfill", 5)),
-            "upload_schedule": project.get("upload_schedule", ""),
-        }),
-        "SHORTLINK_KEYS": json.dumps({"default": {
-            "provider": project.get("shortlink_provider", "vplink"),
-            "api_key": project.get("shortlink_api_key", ""),
-        }}) if project.get("shortlink_api_key") else "{}",
-    }
-
-    print()
-
-    # ── Check if repo exists ──
-    loading("Checking GitHub repo...")
-    existing = github_api.get_repo(owner, rn, token)
-    repo_exists = not (isinstance(existing, dict) and existing.get("error"))
-
-    total_steps = 6
-    step_num = 0
-
-    def step(msg):
-        nonlocal step_num
-        step_num += 1
-        print(f"  {C_BOLD}[{step_num}/{total_steps}]{C_RESET} {msg}")
-
-    if repo_exists:
-        info(f"Repo {repo} exists — re-deploying (push code + secrets + workflow dispatch)")
-        # Always push the latest local code so the deployed repo never runs stale
-        step("Pushing latest code...")
-        src_dir = str(Path(__file__).parent)
-        remote_url = f"https://{token}@github.com/{owner}/{rn}.git"
-        ok, err = github_api.git_push(src_dir, remote_url)
-        if not ok:
-            warn(f"Git push failed: {err} — continuing with secrets + dispatch")
-        else:
-            success("Latest code pushed")
-        # Cancel any running/queued runs so the latest code takes effect
-        step("Cancelling active workflow runs...")
-        cancelled = github_api.cancel_active_runs(owner, rn, token)
-        if cancelled:
-            success(f"Cancelled {cancelled} active run(s)")
-        else:
-            info("No active runs to cancel")
-        # Cancelled runs can't release their run_lock (finally never runs), so
-        # orphaned locks block the new run for up to 6h. Clear the lock.
-        supabase_db.release_run_lock(project_id=str(project["id"]))
-        info("Cleared stale run lock")
-    else:
-        # Step 1: Create repo
-        step(f"Creating repo {rn}...")
-        resp = github_api.create_repo(token, rn)
-        if isinstance(resp, dict) and resp.get("error"):
-            error(f"Create repo failed: {resp.get('message', '')}")
-            return
-        success("Repo created")
-
-        # Step 2: Push code
-        step("Pushing code from local...")
-        src_dir = str(Path(__file__).parent)
-        remote_url = f"https://{token}@github.com/{owner}/{rn}.git"
-        ok, err = github_api.git_push(src_dir, remote_url)
-        if not ok:
-            error(f"Git push failed: {err}")
-            info("Check token has repo scope and try again")
-            return
-        success("Code pushed")
-
-    # Step 3/1: Set secrets
-    step("Setting encrypted secrets..." if repo_exists else "Setting encrypted secrets...")
-    secret_errors = github_api.set_all_secrets(owner, rn, token, secrets)
-    for e in secret_errors:
-        warn(e)
-    if not secret_errors:
-        success("All secrets set")
-
-    # Step 4/2: Find workflow
-    step("Finding workflow..." if repo_exists else "Finding workflow...")
-    wf = github_api.get_mirror_workflow(owner, rn, token)
-    if not wf:
-        if repo_exists:
-            step("Pushing code from local...")
-            src_dir = str(Path(__file__).parent)
-            remote_url = f"https://{token}@github.com/{owner}/{rn}.git"
-            ok, err = github_api.git_push(src_dir, remote_url)
-            if not ok:
-                error(f"Git push failed: {err}")
-                return
-            success("Code pushed")
-            wf = github_api.get_mirror_workflow(owner, rn, token)
-        if not wf:
-            warn("No youtube.yml workflow found — push may still be in progress")
-    if wf:
-        # Step 5/3: Enable workflow
-        step("Enabling workflow..." if repo_exists else "Enabling workflow...")
-        github_api.enable_workflow(owner, rn, wf["id"], token)
-        success("Workflow enabled")
-
-        # Step 6/4: Trigger immediately
-        step("Triggering workflow run..." if repo_exists else "Triggering workflow run...")
-        dispatch = github_api.dispatch_workflow(owner, rn, wf["id"], token, ref="main")
-        if isinstance(dispatch, dict) and dispatch.get("error"):
-            warn(f"Trigger failed: {dispatch.get('message', '')} — cron will pick it up")
-        else:
-            success("Workflow triggered!")
-
-    # Save deployment record in project
-    supabase_db.update_project(project["id"], deployed_at=datetime.now(timezone.utc).isoformat())
-
-    divider()
-    if not repo_exists:
-        success(f"Deployed to {repo}!")
-        info("Workflow triggered — check GitHub Actions for progress")
-    else:
-        success(f"Re-deployed to {repo}!")
-        info("Workflow triggered — check GitHub Actions for progress")
-
-# ─── OAuth ────────────────────────────────────────────────────────────────────
-
-def _do_oauth(project):
-    cid = project.get("yt_client_id")
-    csec = project.get("yt_client_secret")
-    if not cid or not csec:
-        error("Set YouTube Client ID and Client Secret first (fields 1 & 2)")
-        return
-
+def _run_oauth_flow(client_id, client_secret):
     import hashlib, base64 as b64
 
+    if not client_id or not client_secret:
+        error("Client ID and Secret are required first")
+        return None
+
     code_verifier = b64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode()
-    code_challenge = b64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode()).digest()).rstrip(b"=").decode()
+    code_challenge = b64.urlsafe_b64encode(
+        hashlib.sha256(code_verifier.encode()).digest()).rstrip(b"=").decode()
 
     scopes = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.force-ssl https://www.googleapis.com/auth/youtube"
     params = {
-        "client_id": cid,
+        "client_id": client_id,
         "redirect_uri": "http://127.0.0.1:8085",
         "response_type": "code",
         "scope": scopes,
@@ -1184,6 +291,7 @@ def _do_oauth(project):
             else:
                 self.send_response(400)
                 self.end_headers()
+
         def log_message(self, format, *args):
             pass
 
@@ -1193,7 +301,7 @@ def _do_oauth(project):
         server = http.server.HTTPServer(("0.0.0.0", 8085), Handler)
     except OSError:
         error("Port 8085 in use — try again or wait")
-        return
+        return None
     server.timeout = 300
 
     print()
@@ -1205,34 +313,897 @@ def _do_oauth(project):
     server.handle_request()
     server.server_close()
 
-    if result["code"]:
-        token_data = urllib.parse.urlencode({
-            "code": result["code"],
-            "client_id": cid,
-            "client_secret": csec,
-            "redirect_uri": "http://127.0.0.1:8085",
-            "grant_type": "authorization_code",
-            "code_verifier": code_verifier,
-        }).encode()
+    if not result["code"]:
+        error("OAuth timed out or no code received")
+        return None
+
+    token_data = urllib.parse.urlencode({
+        "code": result["code"],
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "redirect_uri": "http://127.0.0.1:8085",
+        "grant_type": "authorization_code",
+        "code_verifier": code_verifier,
+    }).encode()
+    try:
+        req = urllib.request.Request("https://oauth2.googleapis.com/token",
+                                     data=token_data, method="POST")
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            tokens = json.loads(resp.read())
+            rt = tokens.get("refresh_token", "")
+            if rt:
+                return rt
+            error("No refresh token returned — make sure the OAuth consent screen is Published")
+            return None
+    except Exception as e:
+        error(f"Token exchange failed: {e}")
+        return None
+
+
+# ─── Local-mode sync (hybrid DB) ──────────────────────────────────────────────
+
+def _local_settings_path():
+    return DATA_DIR / "settings.json"
+
+
+def _sync_local_project(p):
+    """Local mode: mirror a project's fields onto the files the local tool
+    reads (settings.json, config.json)."""
+    if supabase_db.is_enabled() or not p:
+        return
+    settings = {}
+    try:
+        settings = json.loads(_local_settings_path().read_text("utf-8"))
+    except Exception:
+        pass
+    for k in ("comment_moderation", "mirror_title_prefix",
+              "custom_title", "custom_description", "custom_comment"):
+        if k in p and p[k] not in (None, ""):
+            settings[k] = p[k]
+    settings["shortlink_provider"] = p.get("shortlink_provider") or "none"
+    if p.get("shortlink_api_key"):
+        settings["shortlink_api_key"] = p["shortlink_api_key"]
+    settings["active_account"] = p.get("account_id") or ""
+    _write_json(_local_settings_path(), settings)
+
+    cfg = config.load()
+    patch = {}
+    for k in ("yt_client_id", "yt_client_secret", "yt_refresh_token"):
+        if p.get(k):
+            patch[k] = p[k]
+    if patch:
+        config.save(patch)
+
+
+# ─── MAIN MENU ────────────────────────────────────────────────────────────────
+
+def main_menu():
+    while True:
+        clear()
+        banner()
+        print(f"\n  {C_BOLDWHITE}MAIN MENU{C_RESET}")
+        divider()
+        print(f"  {C_BOLD}[1]{C_RESET} Projects — configure and upload")
+        print(f"  {C_BOLD}[2]{C_RESET} YouTube Accounts — saved upload identities")
+        print(f"  {C_BOLD}[3]{C_RESET} Doctor — full system check & auto-fix")
+        print(f"  {C_BOLD}[4]{C_RESET} Database connection (local ⇄ Supabase)")
+        print(f"  {C_BOLD}[0]{C_RESET} Quit")
+        print()
+        if supabase_db.is_enabled():
+            connected_to = _read_json(BOOTSTRAP_PATH).get("supabase_url", "")
+            print(f"  {C_DIM}Database: Supabase (cloud){C_RESET}" + (f"  —  {connected_to}" if connected_to else ""))
+        else:
+            print(f"  {C_DIM}Database: local JSON — data in {DATA_DIR}{C_RESET}")
+        print()
+
+        choice = prompt("Choice").strip().upper()
+        if choice == "0":
+            print(f"\n  {C_DIM}Bye!{C_RESET}\n")
+            break
+        elif choice == "1":
+            project_list_screen()
+        elif choice == "2":
+            accounts_screen()
+        elif choice == "3":
+            screen_doctor()
+        elif choice == "4":
+            _database_screen()
+
+
+def _database_screen():
+    while True:
+        clear()
+        banner()
+        print(f"\n  {C_BOLDWHITE}DATABASE CONNECTION{C_RESET}")
+        divider()
+        if supabase_db.is_enabled():
+            su = _read_json(BOOTSTRAP_PATH).get("supabase_url", "")
+            print(f"  {C_GREEN}Supabase connected:{C_RESET} {su}")
+            print()
+            print(f"  {C_BOLD}[1]{C_RESET} Disconnect → switch to LOCAL mode")
+        else:
+            print(f"  {C_DIM}Local JSON mode — data stored in {DATA_DIR}{C_RESET}")
+            print()
+            print(f"  {C_BOLD}[1]{C_RESET} Connect Supabase (cloud)")
+        print(f"  {C_BOLD}[0]{C_RESET} Back")
+        print()
+
+        choice = prompt("Choice").strip().upper()
+        if choice == "0":
+            return
+        elif choice == "1":
+            if supabase_db.is_enabled():
+                if confirm("Disconnect from Supabase and switch to LOCAL mode?"):
+                    supabase_db.disable()
+                    _write_json(BOOTSTRAP_PATH, {})
+                    success("Local mode — data now stored in ~/.yt-mirror/")
+                    pause()
+            else:
+                su = prompt("Supabase URL", _read_json(BOOTSTRAP_PATH).get("supabase_url", ""))
+                sk = prompt("Supabase Service Key", _read_json(BOOTSTRAP_PATH).get("supabase_key", ""))
+                if su and sk:
+                    _write_json(BOOTSTRAP_PATH, {"supabase_url": su, "supabase_key": sk})
+                    supabase_db.configure(su, sk)
+                    if supabase_db.is_enabled():
+                        success("Connected to Supabase — cloud mode")
+                    else:
+                        error("Connection failed — check URL and key")
+                    pause()
+
+
+# ─── YOUTUBE ACCOUNTS ─────────────────────────────────────────────────────────
+
+def accounts_screen():
+    while True:
+        clear()
+        banner()
+        accounts = _accounts_dict()
+        print(f"\n  {C_BOLDWHITE}YOUTUBE ACCOUNTS — {len(accounts)} saved{C_RESET}")
+        divider()
+        if not accounts:
+            print(f"\n  {C_DIM}No accounts saved yet. Add your first one with [A].{C_RESET}")
+        else:
+            for i, (name, acct) in enumerate(accounts.items(), 1):
+                ch = acct.get("channel_name", "") or acct.get("channel_id", "")
+                ch_str = f" — {C_BOLD}{ch}{C_RESET}" if ch else ""
+                print(f"  {C_BOLD}{i:2d}.{C_RESET} {name}{ch_str}")
+                print(f"       {C_DIM}{_account_status_str(acct)}{C_RESET}")
+        print()
+        print(f"  {C_BOLD}[A]{C_RESET} Add account — OAuth login")
+        print(f"  {C_BOLD}[M]{C_RESET} Add account — manually (paste credentials)")
+        print(f"  {C_BOLD}[E]{C_RESET} Edit account")
+        print(f"  {C_BOLD}[V]{C_RESET} Verify all accounts (live token test)")
+        if accounts:
+            print(f"  {C_BOLD}[D]{C_RESET} Delete account")
+        print(f"  {C_BOLD}[0]{C_RESET} Back")
+        print()
+
+        choice = prompt("Choice").strip().upper()
+        if choice == "0":
+            return
+        elif choice == "A":
+            _add_account_oauth()
+        elif choice == "M":
+            _add_account_manual()
+        elif choice == "E":
+            _edit_account(accounts)
+        elif choice == "V":
+            _verify_all_accounts()
+        elif choice == "D" and accounts:
+            _delete_account_menu(accounts)
+
+
+def _add_account_oauth():
+    clear()
+    banner()
+    print(f"\n  {C_BOLDWHITE}ADD YOUTUBE ACCOUNT (OAUTH){C_RESET}")
+    divider()
+
+    name = prompt("Account name (e.g. 'My Main Channel')")
+    if not name:
+        error("Name required")
+        pause()
+        return
+
+    cid, csec = _resolve_client_creds()
+    if not cid:
+        cid = prompt("YouTube Client ID")
+    if not csec:
+        csec = prompt("YouTube Client Secret")
+    if not cid or not csec:
+        error("Client ID and Secret are required for OAuth")
+        pause()
+        return
+
+    print(f"\n  {C_DIM}Using Client ID: {doctor.sanitize_client_id(cid)}{C_RESET}")
+    rt = _run_oauth_flow(cid, csec)
+    if not rt:
+        pause()
+        return
+
+    loading("Fetching channel info...")
+    channel_id, channel_name, avatar = _fetch_youtube_channel_info(rt, cid, csec)
+    _save_account(name, {
+        "client_id": doctor.sanitize_client_id(cid),
+        "client_secret": csec,
+        "refresh_token": rt,
+        "channel_id": channel_id or "",
+        "channel_name": channel_name or "",
+        "channel_url": f"https://www.youtube.com/channel/{channel_id}" if channel_id else "",
+        "avatar_url": avatar or "",
+        "status": "active",
+        "last_verified": datetime.now(timezone.utc).isoformat(),
+        "token_expires_at": (datetime.now(timezone.utc)).isoformat(),
+        "uploads_count": 0,
+        "notes": "",
+        "added_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    })
+    success(f"Account '{name}' saved" + (f" — {channel_name}" if channel_name else ""))
+    warn("Refresh tokens expire ~7 days — re-verify from the Accounts menu before then")
+
+    if not supabase_db.is_enabled() and confirm("Set this as the active local account?"):
+        settings = config.load_tui_settings()
+        settings["active_account"] = name
+        settings.pop("upload_settings", None)
+        _write_json(_local_settings_path(), {k: v for k, v in settings.items()})
+        success("Active account set")
+    pause()
+
+
+def _add_account_manual():
+    clear()
+    banner()
+    print(f"\n  {C_BOLDWHITE}ADD YOUTUBE ACCOUNT (MANUAL){C_RESET}")
+    divider()
+
+    name = prompt("Account name (e.g. 'My Main Channel')")
+    if not name:
+        error("Name required")
+        pause()
+        return
+    cid = doctor.sanitize_client_id(prompt("YouTube Client ID"))
+    csec = prompt("YouTube Client Secret")
+    rt = prompt("YouTube Refresh Token")
+    if not (cid and csec and rt):
+        error("Client ID, Secret and Refresh Token are all required")
+        pause()
+        return
+    channel_id = prompt("Channel ID (optional)")
+    channel_name = prompt("Channel name (optional)")
+
+    _save_account(name, {
+        "client_id": cid,
+        "client_secret": csec,
+        "refresh_token": rt,
+        "channel_id": channel_id or "",
+        "channel_name": channel_name or "",
+        "channel_url": f"https://www.youtube.com/channel/{channel_id}" if channel_id else "",
+        "status": "active",
+        "last_verified": "",
+        "token_expires_at": "",
+        "uploads_count": 0,
+        "notes": "",
+        "added_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    })
+    success(f"Account '{name}' saved")
+    info("Run [V] Verify all accounts to test the token live")
+    pause()
+
+
+def _pick_account(accounts, verb="Select"):
+    if not accounts:
+        warn("No accounts saved — add one first")
+        return None
+    print()
+    for i, (name, acct) in enumerate(accounts.items(), 1):
+        ch = acct.get("channel_name", "") or acct.get("channel_id", "")
+        ch_str = f" — {ch}" if ch else ""
+        print(f"  {C_BOLD}{i:2d}.{C_RESET} {name}{ch_str}  {C_DIM}({_account_status_str(acct)}){C_RESET}")
+    print()
+    num = prompt(f"{verb} account number")
+    if num and num.isdigit():
+        idx = int(num) - 1
+        if 0 <= idx < len(accounts):
+            return list(accounts.keys())[idx]
+    error("Invalid choice")
+    return None
+
+
+def _edit_account(accounts):
+    if not accounts:
+        warn("No accounts saved")
+        pause()
+        return
+    name = _pick_account(accounts, "Edit")
+    if not name:
+        pause()
+        return
+    acct = dict(accounts[name])
+
+    while True:
+        clear()
+        banner()
+        print(f"\n  {C_BOLDWHITE}EDIT ACCOUNT — {name}{C_RESET}")
+        divider()
+        ch = acct.get("channel_name", "") or acct.get("channel_id", "")
+        print(f"  {C_DIM}Channel:{C_RESET}  {ch or '(unknown)'}")
+        print(f"  {C_DIM}Status:{C_RESET}   {_account_status_str(acct)}")
+        print(f"  {C_DIM}Notes:{C_RESET}     {acct.get('notes', '') or '(none)'}")
+        print()
+        print(f"  {C_BOLD}[1]{C_RESET} Rename")
+        print(f"  {C_BOLD}[2]{C_RESET} Client ID")
+        print(f"  {C_BOLD}[3]{C_RESET} Client Secret")
+        print(f"  {C_BOLD}[4]{C_RESET} Refresh Token")
+        print(f"  {C_BOLD}[5]{C_RESET} Channel name / ID")
+        print(f"  {C_BOLD}[6]{C_RESET} Notes")
+        print(f"  {C_BOLD}[7]{C_RESET} Re-verify token (live test)")
+        print(f"  {C_BOLD}[8]{C_RESET} OAuth re-login for this account")
+        print(f"  {C_BOLD}[0]{C_RESET} Back")
+        print()
+
+        choice = prompt("Choice").strip().upper()
+        if choice == "0":
+            return
+        elif choice == "1":
+            new = prompt("New account name", name)
+            if new and new != name:
+                if new in accounts:
+                    error("Name already exists")
+                    continue
+                _save_account(new, acct)
+                _delete_account(name)
+                _relink_projects(name, new)
+                success(f"Renamed to '{new}'")
+                name = new
+        elif choice == "2":
+            val = doctor.sanitize_client_id(prompt("Client ID", acct.get("client_id", "")))
+            acct["client_id"] = val
+            _save_account(name, acct)
+            success("Client ID saved")
+        elif choice == "3":
+            val = prompt("Client Secret", acct.get("client_secret", ""))
+            acct["client_secret"] = val
+            _save_account(name, acct)
+            success("Client Secret saved")
+        elif choice == "4":
+            val = prompt("Refresh Token", acct.get("refresh_token", ""))
+            acct["refresh_token"] = val
+            acct["status"] = "active"
+            acct["last_verified"] = ""
+            _save_account(name, acct)
+            success("Refresh Token saved")
+        elif choice == "5":
+            ch_id = prompt("Channel ID", acct.get("channel_id", ""))
+            ch_name = prompt("Channel name", acct.get("channel_name", ""))
+            acct["channel_id"] = ch_id
+            acct["channel_name"] = ch_name
+            acct["channel_url"] = f"https://www.youtube.com/channel/{ch_id}" if ch_id else ""
+            _save_account(name, acct)
+            success("Channel info saved")
+        elif choice == "6":
+            val = prompt("Notes", acct.get("notes", ""))
+            acct["notes"] = val
+            _save_account(name, acct)
+            success("Notes saved")
+        elif choice == "7":
+            _verify_one_account(name, acct, live=True)
+            accounts[name] = acct
+        elif choice == "8":
+            rt = _run_oauth_flow(acct.get("client_id", ""), acct.get("client_secret", ""))
+            if rt:
+                acct["refresh_token"] = rt
+                acct["status"] = "active"
+                acct["last_verified"] = datetime.now(timezone.utc).isoformat()
+                _save_account(name, acct)
+                success("Refresh token refreshed")
+            pause()
+
+
+def _relink_projects(old_name, new_name):
+    try:
+        for p in supabase_db.list_projects():
+            if p.get("account_id") == old_name:
+                supabase_db.update_project(p["id"], account_id=new_name)
+    except Exception as e:
+        warn(f"Could not relink projects: {e}")
+
+
+def _verify_one_account(name, acct, live=False):
+    cid = acct.get("client_id", "")
+    csec = acct.get("client_secret", "")
+    rt = acct.get("refresh_token", "")
+    ok, note, expired = doctor.test_refresh_token(cid, csec, rt)
+    status = "active" if ok else ("expired" if expired else "expired")
+    acct["status"] = status
+    acct["last_verified"] = datetime.now(timezone.utc).isoformat() if ok else acct.get("last_verified", "")
+    if ok:
+        acct["token_expires_at"] = (datetime.now(timezone.utc)).isoformat()
+        acct["last_error"] = ""
+        print(f"  {C_GREEN}[OK]{C_RESET}   {name} — {note}")
+    else:
+        acct["last_error"] = note
+        print(f"  {C_RED}[FAIL]{C_RESET} {name} — {note}")
+    if live or not supabase_db.is_enabled():
+        _save_account(name, acct)
+    return ok
+
+
+def _verify_all_accounts():
+    clear()
+    banner()
+    print(f"\n  {C_BOLDWHITE}VERIFY YOUTUBE ACCOUNTS{C_RESET}")
+    divider()
+    accounts = _accounts_dict()
+    if not accounts:
+        info("No accounts to verify")
+        pause()
+        return
+    passed = 0
+    for name, acct in accounts.items():
+        if _verify_one_account(name, dict(acct), live=True):
+            passed += 1
+    print()
+    success(f"{passed}/{len(accounts)} accounts verified")
+    pause()
+
+
+def _delete_account_menu(accounts):
+    name = _pick_account(accounts, "Delete")
+    if not name:
+        pause()
+        return
+    if not confirm(f"Delete account '{name}' and unlink it from all projects?"):
+        return
+    _delete_account(name)
+    for p in supabase_db.list_projects():
+        if p.get("account_id") == name:
+            supabase_db.update_project(p["id"], account_id="")
+    success(f"Deleted '{name}'")
+    pause()
+
+
+# ─── PROJECTS ────────────────────────────────────────────────────────────────
+
+def project_list_screen():
+    while True:
+        clear()
+        banner()
+        print(f"\n  {C_BOLDWHITE}PROJECTS{C_RESET}")
+        divider()
 
         try:
-            req = urllib.request.Request("https://oauth2.googleapis.com/token", data=token_data, method="POST")
-            req.add_header("Content-Type", "application/x-www-form-urlencoded")
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                tokens = json.loads(resp.read())
-                rt = tokens.get("refresh_token", "")
-                if rt:
-                    supabase_db.update_project(project["id"], yt_refresh_token=rt)
-                    if not supabase_db.is_enabled():
-                        _sync_local_project(supabase_db.get_project(project["id"]) or project)
-                    success("Refresh token obtained and saved to project!")
-                    warn("Refresh token expires in 7 days — re-run [O] before expiry")
-                else:
-                    error("No refresh token returned — make sure OAuth consent screen is Published")
+            projects = supabase_db.list_projects()
         except Exception as e:
-            error(f"Token exchange failed: {e}")
+            error(f"Database unreachable: {str(e)[:60]}")
+            if supabase_db.is_enabled():
+                warn("Supabase connection failed — press [4] in main menu to fix")
+            projects = None
+
+        if not projects:
+            print(f"\n  {C_DIM}No projects yet. Create one to get started.{C_RESET}")
+        else:
+            for i, p in enumerate(projects, 1):
+                print(f"  {C_BOLD}{i:2d}.{C_RESET} {C_BOLD}{p['name']}{C_RESET}")
+                parts = []
+                for key, label in [("yt_client_id", "YT"), ("yt_client_secret", "YTS"),
+                                    ("yt_refresh_token", "RT")]:
+                    if p.get(key):
+                        parts.append(label)
+                if p.get("account_id"):
+                    parts.append(f"acct:{p['account_id']}")
+                if parts:
+                    print(f"       {C_DIM}{', '.join(parts)}{C_RESET}")
+            print()
+
+        print(f"  {C_BOLD}[A]{C_RESET} Add project")
+        if projects:
+            print(f"  {C_BOLD}[D]{C_RESET} Delete project")
+            print(f"  {C_BOLD}[1-{len(projects)}]{C_RESET} Select project")
+        print(f"  {C_BOLD}[0]{C_RESET} Back\n")
+
+        choice = prompt("Choice").strip().upper()
+        if choice == "0":
+            return
+        elif choice == "A":
+            name = prompt("Project name")
+            if name:
+                try:
+                    p = supabase_db.create_project(name)
+                    if p and p.get("id"):
+                        success(f"Project '{name}' created")
+                        if not supabase_db.is_enabled():
+                            _sync_local_project(p)
+                    else:
+                        error("Failed to create project — name may already exist")
+                except Exception as e:
+                    msg = str(e)
+                    if "409" in msg or "Conflict" in msg:
+                        error("Project name already exists — choose a different name")
+                    else:
+                        error(f"Failed to create project: {e}")
+        elif choice == "D" and projects:
+            for i, p in enumerate(projects, 1):
+                print(f"  {C_BOLD}{i}.{C_RESET} {p['name']}")
+            num = prompt("Number to delete")
+            if num and num.isdigit():
+                idx = int(num) - 1
+                if 0 <= idx < len(projects):
+                    p = projects[idx]
+                    if confirm(f"Delete project '{p['name']}' and ALL its data?"):
+                        try:
+                            supabase_db.delete_project(p["id"])
+                            success(f"Deleted '{p['name']}'")
+                        except Exception as e:
+                            error(f"Failed to delete: {e}")
+        elif choice.isdigit() and projects:
+            idx = int(choice) - 1
+            if 0 <= idx < len(projects):
+                project_menu(projects[idx])
+
+
+def _project_summary(p):
+    parts = []
+    for key, label in [("yt_client_id", "YT"), ("yt_client_secret", "YTS"),
+                        ("yt_refresh_token", "RT")]:
+        if p.get(key):
+            parts.append(f"{C_GREEN}{label}{C_RESET}")
+    if p.get("account_id"):
+        parts.append(f"{C_GREEN}acct:{p['account_id']}{C_RESET}")
+    return "  ".join(parts) if parts else ""
+
+
+def project_menu(project):
+    while True:
+        p = supabase_db.get_project(project["id"])
+        if not p:
+            error("Project not found")
+            return
+
+        clear()
+        banner()
+        print(f"\n  {C_BOLDWHITE}PROJECT: {p['name']}{C_RESET}")
+        divider()
+        print(f"  {C_BOLD}[1]{C_RESET} Configure — fields & credentials")
+        print(f"  {C_BOLD}[2]{C_RESET} YouTube account — who uploads (selection)")
+        print(f"  {C_BOLD}[3]{C_RESET} Doctor — check & auto-fix this project")
+        print(f"  {C_BOLD}[4]{C_RESET} Status — live health check")
+        print(f"  {C_BOLD}[5]{C_RESET} Instant upload — upload a video now")
+        print(f"  {C_BOLD}[0]{C_RESET} Back to main menu")
+        summary = _project_summary(p)
+        if summary:
+            print(f"\n  {summary}")
+        print()
+
+        choice = prompt("Choice").strip().upper()
+        if choice == "0":
+            return
+        elif choice == "1":
+            p = supabase_db.get_project(project["id"])
+            screen_setup(p)
+        elif choice == "2":
+            _project_account_picker(p)
+        elif choice == "3":
+            p = supabase_db.get_project(project["id"]) or p
+            screen_doctor(p)
+        elif choice == "4":
+            p = supabase_db.get_project(project["id"]) or p
+            screen_status(p)
+        elif choice == "5":
+            _do_instant_upload(p)
+
+
+# ─── Project account picker ─────────────────────────────────────────────────
+
+def _project_account_picker(project):
+    pid = project["id"]
+    while True:
+        clear()
+        banner()
+        p = supabase_db.get_project(pid) or project
+        print(f"\n  {C_BOLDWHITE}UPLOAD ACCOUNT — {p['name']}{C_RESET}")
+        divider()
+        current = p.get("account_id", "")
+        if current:
+            acct = _accounts_dict().get(current)
+            if acct:
+                print(f"  Currently: {C_BOLD}{current}{C_RESET} — {acct.get('channel_name', '')}  "
+                      f"({_account_status_str(acct)})")
+            else:
+                warn(f"Currently linked to '{current}' which no longer exists")
+        else:
+            print(f"  {C_DIM}No account linked — uploads use inline project credentials.{C_RESET}")
+
+        accounts = _accounts_dict()
+        if accounts:
+            print()
+            for i, (name, acct) in enumerate(accounts.items(), 1):
+                ch = acct.get("channel_name", "") or acct.get("channel_id", "")
+                ch_str = f" — {ch}" if ch else ""
+                mark = f" {C_GREEN}← selected{C_RESET}" if name == current else ""
+                print(f"  {C_BOLD}{i:2d}.{C_RESET} {name}{ch_str}{mark}")
+        print()
+        print(f"  {C_BOLD}[O]{C_RESET} Create a new account via OAuth")
+        print(f"  {C_BOLD}[N]{C_RESET} None — unlink (keep inline credentials)")
+        print(f"  {C_BOLD}[0]{C_RESET} Back")
+        print()
+
+        choice = prompt("Choice").strip().upper()
+        if choice == "0":
+            return
+        elif choice == "O":
+            _add_account_oauth()
+            continue
+        elif choice == "N":
+            supabase_db.update_project(pid, account_id="")
+            if not supabase_db.is_enabled():
+                _sync_local_project(supabase_db.get_project(pid))
+            success("Account unlinked")
+            pause()
+            return
+        elif choice.isdigit() and accounts:
+            idx = int(choice) - 1
+            if 0 <= idx < len(accounts):
+                name = list(accounts.keys())[idx]
+                _link_account_to_project(pid, name)
+                return
+
+
+def _link_account_to_project(pid, name):
+    accounts = _accounts_dict()
+    acct = accounts.get(name)
+    if not acct:
+        error("Account not found")
+        return
+    # Copy the account's credentials onto the project so the whole pipeline
+    # (daily_uploader, youtube_api) uses them unchanged.
+    supabase_db.update_project(pid,
+        account_id=name,
+        yt_client_id=acct.get("client_id", ""),
+        yt_client_secret=acct.get("client_secret", ""),
+        yt_refresh_token=acct.get("refresh_token", ""))
+    if not supabase_db.is_enabled():
+        _sync_local_project(supabase_db.get_project(pid))
+    success(f"Upload account set to '{name}'")
+    pause()
+
+
+# ─── Setup screen ─────────────────────────────────────────────────────────────
+
+FIELD_SPEC = [
+    ("yt_client_id", "YouTube Client ID", "str"),
+    ("yt_client_secret", "YouTube Client Secret", "str"),
+    ("yt_refresh_token", "YouTube Refresh Token", "str"),
+    ("shortlink_provider", "Shortlink provider (vplink/cleanuri/tinyurl)", "str"),
+    ("shortlink_api_key", "Shortlink API key", "str"),
+    ("comment_moderation", "Comment mode (heldForReview/published)", "str"),
+    ("mirror_title_prefix", "Title prefix (optional)", "str"),
+    ("custom_title", "Custom title (optional, {title} {url})", "str"),
+    ("custom_description", "Custom description (optional, {title} {url})", "str"),
+    ("custom_comment", "Custom comment (optional, {url} download link)", "str"),
+]
+
+
+def _display_val(val, sensitive=False):
+    if val is None or val == "":
+        return f"{C_DIM}(empty){C_RESET}"
+    val = str(val)
+    if sensitive:
+        return "*" * 8 + (val[-4:] if len(val) > 4 else "")
+    return val if len(val) < 50 else val[:20] + "..." + val[-10:]
+
+
+FIELD_VALIDATORS = {
+    "shortlink_provider": lambda v: (doctor.fuzzy(v, doctor.PROVIDERS) or "",
+                                     "use one of vplink / cleanuri / tinyurl"),
+    "comment_moderation": lambda v: (doctor.fuzzy(v, doctor.COMMENT_MODES) or "",
+                                     "use heldForReview or published"),
+}
+
+
+def screen_setup(project):
+    pid = project["id"]
+
+    while True:
+        p = supabase_db.get_project(pid)
+        if not p:
+            error("Project not found")
+            return
+
+        clear()
+        banner()
+        print(f"\n  {C_BOLDWHITE}CONFIGURE — {p['name']}{C_RESET}")
+        divider()
+
+        for i, (key, label, kind) in enumerate(FIELD_SPEC, 1):
+            val = p.get(key, "")
+            sensitive = "secret" in key or "token" in key or "key" in key or "refresh" in key
+            if kind == "bool":
+                display = f"{C_GREEN}✓ enabled{C_RESET}" if _is_true(val) else f"{C_DIM}✗ disabled{C_RESET}"
+            else:
+                display = _display_val(val, sensitive)
+            print(f"  {C_BOLD}[{i:2d}]{C_RESET} {label:35s} {display}")
+
+        print()
+        print(f"  {C_BOLD}[A]{C_RESET} Pick a saved YouTube account (fills ID/secret/token)")
+        print(f"  {C_BOLD}[O]{C_RESET} Run YouTube OAuth login")
+        print(f"  {C_BOLD}[B]{C_RESET} Back")
+        print()
+
+        choice = prompt("Choice").strip().upper()
+
+        if choice == "B":
+            return
+        elif choice == "A":
+            accounts = _accounts_dict()
+            name = _pick_account(accounts, "Link")
+            if name:
+                _link_account_to_project(pid, name)
+            continue
+        elif choice == "O":
+            _do_oauth(p)
+        elif choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(FIELD_SPEC):
+                key, label, kind = FIELD_SPEC[idx]
+                old = p.get(key, "")
+                if kind == "bool":
+                    new_val = not _is_true(old)
+                    try:
+                        supabase_db.update_project(pid, **{key: new_val})
+                        success(f"{label}: {'enabled' if new_val else 'disabled'}")
+                        p[key] = new_val
+                        _sync_local_project(supabase_db.get_project(pid) or p)
+                    except Exception as e:
+                        error(f"Failed: {e}")
+                    continue
+                new_val = prompt(f"{label}", old if old != "" else None)
+                if new_val is None:
+                    continue
+                new_val = new_val.strip()
+                corrected = ""
+                if key == "yt_client_id":
+                    cleaned = doctor.sanitize_client_id(new_val)
+                    corrected = cleaned != new_val
+                    new_val = cleaned
+                if key == "shortlink_provider":
+                    canon = doctor.fuzzy(new_val, doctor.PROVIDERS)
+                    if canon:
+                        corrected = canon != new_val
+                        new_val = canon
+                    else:
+                        error(f"{label}: use one of {', '.join(doctor.PROVIDERS)}")
+                        continue
+                if key == "comment_moderation":
+                    canon = doctor.fuzzy(new_val, doctor.COMMENT_MODES)
+                    if canon:
+                        corrected = canon != new_val
+                        new_val = canon
+                    else:
+                        error(f"{label}: use heldForReview or published")
+                        continue
+                if kind == "int" and new_val != "":
+                    try:
+                        num_val = int(float(new_val))
+                    except (ValueError, TypeError):
+                        error(f"{label} must be a valid number")
+                        continue
+                else:
+                    num_val = new_val
+
+                if num_val == old and not corrected:
+                    continue
+                try:
+                    if kind == "int":
+                        supabase_db.update_project(pid, **{key: num_val})
+                    else:
+                        supabase_db.update_project(pid, **{key: new_val})
+                    hint = _auto(corrected)
+                    success(f"{label} saved{hint}")
+                    p[key] = num_val if kind == "int" else new_val
+                    _sync_local_project(supabase_db.get_project(pid) or p)
+                except Exception as e:
+                    error(f"Failed: {e}")
+                    continue
+
+                # ── Auto-actions ──────────────────────────────────────────
+                if key in ("yt_client_id", "yt_client_secret") and p.get("yt_client_id") and p.get("yt_client_secret"):
+                    if confirm("Run YouTube OAuth login now to get refresh token?"):
+                        p = supabase_db.get_project(pid) or p
+                        _do_oauth(p)
+
+
+# ─── Doctor screen ────────────────────────────────────────────────────────────
+
+def _render_checks(checks):
+    passed = fixes = issues = 0
+    for c in checks:
+        if c["ok"]:
+            print(f"  {C_GREEN}[OK]{C_RESET}   [{c['section']}] {c['label']}" + (f" — {c['note']}" if c.get("note") else ""))
+            passed += 1
+        elif c.get("fix"):
+            fixes += 1
+            print(f"  {C_GREEN}[FIX]{C_RESET}  [{c['section']}] {c['label']} — {c['fix'][3]}")
+        else:
+            issues += 1
+            print(f"  {C_RED}[ISSUE]{C_RESET} [{c['section']}] {c['label']}" + (f" — {c.get('note')}" if c.get("note") else ""))
+    return passed, fixes, issues
+
+
+def screen_doctor(project=None):
+    clear()
+    banner()
+    if project:
+        print(f"\n  {C_BOLDWHITE}DOCTOR — {project['name']}{C_RESET}")
     else:
-        error("OAuth timed out or no code received")
+        print(f"\n  {C_BOLDWHITE}DOCTOR — FULL SYSTEM CHECK{C_RESET}")
+    print(f"  {C_DIM}Live checks + auto-correction of small mistakes...{C_RESET}\n")
+
+    checks = []
+    pid = ""
+    if project:
+        pid = project["id"]
+        p = supabase_db.get_project(pid) or project
+        checks = doctor.check_project(p)
+        account_id = p.get("account_id", "")
+        if account_id:
+            account = supabase_db.get_account(account_id)
+            if account:
+                checks.extend(doctor.check_account(account))
+    else:
+        accounts = _accounts_dict().values()
+        checks = doctor.check_accounts(list(accounts))
+        try:
+            projects = supabase_db.list_projects()
+        except Exception:
+            projects = []
+        if projects:
+            for p in projects:
+                checks.extend(doctor.check_project(p))
+        elif not supabase_db.is_enabled():
+            cfg = config.load()
+            synthetic = {"id": "", "name": "Local config",
+                         **{k: cfg.get(k, "") for k in
+                            ("yt_client_id", "yt_client_secret", "yt_refresh_token")}}
+            checks.extend(doctor.check_project(synthetic))
+
+    passed, fixes, issues = _render_checks(checks)
+    print()
+    if fixes:
+        print(f"  {C_GREEN}{fixes} auto-fix(es) available{C_RESET}")
+        if confirm("Apply all auto-fixes now?"):
+            applied, failures = doctor.apply_fixes(pid, checks)
+            success(f"{applied} auto-fix(es) applied")
+            for f in failures:
+                warn(f"  could not apply: {f}")
+    if issues:
+        warn(f"{issues} issue(s) remain — fix manually from the hints above")
+    if passed:
+        info(f"{passed} check(s) passed")
+    if not fixes and issues == 0:
+        success("All checks passed!")
+    print()
+    pause()
+
+
+# ─── OAuth (project-scoped) ──────────────────────────────────────────────────
+
+def _do_oauth(project):
+    cid = project.get("yt_client_id")
+    csec = project.get("yt_client_secret")
+    if not cid or not csec:
+        error("Set YouTube Client ID and Client Secret first (fields 1 & 2)")
+        pause()
+        return
+    rt = _run_oauth_flow(doctor.sanitize_client_id(cid), csec)
+    if rt:
+        supabase_db.update_project(project["id"], yt_refresh_token=rt)
+        if not supabase_db.is_enabled():
+            _sync_local_project(supabase_db.get_project(project["id"]) or project)
+        success("Refresh token obtained and saved to project!")
+        warn("Refresh token expires in 7 days — re-run OAuth before expiry")
+    pause()
+
 
 # ─── Work Queue Viewer ─────────────────────────────────────────────────────
 
@@ -1250,39 +1221,7 @@ def _show_verify(project):
     except Exception as e:
         error(f"Verify failed: {e}")
     print()
-    prompt("Press Enter to return", default="")
-    return
-
-
-def _show_work_queue(project):
-    pid = str(project["id"])
-    while True:
-        clear()
-        banner()
-        print(f"\n  {C_BOLDWHITE}WORK QUEUE — {project['name']}{C_RESET}")
-        divider()
-        stats = supabase_db.get_work_stats(project_id=pid)
-        print(f"  Today: {stats['done']} done  /  {stats['pending']} pending  /  {stats['failed']} failed  (total {stats['total']})")
-        print()
-        items = supabase_db.get_work_queue(project_id=pid, limit=20)
-        if not items:
-            print(f"  {C_DIM}(no items){C_RESET}")
-        else:
-            print(f"  {C_DIM}{'ID':>4}  {'TYPE':<8}  {'STATUS':<12}  {'TITLE':<50}  {'ERROR'}{C_RESET}")
-            for it in items:
-                iid = it.get('id', '')
-                wtype = it.get('work_type', '')[:8]
-                status = it.get('status', '')
-                title = (it.get('title') or it.get('video_id') or '')[:50]
-                err = (it.get('error') or '')[:30]
-                color = C_GREEN if status == 'done' else (C_RED if status == 'failed' else C_YELLOW if status == 'in_progress' else C_DIM)
-                print(f"  {color}{iid:>4}  {wtype:<8}  {status:<12}  {title:<50}  {err}{C_RESET}")
-        print()
-        print(f"  {C_BOLD}[R]{C_RESET} Refresh  {C_BOLD}[B]{C_RESET} Back")
-        print()
-        choice = prompt("Choice").strip().upper()
-        if choice == "B":
-            return
+    pause()
 
 
 # ─── Instant Upload ─────────────────────────────────────────────────────────
@@ -1293,53 +1232,18 @@ def _do_instant_upload(project):
         error("google-api-python-client not installed")
         return
 
-    raw_channels = project.get("channels", "").strip()
-    if not raw_channels:
-        error("No channels configured for this project")
-        input("\n  Press Enter to continue...")
+    raw = prompt("Enter YouTube URL to upload")
+    if not raw:
+        error("No URL entered")
+        pause()
         return
-    channels = [_parse_channel(u) for u in raw_channels.replace(",", "\n").split("\n") if u.strip()]
 
-    raw = prompt("Enter YouTube URL to upload (or press Enter to pick from source channels)")
-    video_id = None
-
-    if raw:
-        m = re.search(r'(?:v=|youtu\.be/|youtube\.com/embed/)([\w-]{11})', raw)
-        if not m:
-            error("Invalid YouTube URL")
-            input("\n  Press Enter to continue...")
-            return
-        video_id = m.group(1)
-    else:
-        youtube = youtube_api.get_client()
-        all_vids = []
-        for ch in channels:
-            if not ch:
-                continue
-            playlist_id = youtube_api.get_channel_uploads_playlist(youtube, ch)
-            if not playlist_id:
-                continue
-            recent = youtube_api.get_recent_videos(youtube, playlist_id, max_results=5)
-            for v in recent:
-                all_vids.append(v)
-        if not all_vids:
-            error("No videos found on source channels")
-            input("\n  Press Enter to continue...")
-            return
-        clear()
-        banner()
-        print(f"\n  {C_BOLDWHITE}PICK A VIDEO TO UPLOAD{C_RESET}")
-        divider()
-        for i, v in enumerate(all_vids, 1):
-            print(f"  {C_BOLD}[{i}]{C_RESET} {v.get('title', '?')[:60]}")
-            print(f"       {v['video_id']} — {v.get('channel_title', '?')}")
-        print()
-        pick = prompt("Pick a video (1-{})".format(len(all_vids)))
-        if not pick or not pick.isdigit() or int(pick) < 1 or int(pick) > len(all_vids):
-            error("Invalid choice")
-            input("\n  Press Enter to continue...")
-            return
-        video_id = all_vids[int(pick) - 1]["video_id"]
+    m = re.search(r'(?:v=|youtu\.be/|youtube\.com/embed/)([\w-]{11})', raw)
+    if not m:
+        error("Invalid YouTube URL")
+        pause()
+        return
+    video_id = m.group(1)
 
     old_pid = config.PROJECT_ID
     config.PROJECT_ID = pid
@@ -1349,11 +1253,11 @@ def _do_instant_upload(project):
         details = youtube_api.get_video_details(youtube, video_id)
         if not details:
             error(f"Could not fetch details for {video_id}")
-            input("\n  Press Enter to continue...")
+            pause()
             return
         if details.get("duration", 0) < 60:
             warn(f"This is a short ({details['duration']}s) — only long-form videos recommended")
-            if not confirm("Upload anyway?"):
+            if not confirm("Upload anyway?", default_no=False):
                 return
 
         title = details.get("title", "")
@@ -1364,7 +1268,7 @@ def _do_instant_upload(project):
         dl_result = download_helpers.download_video(source_url)
         if not dl_result:
             error("Download failed")
-            input("\n  Press Enter to continue...")
+            pause()
             return
         video_path = dl_result["path"]
 
@@ -1372,10 +1276,10 @@ def _do_instant_upload(project):
         processed = daily_uploader.process_video(video_path)
         if not processed:
             error("Processing failed or duplicate")
-            input("\n  Press Enter to continue...")
+            pause()
             return
 
-        info("Uploading (bypasses cooldown)...")
+        info("Uploading...")
         vid = daily_uploader.upload_daily(
             processed, title=title, description=description,
             tags=tags, source_url=source_url, force=True,
@@ -1385,11 +1289,12 @@ def _do_instant_upload(project):
             success(f"Uploaded: https://www.youtube.com/watch?v={vid}")
         else:
             error("Upload failed")
-        input("\n  Press Enter to continue...")
+        pause()
     finally:
         config.PROJECT_ID = old_pid
 
-# ─── Screen: Status (project-scoped) ─────────────────────────────────────────
+
+# ─── Status (project-scoped) ─────────────────────────────────────────────────
 
 def screen_status(project):
     clear()
@@ -1414,101 +1319,37 @@ def screen_status(project):
         print(f"  {C_RED}[FAIL]{C_RESET} {label}" + (f" — {msg}" if msg else ""))
         if fix: print(f"           {C_DIM}Fix: {fix}{C_RESET}")
 
-    # 1. Project fields
     print(f"  {C_DIM}── Project Credentials ──{C_RESET}")
     for key, label in [
         ("yt_client_id", "YouTube Client ID"),
         ("yt_client_secret", "YouTube Client Secret"),
         ("yt_refresh_token", "YouTube Refresh Token"),
-        ("github_token", "GitHub Token"),
-        ("github_repo", "GitHub Repo"),
     ]:
         if p.get(key):
             _ok(f"{label} set")
         else:
-            _fail(f"{label} not set", fix="Fill in Setup screen and [D]eploy")
+            _fail(f"{label} not set", fix="Fill in Configure screen")
 
-    nch = len([c for c in p.get("channels", "").split(",") if c.strip()])
-    if nch:
-        _ok(f"Channels: {nch} configured")
+    account_id = p.get("account_id", "")
+    if account_id:
+        acct = _accounts_dict().get(account_id)
+        if acct:
+            _ok(f"Upload account: {account_id}", f"{acct.get('channel_name', '')} — {_account_status_str(acct)}")
+        else:
+            _fail("Upload account missing", fix="Pick a valid account in project menu [2]")
     else:
-        _fail("No channels configured", fix="Add channel URLs in Setup field 6")
+        _warn("No upload account linked", fix="Project menu [2] to pick a saved account")
 
-    # 2. Database connection (hybrid: Supabase or local JSON)
     print(f"\n  {C_DIM}── Database ──{C_RESET}")
     try:
-        test = supabase_db.get_upload_state(project_id=project["id"])
+        supabase_db.get_upload_state(project_id=project["id"])
         if supabase_db.is_enabled():
             _ok("Connected to Supabase (cloud mode)")
         else:
             _ok("Local JSON store — data in ~/.yt-mirror/")
-        ws = test.get("warmup_start")
-        wc = test.get("warmup_complete", False)
-        if ws:
-            start = datetime.fromisoformat(ws)
-            now = datetime.now(timezone.utc)
-            if start.tzinfo is None:
-                start = start.replace(tzinfo=timezone.utc)
-            days = (now - start).days
-            wd = int(p.get("warmup_days", 0))
-            if wc or wd <= 0:
-                _ok(f"Warmup complete (started {ws[:10]})")
-            else:
-                remain = wd - days
-                if remain < 0:
-                    _ok(f"Warmup: day {days}/{wd} — auto-completing soon")
-                else:
-                    _ok(f"Warmup: day {days}/{wd} ({remain} days left, started {ws[:10]})")
-        else:
-            _warn("Warmup not started", fix="Deploy and let workflow run, or press [W]")
     except Exception as e:
         _fail("Database read failed", str(e)[:80])
 
-    # 3. GitHub access
-    print(f"\n  {C_DIM}── GitHub ──{C_RESET}")
-    token = p.get("github_token")
-    repo = p.get("github_repo")
-    if token and repo:
-        try:
-            req = urllib.request.Request(
-                f"https://api.github.com/repos/{repo}",
-                headers={"Authorization": f"token {token}", "User-Agent": "yt-mirror-cli"},
-            )
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = json.loads(resp.read())
-                _ok(f"Repo: {repo} — {data.get('description', '')[:50]}")
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
-                _fail(f"Repo {repo} not found", fix="Check repo name or create it")
-            elif e.code == 401:
-                _fail("GitHub token invalid", fix="Regenerate token and update Setup")
-            else:
-                _fail(f"GitHub API error: {e.code}", fix="Check token has repo scope")
-        except Exception as e:
-            _fail(f"GitHub unreachable: {e}")
-
-        try:
-            req = urllib.request.Request(
-                f"https://api.github.com/repos/{repo}/actions/secrets",
-                headers={"Authorization": f"token {token}", "User-Agent": "yt-mirror-cli"},
-            )
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = json.loads(resp.read())
-                secret_names = [s["name"] for s in data.get("secrets", [])]
-                required = ["SUPABASE_URL", "SUPABASE_SERVICE_KEY", "YT_CLIENT_ID",
-                            "YT_CLIENT_SECRET", "YT_REFRESH_TOKEN", "GH_PAT", "CHANNELS", "SETTINGS"]
-                optional = ["PROXY_SUPABASE_URL", "PROXY_SUPABASE_SERVICE_KEY"]
-                for s in required:
-                    _ok(f"Secret: {s}") if s in secret_names else _fail(f"Secret: {s} missing", fix="Run [D]eploy")
-                for s in optional:
-                    if s in secret_names:
-                        _ok(f"Secret: {s}")
-        except Exception as e:
-            _warn(f"Could not check secrets: {e}")
-    else:
-        _fail("GitHub not configured", fix="Set token and repo in Setup and [D]eploy")
-
-    # 4. YouTube OAuth
     print(f"\n  {C_DIM}── YouTube ──{C_RESET}")
     cid = p.get("yt_client_id")
     csec = p.get("yt_client_secret")
@@ -1540,145 +1381,19 @@ def screen_status(project):
     else:
         _fail("YouTube OAuth incomplete", fix="Set client_id, secret, and run [O] OAuth login")
 
-    # 5. Deployment
-    print(f"\n  {C_DIM}── Deployment ──{C_RESET}")
-    if p.get("deployed_at"):
-        _ok(f"Deployed — last deploy at {p['deployed_at'][:16].replace('T', ' ')}")
-    else:
-        _warn("Not deployed yet", fix="Complete Setup and press [D]eploy")
-
     divider()
     total = ok_count + warn_count + fail_count
     print(f"  {C_GREEN}{ok_count} passed{C_RESET}  {C_YELLOW}{warn_count} warnings{C_RESET}  {C_RED}{fail_count} failures{C_RESET} / {total}")
     if fail_count:
-        print(f"\n  {C_RED}Fix failures above, then re-run [S] Status to verify.{C_RESET}")
+        print(f"\n  {C_RED}Fix failures above, then re-run [4] Status to verify.{C_RESET}")
     elif warn_count:
         print(f"\n  {C_YELLOW}Warnings are non-critical but should be reviewed.{C_RESET}")
     else:
-        print(f"\n  {C_GREEN}All good! Ready to deploy or already deployed.{C_RESET}")
+        print(f"\n  {C_GREEN}All good! Ready to upload.{C_RESET}")
 
     print(f"\n  {C_DIM}Press Enter to return...{C_RESET}")
     input()
 
-# ─── Screen: Logs (project-scoped) ──────────────────────────────────────────
-
-def screen_logs(project):
-    token = project.get("github_token")
-    repo = project.get("github_repo")
-    if not token or not repo:
-        error("GitHub not configured for this project")
-        input("\n  Press Enter to continue...")
-        return
-
-    parts = repo.split("/")
-    if len(parts) != 2:
-        error(f"Invalid repo format: {repo} (expected owner/name)")
-        input("\n  Press Enter to continue...")
-        return
-    owner, rn = parts[0], parts[1]
-
-    loading(f"Fetching runs for {rn}...")
-    try:
-        runs = github_api.get_runs(owner, rn, token, per=10)
-    except Exception as e:
-        error(f"Failed to fetch runs: {e}")
-        input("\n  Press Enter to continue...")
-        return
-
-    if not runs:
-        print(f"\n  {C_DIM}No workflow runs found.{C_RESET}")
-        input("\n  Press Enter to continue...")
-        return
-
-    while True:
-        clear()
-        banner()
-        print(f"\n  {C_BOLDWHITE}WORKFLOW LOGS — {rn}{C_RESET}")
-        divider()
-        print()
-        for i, run in enumerate(runs, 1):
-            conclusion = run.get("conclusion") or run.get("status", "unknown")
-            sc = C_GREEN if conclusion == "success" else C_RED if conclusion == "failure" else C_YELLOW
-            created = run.get("created_at", "")[:16].replace("T", " ")
-            print(f"  {C_BOLD}{i:2d}.{C_RESET} #{run.get('run_number', run.get('number', '?')):>4}  {sc}{conclusion:10s}{C_RESET}  {created}")
-        print(f"\n  {C_BOLD}[N]{C_RESET} View log for run N")
-        print(f"  {C_BOLD}[R]{C_RESET} Refresh")
-        print(f"  {C_BOLD}[0]{C_RESET} Back\n")
-
-        choice = prompt("Choice").strip().upper()
-        if choice == "0":
-            return
-        elif choice == "R":
-            loading("Refreshing runs...")
-            try:
-                runs = github_api.get_runs(owner, rn, token, per=10)
-            except Exception:
-                pass
-            continue
-        elif choice.isdigit():
-            idx = int(choice) - 1
-            if 0 <= idx < len(runs):
-                run = runs[idx]
-                loading(f"Fetching logs for run #{run.get('run_number', run.get('number', '?'))}...")
-                logs = github_api.get_run_logs(owner, rn, run["id"], token)
-                if not logs:
-                    print(f"\n  {C_DIM}No logs available.{C_RESET}")
-                    input("\n  Press Enter to continue...")
-                    continue
-                for name, content in logs.items():
-                    print(f"\n  {C_CYAN}{'─' * 56}{C_RESET}")
-                    print(f"  {C_BOLD}{name}{C_RESET}")
-                    print(f"  {C_CYAN}{'─' * 56}{C_RESET}")
-                    lines = content.split("\n")
-                    for line in lines[-LOG_MAX_LINES:]:
-                        print(f"  {C_DIM}{line}{C_RESET}")
-                    if len(lines) > LOG_MAX_LINES:
-                        print(f"  {C_DIM}... ({len(lines) - LOG_MAX_LINES} lines hidden){C_RESET}")
-                input("\n  Press Enter to continue...")
-
-# ─── Screen: Remove Deployment (project-scoped) ──────────────────────────────
-
-def screen_remove_deployment(project):
-    clear()
-    banner()
-    print(f"\n  {C_BOLDWHITE}REMOVE DEPLOYMENT — {project['name']}{C_RESET}")
-    divider()
-
-    repo = project.get("github_repo")
-    token = project.get("github_token")
-
-    if not repo or not token:
-        error("GitHub repo or token not configured for this project")
-        input("\n  Press Enter to continue...")
-        return
-
-    parts = repo.split("/")
-    if len(parts) != 2:
-        error(f"Invalid repo format: {repo}")
-        input("\n  Press Enter to continue...")
-        return
-    owner, rn = parts[0], parts[1]
-
-    print(f"\n  {C_DIM}This will permanently delete:{C_RESET}")
-    print(f"  {C_DIM}• GitHub repo: {repo}{C_RESET}")
-    print(f"  {C_DIM}• All workflow runs and logs{C_RESET}")
-    print(f"  {C_DIM}• Deployment record in Supabase{C_RESET}\n")
-
-    if not confirm(f"Delete entire repo {repo}?"):
-        return
-
-    loading(f"Deleting {repo}...")
-    try:
-        resp = github_api.delete_repo(owner, rn, token)
-        if isinstance(resp, dict) and resp.get("error"):
-            error(f"GitHub API error: {resp.get('message', '')}")
-        else:
-            success(f"Deleted repo {repo}")
-            supabase_db.update_project(project["id"], deployed_at=None)
-    except Exception as e:
-        error(f"Failed: {e}")
-
-    input("\n  Press Enter to continue...")
 
 # ─── Entry Point ──────────────────────────────────────────────────────────────
 
@@ -1694,10 +1409,10 @@ if __name__ == "__main__":
         banner()
         print(f"\n  {C_BOLD}Running in LOCAL mode{C_RESET}")
         print(f"  {C_DIM}All project data is stored as JSON in {DATA_DIR}.{C_RESET}")
-        print(f"  {C_DIM}Press [C] in the project list to connect Supabase for cloud deploy.{C_RESET}\n")
+        print(f"  {C_DIM}Use main menu [4] to connect Supabase for cloud storage.{C_RESET}\n")
 
     try:
-        project_list_screen()
+        main_menu()
     except (KeyboardInterrupt, EOFError):
         print(f"\n\n  {C_DIM}Bye!{C_RESET}\n")
         sys.exit(0)

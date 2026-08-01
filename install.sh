@@ -16,7 +16,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
 # Point this at the new repo once it exists (or set YT_REPO_URL when running).
 REPO_URL="${YT_REPO_URL:-https://github.com/adittaya/workflow-shorturl-yt.git}"
 
-if [ -f "$SCRIPT_DIR/mirror.py" ]; then
+if [ -f "$SCRIPT_DIR/yt_auto.py" ]; then
     COPY_SRC="$SCRIPT_DIR"
     GIT_REMOTE=$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || echo "$REPO_URL")
     echo "  Source: local clone"
@@ -73,7 +73,7 @@ fi
 # --- Data dir ---
 echo "[5/7] Setting up data directory..."
 mkdir -p "$INSTALL_DIR"
-for f in config.json channels.json state.json accounts.json github_accounts.json settings.json deployments.json status_cache.json shortlink_keys.json upload_state.json daily_log.json warmup_state.json bgm_index.json; do
+for f in config.json accounts.json settings.json shortlink_keys.json upload_state.json daily_log.json bgm_index.json; do
     [ -f "$INSTALL_DIR/$f" ] || echo "{}" > "$INSTALL_DIR/$f"
 done
 mkdir -p "$INSTALL_DIR/bgm" "$INSTALL_DIR/separated" "$INSTALL_DIR/processed"
@@ -85,15 +85,9 @@ mkdir -p "$SRC_DIR"
 # an existing installation.
 cp "$COPY_SRC"/*.py "$SRC_DIR/" 2>/dev/null || true
 cp "$COPY_SRC"/*.txt "$SRC_DIR/" 2>/dev/null || true
-cp "$COPY_SRC"/*.json "$SRC_DIR/" 2>/dev/null || true
 cp "$COPY_SRC"/*.sql "$SRC_DIR/" 2>/dev/null || true
 cp "$COPY_SRC/install.sh" "$SRC_DIR/" 2>/dev/null || true
 cp "$COPY_SRC/launcher.sh" "$SRC_DIR/" 2>/dev/null || true
-
-# Copy workflows
-if [ -d "$COPY_SRC/.github" ]; then
-    cp -r "$COPY_SRC/.github" "$SRC_DIR/"
-fi
 
 # --- Save metadata ---
 META_FILE="$INSTALL_DIR/.install_meta.json"
@@ -132,8 +126,8 @@ echo "  Binary:  $BIN"
 echo "  Auto-update: enabled (pulls latest on every launch)"
 echo ""
 echo "Run:"
-echo "  yt-auto run                # Continuous daemon (detect → upload → sleep)"
+echo "  yt-auto upload <URL>       # Download → process → upload a video"
 echo "  yt-auto setup              # Guided first-time configuration"
 echo "  yt-auto oauth              # YouTube OAuth login (get refresh token)"
 echo "  yt-auto status             # Current state summary"
-echo "  python3 $SRC_DIR/tui.py             # Legacy cloud-management TUI"
+echo "  python3 $SRC_DIR/tui.py    # Management TUI (projects, accounts, doctor)"

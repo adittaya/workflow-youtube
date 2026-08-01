@@ -73,7 +73,7 @@ def download_video(url, output_dir=None):
 def _cookies_arg():
     """Resolve a cookies file for yt-dlp: prefer YT_COOKIES_FILE if it exists,
     otherwise materialize the YT_COOKIES secret text into
-    ~/.yt-mirror/cookies.txt (matching the CI workflows' behavior)."""
+    ~/.yt-mirror/cookies.txt."""
     path = os.environ.get("YT_COOKIES_FILE", "")
     if path and os.path.exists(path):
         return path

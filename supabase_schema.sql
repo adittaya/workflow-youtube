@@ -1,7 +1,11 @@
 -- ============================================================================
--- YouTube Mirror Bot — Supabase Schema
+-- YT VIDEO AUTOMATION — Supabase Schema
 -- Run this in your Supabase project SQL editor (https://supabase.com/dashboard)
 -- ============================================================================
+-- Manual upload tool: projects, accounts, upload state/logs, verify + alerts.
+-- The 24/7 tables (channels, channel_cursors, mirror_state, mirror_stats,
+-- work_queue, run_locks) and the github/channel/warmup/schedule/proxy columns
+-- are retired and dropped below.
 
 -- 1. Settings (key-value store, replaces settings.json)
 CREATE TABLE IF NOT EXISTS settings (
@@ -10,107 +14,102 @@ CREATE TABLE IF NOT EXISTS settings (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 2. OAuth accounts (replaces accounts.json)
+-- 2. OAuth accounts (replaces accounts.json) — every saved YouTube account,
+-- with its own credentials, channel identity, health and usage tracking.
 CREATE TABLE IF NOT EXISTS accounts (
   name TEXT PRIMARY KEY,
-  client_id TEXT NOT NULL,
-  client_secret TEXT NOT NULL,
-  refresh_token TEXT NOT NULL,
+  client_id TEXT NOT NULL DEFAULT '',
+  client_secret TEXT NOT NULL DEFAULT '',
+  refresh_token TEXT NOT NULL DEFAULT '',
+  access_token TEXT DEFAULT '',
+  email TEXT DEFAULT '',
   channel_id TEXT DEFAULT '',
   channel_name TEXT DEFAULT '',
+  channel_url TEXT DEFAULT '',
+  avatar_url TEXT DEFAULT '',
+  status TEXT DEFAULT 'active',
+  last_verified TIMESTAMPTZ,
+  last_error TEXT DEFAULT '',
+  token_expires_at TIMESTAMPTZ,
+  uploads_count BIGINT DEFAULT 0,
+  notes TEXT DEFAULT '',
   added_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS access_token TEXT DEFAULT '';
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS email TEXT DEFAULT '';
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS channel_url TEXT DEFAULT '';
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS avatar_url TEXT DEFAULT '';
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active';
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS last_verified TIMESTAMPTZ;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS last_error TEXT DEFAULT '';
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS token_expires_at TIMESTAMPTZ;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS uploads_count BIGINT DEFAULT 0;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS notes TEXT DEFAULT '';
 
--- 3. Tracked channels (replaces channels.json)
-CREATE TABLE IF NOT EXISTS channels (
-  id TEXT PRIMARY KEY,
-  name TEXT DEFAULT '',
-  url TEXT DEFAULT '',
-  enabled BOOLEAN DEFAULT true,
-  added_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- 4. Mirror state — processed videos (replaces state.json "processed")
-CREATE TABLE IF NOT EXISTS mirror_state (
-  id SERIAL,
-  source_channel TEXT NOT NULL,
-  source_video_id TEXT NOT NULL,
-  mirrored_video_id TEXT,
-  original_title TEXT DEFAULT '',
-  mirrored_at TIMESTAMPTZ,
-  comment_id TEXT DEFAULT '',
-  shortened_urls JSONB DEFAULT '{}',
-  project_id TEXT NOT NULL DEFAULT '',
-  UNIQUE(project_id, source_channel, source_video_id)
-);
-
--- 5. Mirror stats (replaces state.json "stats")
-CREATE TABLE IF NOT EXISTS mirror_stats (
-  project_id TEXT NOT NULL DEFAULT '' PRIMARY KEY,
-  total_mirrored INTEGER DEFAULT 0,
-  total_comments INTEGER DEFAULT 0,
-  total_shortened INTEGER DEFAULT 0,
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- 6. Upload / warmup state (replaces upload_state.json)
+-- 3. Upload state (replaces upload_state.json)
 CREATE TABLE IF NOT EXISTS upload_state (
   project_id TEXT NOT NULL DEFAULT '' PRIMARY KEY,
   account_created TIMESTAMPTZ,
-  warmup_start TIMESTAMPTZ,
-  warmup_complete BOOLEAN DEFAULT false,
   first_upload_date DATE,
   total_uploaded INTEGER DEFAULT 0,
   last_upload_date DATE,
   last_upload_hour TIMESTAMPTZ,
   processed_hashes TEXT[] DEFAULT '{}',
-  filled_slots TEXT[] DEFAULT '{}',
-  filled_slots_date DATE,
   yt_client_id TEXT DEFAULT '',
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+ALTER TABLE upload_state DROP COLUMN IF EXISTS warmup_start;
+ALTER TABLE upload_state DROP COLUMN IF EXISTS warmup_complete;
+ALTER TABLE upload_state DROP COLUMN IF EXISTS filled_slots;
+ALTER TABLE upload_state DROP COLUMN IF EXISTS filled_slots_date;
 
--- 7. Projects — multi-project management (all credentials per project, no local files)
+-- 4. Projects — multi-project management (all credentials per project, no local files)
 CREATE TABLE IF NOT EXISTS projects (
   id SERIAL PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
   yt_client_id TEXT DEFAULT '',
   yt_client_secret TEXT DEFAULT '',
   yt_refresh_token TEXT DEFAULT '',
-  github_token TEXT DEFAULT '',
-  github_repo TEXT DEFAULT '',
-  channels TEXT DEFAULT '',
+  account_id TEXT DEFAULT '',
   shortlink_provider TEXT DEFAULT 'vplink',
   shortlink_api_key TEXT DEFAULT '',
-  warmup_days INTEGER DEFAULT 0,
-  warmup_start TEXT DEFAULT '',
   comment_moderation TEXT DEFAULT 'heldForReview',
   mirror_title_prefix TEXT DEFAULT '',
-  proxy_supabase_url TEXT DEFAULT '',
-  proxy_supabase_key TEXT DEFAULT '',
-  deployed_at TIMESTAMPTZ,
+  mirror_description_suffix TEXT DEFAULT '',
+  custom_title TEXT DEFAULT '',
+  custom_description TEXT DEFAULT '',
+  custom_comment TEXT DEFAULT '',
+  privacy_status TEXT DEFAULT 'public',
+  category_id TEXT DEFAULT '22',
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Migration: add proxy Supabase columns to projects
-ALTER TABLE projects ADD COLUMN IF NOT EXISTS proxy_supabase_url TEXT DEFAULT '';
-ALTER TABLE projects ADD COLUMN IF NOT EXISTS proxy_supabase_key TEXT DEFAULT '';
+-- Migration: add columns added after the original deploy
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS account_id TEXT DEFAULT '';
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS mirror_description_suffix TEXT DEFAULT '';
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS custom_title TEXT DEFAULT '';
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS custom_description TEXT DEFAULT '';
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS custom_comment TEXT DEFAULT '';
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS privacy_status TEXT DEFAULT 'public';
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS category_id TEXT DEFAULT '22';
 
--- Migration: add upload scheduling columns
-ALTER TABLE projects ADD COLUMN IF NOT EXISTS uploads_per_day INTEGER DEFAULT 2;
-ALTER TABLE projects ADD COLUMN IF NOT EXISTS initial_backfill INTEGER DEFAULT 5;
-ALTER TABLE projects ADD COLUMN IF NOT EXISTS upload_schedule TEXT DEFAULT '';
+-- Drop retired project columns
+ALTER TABLE projects DROP COLUMN IF EXISTS github_token;
+ALTER TABLE projects DROP COLUMN IF EXISTS github_repo;
+ALTER TABLE projects DROP COLUMN IF EXISTS channels;
+ALTER TABLE projects DROP COLUMN IF EXISTS warmup_days;
+ALTER TABLE projects DROP COLUMN IF EXISTS warmup_start;
+ALTER TABLE projects DROP COLUMN IF EXISTS deployed_at;
+ALTER TABLE projects DROP COLUMN IF EXISTS uploads_per_day;
+ALTER TABLE projects DROP COLUMN IF EXISTS initial_backfill;
+ALTER TABLE projects DROP COLUMN IF EXISTS upload_schedule;
+ALTER TABLE projects DROP COLUMN IF EXISTS proxy_supabase_url;
+ALTER TABLE projects DROP COLUMN IF EXISTS proxy_supabase_key;
+ALTER TABLE projects DROP COLUMN IF EXISTS proxy_enabled;
 
--- Migration: add filled_slots to upload_state (persist completed schedule slots)
-ALTER TABLE upload_state ADD COLUMN IF NOT EXISTS filled_slots TEXT[] DEFAULT '{}';
-
--- Migration: track which date filled_slots belongs to (resets schedule daily)
-ALTER TABLE upload_state ADD COLUMN IF NOT EXISTS filled_slots_date DATE;
-
--- 9. Daily upload logs (replaces daily_log.json)
+-- 5. Daily upload logs (replaces daily_log.json)
 CREATE TABLE IF NOT EXISTS upload_logs (
   id SERIAL PRIMARY KEY,
   upload_date DATE NOT NULL,
@@ -119,99 +118,49 @@ CREATE TABLE IF NOT EXISTS upload_logs (
   title TEXT DEFAULT '',
   short_url TEXT DEFAULT '',
   comment_id TEXT DEFAULT '',
+  source_video_id TEXT DEFAULT '',
+  source_channel TEXT DEFAULT '',
   project_id TEXT DEFAULT '',
+  account_name TEXT DEFAULT '',
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
+ALTER TABLE upload_logs ADD COLUMN IF NOT EXISTS account_name TEXT DEFAULT '';
+ALTER TABLE upload_logs ADD COLUMN IF NOT EXISTS source_video_id TEXT DEFAULT '';
+ALTER TABLE upload_logs ADD COLUMN IF NOT EXISTS source_channel TEXT DEFAULT '';
 
--- 10. Channel cursor — last checked video per channel (from monitor)
-CREATE TABLE IF NOT EXISTS channel_cursors (
+-- 6. Verify checks — latest result of every self-check, per project
+CREATE TABLE IF NOT EXISTS verify_checks (
   project_id TEXT NOT NULL DEFAULT '',
-  channel_id TEXT NOT NULL,
-  last_video_id TEXT DEFAULT '',
-  last_checked TIMESTAMPTZ,
-  updated_at TIMESTAMPTZ DEFAULT NOW(),
-  PRIMARY KEY (project_id, channel_id)
+  check_name TEXT NOT NULL,
+  status TEXT DEFAULT 'ok',
+  message TEXT DEFAULT '',
+  details JSONB DEFAULT '{}',
+  checked_at TIMESTAMPTZ DEFAULT NOW(),
+  PRIMARY KEY (project_id, check_name)
 );
 
--- 11. Work queue / checklist — tracks each work item (detect/upload) with status
-CREATE TABLE IF NOT EXISTS work_queue (
+-- 7. Alerts — recurring issues, unresolved until fixed
+CREATE TABLE IF NOT EXISTS alerts (
   id BIGSERIAL PRIMARY KEY,
   project_id TEXT NOT NULL DEFAULT '',
-  work_type TEXT NOT NULL DEFAULT 'upload',
-  status TEXT NOT NULL DEFAULT 'pending',
-  video_id TEXT DEFAULT '',
-  source_url TEXT DEFAULT '',
-  title TEXT DEFAULT '',
-  slot_time TEXT DEFAULT '',
-  error TEXT DEFAULT '',
+  severity TEXT DEFAULT 'warn',
+  check_name TEXT DEFAULT '',
+  message TEXT DEFAULT '',
+  details JSONB DEFAULT '{}',
   created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
+  resolved_at TIMESTAMPTZ,
+  resolved_by TEXT DEFAULT ''
 );
 
--- 12. Run locks — prevents parallel CI runs from uploading at the same time
-CREATE TABLE IF NOT EXISTS run_locks (
-  project_id TEXT PRIMARY KEY,
-  owner TEXT DEFAULT '',
-  acquired_at TIMESTAMPTZ DEFAULT NOW(),
-  expires_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
+-- ─── Retired 24/7 tables ────────────────────────────────────────────────────
+DROP TABLE IF EXISTS channel_cursors;
+DROP TABLE IF EXISTS channels;
+DROP TABLE IF EXISTS mirror_state;
+DROP TABLE IF EXISTS mirror_stats;
+DROP TABLE IF EXISTS work_queue;
+DROP TABLE IF EXISTS run_locks;
 
 -- Indexes for performance
-CREATE INDEX IF NOT EXISTS idx_mirror_state_source ON mirror_state(project_id, source_channel, source_video_id);
 CREATE INDEX IF NOT EXISTS idx_upload_logs_date ON upload_logs(project_id, upload_date DESC);
 CREATE INDEX IF NOT EXISTS idx_upload_logs_time ON upload_logs(upload_time DESC);
-CREATE INDEX IF NOT EXISTS idx_work_queue_status ON work_queue(project_id, status, created_at DESC);
-
--- ─── Migration: add project_id to existing tables ─────────────────────────
-ALTER TABLE mirror_state ADD COLUMN IF NOT EXISTS project_id TEXT NOT NULL DEFAULT '';
-ALTER TABLE mirror_stats ADD COLUMN IF NOT EXISTS project_id TEXT NOT NULL DEFAULT '';
-ALTER TABLE upload_state ADD COLUMN IF NOT EXISTS project_id TEXT NOT NULL DEFAULT '';
-ALTER TABLE upload_logs ADD COLUMN IF NOT EXISTS project_id TEXT NOT NULL DEFAULT '';
-ALTER TABLE channel_cursors ADD COLUMN IF NOT EXISTS project_id TEXT NOT NULL DEFAULT '';
-
--- Update constraints for multi-project isolation
-ALTER TABLE mirror_state DROP CONSTRAINT IF EXISTS mirror_state_source_channel_source_video_id_key;
-ALTER TABLE mirror_state DROP CONSTRAINT IF EXISTS mirror_state_pid_source;
-ALTER TABLE mirror_state ADD CONSTRAINT mirror_state_pid_source UNIQUE (project_id, source_channel, source_video_id);
-
-ALTER TABLE channel_cursors DROP CONSTRAINT IF EXISTS channel_cursors_pkey;
-ALTER TABLE channel_cursors ADD PRIMARY KEY (project_id, channel_id);
-
--- Handle upload_state and mirror_stats transitioning from id-based to project_id-based PK
--- Only needed if old-style tables (with id SERIAL) still exist
-DO $$
-BEGIN
-  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='upload_state' AND column_name='id') THEN
-    ALTER TABLE upload_state DROP CONSTRAINT IF EXISTS upload_state_pkey;
-    ALTER TABLE upload_state ALTER COLUMN id DROP DEFAULT;
-    ALTER TABLE upload_state DROP COLUMN IF EXISTS id;
-  END IF;
-  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='mirror_stats' AND column_name='id') THEN
-    ALTER TABLE mirror_stats DROP CONSTRAINT IF EXISTS mirror_stats_pkey;
-    ALTER TABLE mirror_stats ALTER COLUMN id DROP DEFAULT;
-    ALTER TABLE mirror_stats DROP COLUMN IF EXISTS id;
-  END IF;
-  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='mirror_state' AND column_name='id') THEN
-    ALTER TABLE mirror_state DROP COLUMN IF EXISTS id;
-  END IF;
-END$$;
--- Re-ensure PK on project_id for upload_state and mirror_stats
---
--- If the old table had id SERIAL PRIMARY KEY and the new CREATE TABLE IF NOT EXISTS
--- was skipped, project_id has no PK yet. Add it only if missing.
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints tc
-    JOIN information_schema.constraint_column_usage ccu USING (constraint_name)
-    WHERE tc.table_name='upload_state' AND tc.constraint_type='PRIMARY KEY'
-      AND ccu.column_name='project_id') THEN
-    ALTER TABLE upload_state ADD PRIMARY KEY (project_id);
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints tc
-    JOIN information_schema.constraint_column_usage ccu USING (constraint_name)
-    WHERE tc.table_name='mirror_stats' AND tc.constraint_type='PRIMARY KEY'
-      AND ccu.column_name='project_id') THEN
-    ALTER TABLE mirror_stats ADD PRIMARY KEY (project_id);
-  END IF;
-END$$;
+CREATE INDEX IF NOT EXISTS idx_alerts_open ON alerts(project_id, resolved_at);

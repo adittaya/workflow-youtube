@@ -168,124 +168,106 @@ def get_all_settings():
 
 # ─── Accounts ────────────────────────────────────────────────────────────
 
+def _local_accounts_rows():
+    """Local-mode accounts live in accounts.json via config (single store).
+    Rows are plain dicts keyed by name with the full field set preserved."""
+    import config as _config
+    rows = []
+    for name, data in (_config.load_accounts() or {}).items():
+        row = dict(data)
+        row["name"] = name
+        rows.append(row)
+    return rows
+
+
+def _save_local_accounts_rows(rows):
+    import config as _config
+    accts = {}
+    for r in rows:
+        data = dict(r)
+        name = data.pop("name", "")
+        if name:
+            accts[name] = data
+    _config.save_accounts(accts)
+
+
 def get_account(name):
+    if not _DB_ENABLED:
+        return next((r for r in _local_accounts_rows() if r.get("name") == name), None)
     row = _request("GET", f"accounts?name=eq.{name}&select=*")
     return row[0] if row else None
 
 
 def get_all_accounts():
+    if not _DB_ENABLED:
+        return _local_accounts_rows()
     return _request("GET", "accounts?select=*") or []
 
 
 def save_account(name, data):
     data["name"] = name
     data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    if not _DB_ENABLED:
+        rows = _local_accounts_rows()
+        for r in rows:
+            if r.get("name") == name:
+                r.update(data)
+                _save_local_accounts_rows(rows)
+                return
+        rows.append(dict(data))
+        _save_local_accounts_rows(rows)
+        return
     _upsert("accounts", data, on_conflict="name")
 
 
 def delete_account(name):
+    if not _DB_ENABLED:
+        _save_local_accounts_rows([r for r in _local_accounts_rows() if r.get("name") != name])
+        return
     _request("DELETE", f"accounts?name=eq.{name}")
 
 
-# ─── Channels ────────────────────────────────────────────────────────────
-
-def get_channel(channel_id):
-    row = _request("GET", f"channels?id=eq.{channel_id}&select=*")
-    return row[0] if row else None
+def set_project_account(project_id, account_name):
+    """Link a project to the account that uploads on its behalf."""
+    update_project(project_id, account_id=account_name or "")
 
 
-def get_all_channels():
-    return _request("GET", "channels?select=*") or []
-
-
-def save_channel(channel_id, data):
-    data["id"] = channel_id
-    data["updated_at"] = datetime.now(timezone.utc).isoformat()
-    _upsert("channels", data, on_conflict="id")
-
-
-def delete_channel(channel_id):
-    _request("DELETE", f"channels?id=eq.{channel_id}")
-
-
-# ─── Mirror State ────────────────────────────────────────────────────────
-
-def get_mirror_state(source_channel, source_video_id, project_id=""):
-    if not _DB_ENABLED:
-        for r in get_all_mirror_states(project_id=project_id):
-            if r["source_channel"] == source_channel and r["source_video_id"] == source_video_id:
-                return r
+def get_project_account(project_id):
+    """Resolve the account linked to a project, or None."""
+    project = get_project(project_id)
+    if not project or not project.get("account_id"):
         return None
-    row = _request("GET",
-        f"mirror_state?project_id=eq.{project_id}&source_channel=eq.{source_channel}&source_video_id=eq.{source_video_id}&select=*")
-    return row[0] if row else None
+    return get_account(project["account_id"])
 
 
-def get_all_mirror_states(project_id=""):
-    if not _DB_ENABLED:
-        state = _read_json(_state_path(), {})
-        rows = []
-        for key, entry in (state.get("processed") or {}).items():
-            if ":" in key:
-                source, vid = key.split(":", 1)
-            else:
-                source, vid = key, ""
-            rows.append({
-                "source_channel": source,
-                "source_video_id": vid,
-                "mirrored_video_id": entry.get("new_video_id") or entry.get("mirrored_video_id") or "",
-                "original_title": entry.get("original_title", ""),
-                "mirrored_at": entry.get("mirrored_at") or "",
-                "comment_id": entry.get("comment_id", ""),
-            })
-        return rows
-    return _request("GET", f"mirror_state?project_id=eq.{project_id}&select=*") or []
+def verify_account(name, status="active", last_error="", expires_in=7 * 24 * 3600):
+    """Record the result of a live OAuth token test on an account.
 
-
-def save_mirror_state(source_channel, source_video_id, data, project_id=""):
-    if not _DB_ENABLED:
-        state = _read_json(_state_path(), {})
-        processed = state.setdefault("processed", {})
-        processed[f"{source_channel}:{source_video_id}"] = {
-            "new_video_id": data.get("mirrored_video_id") or "",
-            "original_title": data.get("original_title", ""),
-            "mirrored_at": data.get("mirrored_at") or "",
-            "comment_id": data.get("comment_id", ""),
-        }
-        _write_json_atomic(_state_path(), state)
+    status: 'active' (token refresh OK) or 'expired' (token rejected).
+    expires_in: seconds the refresh token is expected to stay valid from now
+    (Google rotates refresh tokens to ~7 days after they are issued)."""
+    account = get_account(name)
+    if not account:
         return
-    data["project_id"] = project_id
-    data["source_channel"] = source_channel
-    data["source_video_id"] = source_video_id
-    data["mirrored_at"] = data.get("mirrored_at") or datetime.now(timezone.utc).isoformat()
-    _upsert("mirror_state", data, on_conflict="project_id,source_channel,source_video_id")
+    now = datetime.now(timezone.utc)
+    data = {
+        "status": status,
+        "last_verified": now.isoformat(),
+        "last_error": last_error or "",
+    }
+    if status == "active":
+        data["token_expires_at"] = (now + timedelta(seconds=expires_in)).isoformat()
+        data["last_error"] = ""
+    else:
+        data["token_expires_at"] = None
+    save_account(name, data)
 
 
-# ─── Mirror Stats ────────────────────────────────────────────────────────
-
-def get_mirror_stats(project_id=""):
-    if not _DB_ENABLED:
-        stats = _read_json(_state_path(), {}).get("stats") or {}
-        merged = {"total_mirrored": 0, "total_comments": 0, "total_shortened": 0}
-        merged.update(stats)
-        return merged
-    row = _request("GET", f"mirror_stats?project_id=eq.{project_id}&select=*")
-    if row:
-        return row[0]
-    return {"total_mirrored": 0, "total_comments": 0, "total_shortened": 0}
-
-
-def update_mirror_stats(stats, project_id=""):
-    if not _DB_ENABLED:
-        state = _read_json(_state_path(), {})
-        merged = {"total_mirrored": 0, "total_comments": 0, "total_shortened": 0}
-        merged.update(stats or {})
-        state["stats"] = merged
-        _write_json_atomic(_state_path(), state)
+def increment_account_uploads(name):
+    account = get_account(name)
+    if not account:
         return
-    stats["project_id"] = project_id
-    stats["updated_at"] = datetime.now(timezone.utc).isoformat()
-    _upsert("mirror_stats", stats, on_conflict="project_id")
+    save_account(name, {"uploads_count": int(account.get("uploads_count", 0) or 0) + 1})
 
 
 # ─── Upload State ────────────────────────────────────────────────────────
@@ -295,13 +277,10 @@ def get_upload_state(project_id=""):
         state = _read_json(_upload_state_path(), {})
         defaults = {
             "project_id": project_id,
-            "account_created": None, "warmup_start": None,
-            "warmup_complete": False, "first_upload_date": None,
+            "account_created": None, "first_upload_date": None,
             "total_uploaded": 0, "last_upload_date": None,
             "last_upload_hour": None, "processed_hashes": [],
             "pending_hashes": [],
-            "filled_slots": [],
-            "filled_slots_date": "",
             "yt_client_id": "",
         }
         defaults.update(state)
@@ -311,17 +290,12 @@ def get_upload_state(project_id=""):
         s = row[0]
         if isinstance(s.get("processed_hashes"), list):
             s["processed_hashes"] = [h for h in s["processed_hashes"]]
-        if isinstance(s.get("filled_slots"), list):
-            s["filled_slots"] = [x for x in s["filled_slots"]]
         return s
     return {
         "project_id": project_id,
-        "account_created": None, "warmup_start": None,
-        "warmup_complete": False, "first_upload_date": None,
+        "account_created": None, "first_upload_date": None,
         "total_uploaded": 0, "last_upload_date": None,
         "last_upload_hour": None, "processed_hashes": [],
-        "filled_slots": [],
-        "filled_slots_date": "",
         "yt_client_id": "",
     }
 
@@ -335,15 +309,11 @@ def save_upload_state(state, project_id=""):
     row = {
         "project_id": project_id,
         "account_created": state.get("account_created"),
-        "warmup_start": state.get("warmup_start"),
-        "warmup_complete": state.get("warmup_complete", False),
         "first_upload_date": state.get("first_upload_date"),
         "total_uploaded": state.get("total_uploaded", 0),
         "last_upload_date": state.get("last_upload_date"),
         "last_upload_hour": state.get("last_upload_hour"),
         "processed_hashes": state.get("processed_hashes", []),
-        "filled_slots": state.get("filled_slots", []),
-        "filled_slots_date": state.get("filled_slots_date") or None,
         "yt_client_id": state.get("yt_client_id", ""),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -361,16 +331,6 @@ def get_upload_logs(limit=100, project_id=""):
     return _request("GET", f"upload_logs?select=*&project_id=eq.{project_id}&order=upload_time.desc&limit={limit}") or []
 
 
-def get_today_upload_count(date_str, project_id=""):
-    if not _DB_ENABLED:
-        log = _read_json(_daily_log_path(), {"uploads": []})
-        return sum(1 for u in log.get("uploads", [])
-                   if (u.get("upload_date") or "").startswith(date_str))
-    rows = _request("GET",
-        f"upload_logs?select=id&project_id=eq.{project_id}&upload_date=eq.{date_str}")
-    return len(rows) if rows else 0
-
-
 def add_upload_log(entry, project_id=""):
     if not _DB_ENABLED:
         log = _read_json(_daily_log_path(), {"uploads": []})
@@ -384,35 +344,15 @@ def add_upload_log(entry, project_id=""):
     try:
         _request("POST", "upload_logs", data=entry)
     except urllib.error.HTTPError as e:
-        if e.code == 400 and ("source_video_id" in str(e) or "source_channel" in str(e)):
+        if e.code == 400 and ("source_video_id" in str(e) or "source_channel" in str(e)
+                              or "account_name" in str(e)):
             # schema.sql not applied yet (columns missing) — log without them
             entry.pop("source_video_id", None)
             entry.pop("source_channel", None)
+            entry.pop("account_name", None)
             _request("POST", "upload_logs", data=entry)
         else:
             raise
-
-
-# ─── Channel Cursors (monitor state) ───────────────────────────────────
-
-def get_channel_cursor(channel_id, project_id=""):
-    row = _request("GET", f"channel_cursors?project_id=eq.{project_id}&channel_id=eq.{channel_id}&select=*")
-    return row[0] if row else None
-
-
-def get_all_cursors(project_id=""):
-    rows = _request("GET", f"channel_cursors?project_id=eq.{project_id}&select=*")
-    result = {}
-    for r in rows or []:
-        result[r["channel_id"]] = r
-    return result
-
-
-def save_channel_cursor(channel_id, data, project_id=""):
-    data["project_id"] = project_id
-    data["channel_id"] = channel_id
-    data["updated_at"] = datetime.now(timezone.utc).isoformat()
-    _upsert("channel_cursors", data, on_conflict="project_id,channel_id")
 
 
 # ─── Projects ───────────────────────────────────────────────────────────────
@@ -441,201 +381,17 @@ def create_project(name, **fields):
 
 
 def update_project(project_id, **fields):
+    """Update arbitrary project fields. Values passed explicitly are applied
+    even when None (clearing a field), unlike create_project which drops None."""
     data = {"updated_at": datetime.now(timezone.utc).isoformat()}
     for k, v in fields.items():
-        if v is not None:
-            data[k] = v
+        data[k] = v
     _request("PATCH", f"projects?id=eq.{project_id}", data=data)
     return get_project(project_id)
 
 
 def delete_project(project_id):
     _request("DELETE", f"projects?id=eq.{project_id}")
-
-
-# ─── Work Queue / Checklist ─────────────────────────────────────────────
-
-def add_work_item(work_type, project_id="", **fields):
-    data = {
-        "project_id": project_id,
-        "work_type": work_type,
-        "status": fields.get("status", "pending"),
-        "video_id": fields.get("video_id", ""),
-        "source_url": fields.get("source_url", ""),
-        "title": fields.get("title", ""),
-        "slot_time": fields.get("slot_time", ""),
-        "error": fields.get("error", ""),
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
-    result = _request("POST", "work_queue", data=data)
-    if isinstance(result, list) and len(result) > 0:
-        return result[0]
-    return result
-
-
-def update_work_item(item_id, **fields):
-    data = {"updated_at": datetime.now(timezone.utc).isoformat()}
-    for k in ("status", "error"):
-        if k in fields:
-            data[k] = fields[k]
-    _request("PATCH", f"work_queue?id=eq.{item_id}", data=data)
-
-
-def get_work_queue(project_id="", limit=50, status=None):
-    filters = [f"project_id=eq.{project_id}"]
-    if status:
-        filters.append(f"status=eq.{status}")
-    query = "&".join(filters) + f"&order=created_at.desc&limit={limit}"
-    return _request("GET", f"work_queue?select=id,work_type,status,video_id,title,slot_time,error,created_at,updated_at&{query}") or []
-
-
-def get_work_stats(project_id=""):
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    rows = _request("GET",
-        f"work_queue?select=status&project_id=eq.{project_id}&created_at=gte.{today}T00:00:00Z")
-    if rows is None:
-        return {"total": 0, "done": 0, "failed": 0, "pending": 0}
-    total = len(rows)
-    done = sum(1 for r in rows if r.get("status") == "done")
-    failed = sum(1 for r in rows if r.get("status") == "failed")
-    pending = total - done - failed
-    return {"total": total, "done": done, "failed": failed, "pending": pending}
-
-
-# ─── Run Locks (parallel-run guard) ─────────────────────────────────────
-
-def _parse_ts(v):
-    try:
-        t = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
-        if t.tzinfo is None:
-            t = t.replace(tzinfo=timezone.utc)
-        return t
-    except Exception:
-        return None
-
-
-HEARTBEAT_STALE_MINUTES = 90
-LOCK_STEAL_GRACE_MIN = 15  # owner needs time to write its first heartbeat
-
-
-def _lock_owner_alive(project_id="", lock_owner=""):
-    """A run can only prove it is alive by heartbeating. No fresh heartbeat
-    from the lock owner means it crashed/hung (cancel skips the finally
-    block, so the lock would otherwise block new runs for the full TTL)."""
-    try:
-        hb = _request("GET", f"run_heartbeats?project_id=eq.{project_id}&select=run_id,last_seen")
-    except Exception:
-        # heartbeat table missing (schema not applied) — be conservative and
-        # treat the owner as alive rather than stealing the lock or crashing
-        return True
-    if not hb:
-        return False
-    row = hb[0]
-    if row.get("run_id") != lock_owner:
-        return False
-    t = _parse_ts(row.get("last_seen"))
-    if not t:
-        return False
-    return (datetime.now(timezone.utc) - t).total_seconds() < HEARTBEAT_STALE_MINUTES * 60
-
-
-def acquire_run_lock(project_id="", owner="", ttl_hours=6):
-    now = datetime.now(timezone.utc)
-    rows = _request("GET", f"run_locks?project_id=eq.{project_id}&select=*")
-    if rows:
-        lock = rows[0]
-        acquired = lock.get("acquired_at")
-        owner_now = lock.get("owner", "")
-        if acquired:
-            t = _parse_ts(acquired)
-            expired = (t is None) or ((now - t).total_seconds() >= ttl_hours * 3600)
-        else:
-            expired = True
-        if owner_now and not expired and owner_now != owner and _lock_owner_alive(project_id, owner_now):
-            return False, owner_now
-        acquired_t = _parse_ts(acquired) if owner_now and not expired and owner_now != owner else None
-        if acquired_t and (now - acquired_t).total_seconds() >= LOCK_STEAL_GRACE_MIN * 60:
-            # Lock owner stopped heartbeating (crashed/hung — its finally
-            # block never ran) so it is safe to steal the lock.
-            try:
-                update_heartbeat(project_id=project_id, run_id=owner_now,
-                                 status="crashed", message="lock stolen — owner heartbeat went stale")
-            except Exception:
-                pass
-        _request("PATCH", f"run_locks?project_id=eq.{project_id}", data={
-            "owner": owner,
-            "acquired_at": now.isoformat(),
-            "expires_at": (now + timedelta(hours=ttl_hours)).isoformat(),
-            "updated_at": now.isoformat(),
-        })
-        return True, owner
-    _request("POST", "run_locks", data={
-        "project_id": project_id,
-        "owner": owner,
-        "acquired_at": now.isoformat(),
-        "expires_at": (now + timedelta(hours=ttl_hours)).isoformat(),
-        "updated_at": now.isoformat(),
-    })
-    return True, owner
-
-
-def release_run_lock(project_id="", owner=""):
-    rows = _request("GET", f"run_locks?project_id=eq.{project_id}&select=owner")
-    if rows and (not owner or rows[0].get("owner") == owner):
-        _request("DELETE", f"run_locks?project_id=eq.{project_id}")
-
-
-def clear_expired_locks():
-    """Delete run locks whose TTL has passed (a crashed run can never release
-    its own lock, so this prevents them from lingering past their TTL)."""
-    rows = _request("GET", "run_locks?select=project_id,expires_at")
-    removed = 0
-    for r in rows or []:
-        t = _parse_ts(r.get("expires_at"))
-        if t and t < datetime.now(timezone.utc):
-            _request("DELETE", f"run_locks?project_id=eq.{r['project_id']}")
-            removed += 1
-    return removed
-
-
-# ─── Heartbeats (liveness proof — see run_locks) ──────────────────────────
-
-def update_heartbeat(project_id="", run_id="", iteration=0, status="running", message=""):
-    now = datetime.now(timezone.utc).isoformat()
-    _upsert("run_heartbeats", {
-        "project_id": project_id,
-        "run_id": run_id,
-        "iteration": iteration,
-        "status": status,
-        "message": message,
-        "last_seen": now,
-        "updated_at": now,
-    }, on_conflict="project_id")
-
-
-def get_heartbeat(project_id=""):
-    row = _request("GET", f"run_heartbeats?project_id=eq.{project_id}&select=*")
-    return row[0] if row else None
-
-
-# ─── Work queue hygiene ────────────────────────────────────────────────────
-
-def close_stale_work_items(project_id="", stale_minutes=45):
-    """Mark in_progress work items that have not been touched for a long time
-    as failed, so they never sit 'in_progress' forever (which would break
-    queue accounting and block re-dispatch of that video)."""
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=stale_minutes)
-    rows = _request("GET",
-        f"work_queue?project_id=eq.{project_id}&status=eq.in_progress"
-        f"&select=id,updated_at&order=updated_at.asc&limit=100")
-    closed = 0
-    for r in rows or []:
-        t = _parse_ts(r.get("updated_at"))
-        if t and t < cutoff:
-            update_work_item(r["id"], status="failed", error="stale — in_progress too long")
-            closed += 1
-    return closed
 
 
 # ─── Verify checks (self-verification audit trail) ────────────────────────
@@ -654,17 +410,6 @@ def record_verify_check(project_id="", check_name="", status="ok", message="", d
 
 # ─── Alerts (recurring issues surfaced until fixed) ───────────────────────
 
-def add_alert(project_id="", severity="warn", check_name="", message="", details=None):
-    _request("POST", "alerts", data={
-        "project_id": project_id,
-        "severity": severity,
-        "check_name": check_name,
-        "message": message,
-        "details": details or {},
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    })
-
-
 def get_open_alerts(project_id="", limit=50):
     return _request("GET",
         f"alerts?project_id=eq.{project_id}&resolved_at=is.null"
@@ -678,13 +423,10 @@ def resolve_alert(alert_id, by="bot"):
 
 # ─── Local JSON backend (local-first mode) ────────────────────────────────
 # When SUPABASE_URL / SUPABASE_SERVICE_KEY are absent, every table persists to
-# local JSON files under ~/.yt-mirror/ so the bot runs fully standalone.
+# local JSON files under ~/.yt-mirror/ so the tool runs fully standalone.
 # Tables with an established local file (upload_state.json, daily_log.json,
-# state.json, settings.json) map onto those formats so config.py /
-# daily_uploader.py readers stay consistent; the rest use canonical files.
-
-_DATA_DIR = Path(os.environ.get("YT_DATA_DIR", os.path.expanduser("~/.yt-mirror")))
-_STORE_DIR = _DATA_DIR / "store"
+# settings.json) map onto those formats so config.py / daily_uploader.py
+# readers stay consistent; the rest use canonical files.
 
 
 def _store_dir():
@@ -699,30 +441,21 @@ def _daily_log_path():
     return Path(os.environ.get("YT_DATA_DIR", os.path.expanduser("~/.yt-mirror"))) / "daily_log.json"
 
 
-def _state_path():
-    return Path(os.environ.get("YT_DATA_DIR", os.path.expanduser("~/.yt-mirror"))) / "state.json"
-
-
 def _settings_path():
     return Path(os.environ.get("YT_DATA_DIR", os.path.expanduser("~/.yt-mirror"))) / "settings.json"
 
 
 _STORE_FILES = {
     "projects": "projects.json",
-    "channel_cursors": "cursors.json",
-    "work_queue": "work_queue.json",
-    "run_locks": "run_locks.json",
-    "run_heartbeats": "run_heartbeats.json",
     "alerts": "alerts.json",
     "verify_checks": "verify_checks.json",
-    "channels": "channels_table.json",
     "accounts": "accounts_table.json",
     "settings": "settings_table.json",
     "upload_state": "upload_state_table.json",
     "upload_logs": "upload_logs_table.json",
 }
 
-_ID_TABLES = {"work_queue", "alerts", "projects"}
+_ID_TABLES = {"alerts", "projects"}
 
 
 def _read_json(path, default):

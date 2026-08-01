@@ -23,3 +23,6 @@ state.json
 accounts.json
 github_accounts.json
 deployments.json
+
+# Runtime state — never commit
+upload_state.json

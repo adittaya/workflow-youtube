@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """yt-auto — YT VIDEO AUTOMATION command-line interface (local-first).
 
-Runs the detect → process → upload pipeline as a continuous local daemon
-(or a single pass), manages channels, credentials and state — all backed by
-local JSON files under ~/.yt-mirror/ when Supabase is not configured.
+Manual link → process → upload tool. Paste a YouTube URL, it runs the
+Demucs → FFmpeg → BGM pipeline and uploads to your channel. All state is
+backed by local JSON files under ~/.yt-mirror/ when Supabase is not
+configured.
 
-    yt-auto run                 continuous daemon (detect → upload → sleep)
-    yt-auto run --once          one detect+upload+verify pass
+    yt-auto upload URL          interactive single upload: link → process →
+                                title/comment/description prompts → publish
     yt-auto setup               guided first-time configuration
     yt-auto oauth               YouTube OAuth login (get refresh token)
-    yt-auto channels list|add|remove
     yt-auto status [--json]     current state summary
     yt-auto logs [N] [--json]   recent upload log entries
     yt-auto verify [--no-fix]   self-verification of state
@@ -19,7 +19,6 @@ import argparse
 import json
 import os
 import sys
-import tempfile
 import time
 
 import config
@@ -39,94 +38,11 @@ def _import_backend():
     return config, supabase_db, daily_uploader, verify_state
 
 
-def _import_loop():
-    import continuous_loop
-    return continuous_loop
-
-
-def _save_local_settings(patch):
-    import config
-    config.SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    existing = {}
-    try:
-        existing = json.loads(config.SETTINGS_PATH.read_text("utf-8"))
-    except Exception:
-        pass
-    existing.update(patch)
-    fd, tmp = tempfile.mkstemp(dir=str(config.SETTINGS_PATH.parent),
-                               prefix="settings.", suffix=".tmp")
-    try:
-        os.write(fd, json.dumps(existing, indent=2).encode("utf-8"))
-        os.close(fd)
-        os.chmod(tmp, 0o600)
-        os.rename(tmp, str(config.SETTINGS_PATH))
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except Exception:
-            pass
-        raise
-
-
 def _pid(args):
     return os.environ.get("PROJECT_ID", getattr(args, "project", "") or "")
 
 
-def _apply_local_proxy():
-    """Local mode: when the proxy system is enabled in settings.json, expose
-    the proxy Supabase credentials so the downloader can use the proxy pool."""
-    try:
-        settings = json.loads(config.SETTINGS_PATH.read_text("utf-8"))
-    except Exception:
-        return
-    if str(settings.get("proxy_enabled", "")).strip().lower() in ("true", "1", "yes", "on"):
-        if settings.get("proxy_supabase_url") and settings.get("proxy_supabase_key"):
-            os.environ["PROXY_SUPABASE_URL"] = str(settings["proxy_supabase_url"])
-            os.environ["PROXY_SUPABASE_SERVICE_KEY"] = str(settings["proxy_supabase_key"])
-
-
 # ─── commands ────────────────────────────────────────────────────────────
-
-def cmd_run(args):
-    import config
-    import supabase_db
-    import verify_state
-    import daily_uploader
-    cl = _import_loop()
-
-    if getattr(args, "duration", None):
-        cl.RUN_DURATION = float(args.duration) * 3600
-
-    pid = _pid(args)
-    _apply_local_proxy()
-
-    if args.once:
-        owner = f"{pid}:local-{time.time():.0f}"
-        acquired, current = supabase_db.acquire_run_lock(project_id=pid, owner=owner, ttl_hours=6)
-        if not acquired:
-            print(f"lock held by {current} — use `yt-auto run` to wait for it")
-            return 1
-        try:
-            try:
-                summary = verify_state.run_for(pid, owner=owner, fix=True)
-                config.log(f"verify: {summary['oks']} ok, {summary['warns']} warn, "
-                           f"{summary['fails']} fail, {summary['healed']} healed")
-            except Exception as e:
-                config.log(f"verify error: {e}")
-            found = cl.detect_and_queue()
-            config.log(f"detect: {'new videos queued' if found else 'nothing new'}")
-            uploaded = cl.upload_one_pending()
-            config.log(f"upload: {'uploaded' if uploaded else 'nothing uploaded'}")
-        except Exception as e:
-            print(f"error: {e}", file=sys.stderr)
-            return 1
-        finally:
-            supabase_db.release_run_lock(project_id=pid, owner=owner)
-        return 0
-
-    cl.main()
-    return 0
-
 
 def cmd_status(args):
     import config
@@ -136,13 +52,6 @@ def cmd_status(args):
 
     state = daily_uploader.load_upload_state()
     status = daily_uploader.get_status()
-    channels = config.load_channels()
-    cursors = supabase_db.get_all_cursors(project_id=pid)
-    pending = status and list(state.get("pending_hashes", [])) or []
-    try:
-        work = supabase_db.get_work_stats(project_id=pid)
-    except Exception:
-        work = {}
     try:
         alerts = supabase_db.get_open_alerts(project_id=pid, limit=10)
     except Exception:
@@ -152,28 +61,16 @@ def cmd_status(args):
         print(json.dumps({
             "mode": "supabase" if supabase_db.is_enabled() else "local",
             "project_id": pid,
-            "channels": len(channels),
-            "cursors": len(cursors),
-            "pending": len(pending),
             **{k: status.get(k) for k in (
-                "warmup_day", "warmup_total", "warmup_complete", "can_upload",
-                "upload_reason", "total_uploaded", "last_upload", "processed_count")},
-            "work": work,
+                "total_uploaded", "last_upload", "processed_count")},
             "open_alerts": len(alerts),
         }, indent=2))
         return 0
 
     print(f"yt-auto {VERSION} — mode: {'supabase (cloud)' if supabase_db.is_enabled() else 'local JSON files'}")
     print(f"project: {pid or '(default)'}")
-    print(f"channels: {len(channels)} tracked, {len(cursors)} with cursor")
-    print(f"warmup: day {status['warmup_day']}/{status['warmup_total']} "
-          f"({'complete' if status['warmup_complete'] else 'in progress'})")
-    print(f"upload: {'ready' if status['can_upload'] else status['upload_reason']}")
     print(f"total uploaded: {status['total_uploaded']}  (last: {status['last_upload'] or 'never'})")
-    print(f"processed: {status['processed_count']}  pending queue: {len(pending)}")
-    if work:
-        print(f"work today: {work.get('total', 0)} total, {work.get('done', 0)} done, "
-              f"{work.get('failed', 0)} failed, {work.get('pending', 0)} pending")
+    print(f"processed: {status['processed_count']}")
     if alerts:
         print(f"open alerts ({len(alerts)}):")
         for a in alerts[:5]:
@@ -315,11 +212,10 @@ def _prompt(text):
 def cmd_setup(args):
     import config
     import supabase_db
-    pid = _pid(args)
 
     cfg = config.load()
     if not cfg.get("yt_client_id") or not cfg.get("yt_client_secret"):
-        print("Step 1/4 — YouTube API credentials (https://console.cloud.google.com/apis/credentials)")
+        print("Step 1/2 — YouTube API credentials (https://console.cloud.google.com/apis/credentials)")
         cid = _prompt("OAuth Client ID: ")
         csec = _prompt("OAuth Client Secret: ")
         if cid and csec:
@@ -327,72 +223,93 @@ def cmd_setup(args):
     if not config.is_configured():
         print("  → next run `yt-auto oauth` to get a refresh token.")
 
-    print("Step 2/4 — channels to mirror (one per line, blank to finish)")
-    while True:
-        url = _prompt("  channel URL or @handle: ")
-        if not url:
-            break
-        ok, res = config.add_channel(url)
-        print(f"  {'ok: ' + res if ok else 'error: ' + res}")
-
-    if supabase_db.is_enabled():
-        print("Step 3/4 — cloud mode: configure upload schedule via the VPLINKYT TUI instead.")
-    else:
-        print("Step 3/4 — upload settings (defaults shown, Enter keeps them)")
-        try:
-            uploads_per_day = int(_prompt("  uploads per day [2]: ") or "2")
-        except ValueError:
-            uploads_per_day = 2
-        try:
-            warmup_days = int(_prompt("  warmup days (0 = none) [0]: ") or "0")
-        except ValueError:
-            warmup_days = 0
-        try:
-            backfill = int(_prompt("  initial backfill videos [5]: ") or "5")
-        except ValueError:
-            backfill = 5
-        schedule = _prompt("  upload schedule (e.g. 08:00,20:00, blank for spread): ")
-        _save_local_settings({
-            "uploads_per_day": uploads_per_day,
-            "warmup_days": warmup_days,
-            "initial_backfill": backfill,
-            "upload_schedule": schedule,
-        })
-        projects = supabase_db.list_projects()
-        fields = dict(uploads_per_day=uploads_per_day, warmup_days=warmup_days,
-                      initial_backfill=backfill, upload_schedule=schedule)
-        if projects:
-            supabase_db.update_project(projects[0]["id"], **fields)
-        else:
-            supabase_db.create_project("Local", **fields)
-
-    print("Step 4/4 — done. Summary:")
-    print(f"  channels: {len(config.load_channels())}")
+    print("Step 2/2 — done. Summary:")
     if not config.is_configured():
         print("  credentials: missing → run `yt-auto oauth`")
-    print("  next: `yt-auto status` to check, `yt-auto run` to start the daemon.")
+    print("  next: `yt-auto upload URL` to process and upload a video.")
     return 0
 
 
-def cmd_channels(args):
+def cmd_upload(args):
+    """Interactive single-video upload: paste a link, process it through the
+    Demucs → FFmpeg → BGM pipeline, then prompt for a custom title, comment and
+    description (Enter keeps the defaults) and a publish confirmation."""
+    import re
+    import shutil
+
     import config
-    if args.action == "list":
-        channels = config.load_channels()
-        if not channels:
-            print("no channels tracked")
+    import daily_uploader
+    import download_helpers
+    import youtube_api
+
+    url = args.url
+    m = re.search(r'(?:v=|youtu\.be/|youtube\.com/embed/)([\w-]{11})', url)
+    if not m:
+        print("Invalid YouTube URL")
+        return 1
+    video_id = m.group(1)
+    source_url = f"https://www.youtube.com/watch?v={video_id}"
+
+    if not config.is_configured():
+        print("YouTube credentials not configured — run `yt-auto oauth` first.")
+        return 1
+
+    try:
+        youtube = youtube_api.get_client()
+        details = youtube_api.get_video_details(youtube, video_id)
+    except Exception as e:
+        print(f"could not fetch video info: {e}")
+        return 1
+    if not details:
+        print("video not found")
+        return 1
+    source_title = details.get("title", "")
+    source_desc = details.get("description", "")
+    source_tags = details.get("tags", [])
+    source_channel = details.get("channel_id", "")
+
+    print(f"\nsource: {source_title}\n")
+
+    print("downloading...")
+    result = download_helpers.download_video(source_url)
+    if not result:
+        print("download failed")
+        return 1
+    video_path = result["path"]
+    download_dir = os.path.dirname(video_path)
+    try:
+        print("processing (Demucs vocal separation → FFmpeg edits → BGM mix)...")
+        processed = daily_uploader.process_video(video_path)
+        if not processed:
+            print("processing failed")
+            return 1
+        print(f"processed: {os.path.basename(processed)}\n")
+
+        title = _prompt(f"Title (Enter = copy from source) [{source_title}]") or source_title
+        comment = _prompt("Comment (Enter = default template)")
+        desc = _prompt("Description (Enter = default template)")
+        publish = _prompt("Publish now? (Y/n)").strip().lower()
+        print()
+
+        publish = publish in ("", "y", "yes")
+        privacy = "public" if publish else "private"
+        vid = daily_uploader.upload_daily(
+            processed, title=title, description=desc or None, tags=source_tags,
+            source_url=source_url, force=True, source_channel=source_channel,
+            comment=comment or None, raw=True, privacy_status=privacy,
+        )
+        if vid:
+            state = "published" if publish else "saved as private draft"
+            print(f"{state}: https://www.youtube.com/watch?v={vid}")
             return 0
-        for cid, ch in channels.items():
-            print(f"{cid:30} {ch.get('alias', '')}  enabled={ch.get('enabled', True)}")
-        return 0
-    if args.action == "add":
-        ok, res = config.add_channel(args.url, args.alias or "")
-        print(res)
-        return 0 if ok else 1
-    if args.action == "remove":
-        ok, res = config.remove_channel(args.channel_id)
-        print(res or "removed")
-        return 0 if ok else 1
-    return 1
+        print("upload failed")
+        return 1
+    finally:
+        try:
+            shutil.rmtree(download_dir, ignore_errors=True)
+            print(f"cleaned up: {download_dir}")
+        except Exception as e:
+            config.log(f"cleanup failed: {e}")
 
 
 def cmd_version(args):
@@ -405,17 +322,10 @@ def cmd_version(args):
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="yt-auto",
-        description="YT VIDEO AUTOMATION — local-first detect/process/upload bot",
+        description="YT VIDEO AUTOMATION — local-first manual upload tool",
     )
     parser.add_argument("--project", help="project id (defaults to $PROJECT_ID)")
     sub = parser.add_subparsers(dest="cmd")
-
-    p_run = sub.add_parser("run", help="run the continuous daemon")
-    p_run.add_argument("--once", action="store_true", help="single detect+upload+verify pass")
-    p_run.add_argument("--dry-run", action="store_true", help="detect/process but never upload")
-    p_run.add_argument("--duration", type=float, help="daemon duration in hours (default 5.5)")
-
-    sub.add_parser("once", help="alias for `run --once`")
 
     p_status = sub.add_parser("status", help="show current state summary")
     p_status.add_argument("--json", action="store_true")
@@ -431,14 +341,8 @@ def build_parser():
 
     sub.add_parser("setup", help="guided first-time configuration")
 
-    p_ch = sub.add_parser("channels", help="manage tracked channels")
-    ch_sub = p_ch.add_subparsers(dest="action")
-    ch_sub.add_parser("list")
-    p_add = ch_sub.add_parser("add")
-    p_add.add_argument("url")
-    p_add.add_argument("alias", nargs="?", default="")
-    p_rm = ch_sub.add_parser("remove")
-    p_rm.add_argument("channel_id")
+    p_upload = sub.add_parser("upload", help="interactive single upload (link → process → prompts → publish)")
+    p_upload.add_argument("url", help="YouTube URL to process and upload")
 
     sub.add_parser("version", help="print version")
 
@@ -451,25 +355,19 @@ def main(argv=None):
 
     if getattr(args, "project", None):
         os.environ["PROJECT_ID"] = args.project
-    if getattr(args, "dry_run", False):
-        os.environ["INPUT_DRY_RUN"] = "true"
 
     handlers = {
-        "run": cmd_run,
-        "once": cmd_run,
         "status": cmd_status,
         "logs": cmd_logs,
         "verify": cmd_verify,
         "oauth": cmd_oauth,
         "setup": cmd_setup,
-        "channels": cmd_channels,
+        "upload": cmd_upload,
         "version": cmd_version,
     }
     if not args.cmd:
         parser.print_help()
         return 1
-    if args.cmd == "once":
-        args.once = True
     try:
         return handlers[args.cmd](args)
     except KeyboardInterrupt:

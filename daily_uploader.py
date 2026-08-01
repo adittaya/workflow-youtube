@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import hashlib
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 import config
 import supabase_db
@@ -19,31 +19,7 @@ import shortener
 
 DATA_DIR = Path(os.environ.get("YT_DATA_DIR", os.path.expanduser("~/.yt-mirror")))
 UPLOAD_STATE = DATA_DIR / "upload_state.json"
-WARMUP_STATE = DATA_DIR / "warmup_state.json"
 DAILY_LOG = DATA_DIR / "daily_log.json"
-
-WARMUP_DAYS_DEFAULT = 0
-UPLOAD_LEAD_MIN = 90
-SLOT_GRACE_MIN = 30
-
-_project_settings_cache = {}
-
-
-def get_project_settings():
-    if config.PROJECT_ID in _project_settings_cache:
-        return _project_settings_cache[config.PROJECT_ID]
-    settings = {}
-    if supabase_db.is_enabled() and config.PROJECT_ID:
-        project = supabase_db.get_project(config.PROJECT_ID)
-        if project:
-            settings = project
-    else:
-        try:
-            settings = json.loads((DATA_DIR / "settings.json").read_text("utf-8"))
-        except Exception:
-            settings = {}
-    _project_settings_cache[config.PROJECT_ID] = settings
-    return settings
 
 
 def load_upload_state():
@@ -56,15 +32,12 @@ def load_upload_state():
     except Exception:
         return {
             "account_created": None,
-            "warmup_start": None,
-            "warmup_complete": False,
             "first_upload_date": None,
             "total_uploaded": 0,
             "last_upload_date": None,
             "last_upload_hour": None,
             "processed_hashes": [],
             "pending_hashes": [],
-            "filled_slots": [],
             "yt_client_id": "",
         }
 
@@ -102,253 +75,6 @@ def save_daily_log(log):
         return
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     DAILY_LOG.write_text(json.dumps(log, indent=2), "utf-8")
-
-
-def start_warmup(force=False):
-    state = load_upload_state()
-    now = datetime.now(timezone.utc)
-    today = now.strftime("%Y-%m-%d")
-
-    if force or not state.get("warmup_start"):
-        state["warmup_start"] = now.isoformat()
-        state["account_created"] = state.get("account_created") or now.isoformat()
-        state["warmup_complete"] = False
-        save_upload_state(state)
-        config.log(f"warmup started: {state['warmup_start']}")
-    else:
-        start = datetime.fromisoformat(state["warmup_start"])
-        # Strip tz so we can subtract even if one is naive and other aware
-        if start.tzinfo is not None:
-            start = start.replace(tzinfo=None)
-        naive_now = now.replace(tzinfo=None)
-        days = (naive_now - start).days
-        warmup_total = get_warmup_days()
-        if days >= warmup_total and not state.get("warmup_complete"):
-            state["warmup_complete"] = True
-            save_upload_state(state)
-            config.log(f"warmup complete: {days} days elapsed")
-
-    return state
-
-
-def reset_warmup(reason="account changed"):
-    state = load_upload_state()
-    state["warmup_start"] = datetime.now(timezone.utc).isoformat()
-    state["warmup_complete"] = False
-    state["total_uploaded"] = 0
-    state["last_upload_date"] = None
-    state["last_upload_hour"] = None
-    state["processed_hashes"] = []
-    save_upload_state(state)
-    config.log(f"warmup reset: {reason}")
-    return state
-
-
-def get_warmup_days():
-    try:
-        return int(get_project_settings().get("warmup_days", WARMUP_DAYS_DEFAULT))
-    except Exception:
-        return WARMUP_DAYS_DEFAULT
-
-_get_warmup_days = get_warmup_days
-
-
-def get_upload_config():
-    try:
-        per_day = int(get_project_settings().get("uploads_per_day", 2))
-    except Exception:
-        per_day = 2
-    if per_day < 1:
-        per_day = 1
-    return per_day, 24.0 / per_day
-
-
-def get_backfill_count():
-    try:
-        return int(get_project_settings().get("initial_backfill", 5))
-    except Exception:
-        return 5
-
-
-def get_upload_schedule():
-    try:
-        raw = str(get_project_settings().get("upload_schedule", "") or "").strip()
-    except Exception:
-        raw = ""
-    if not raw:
-        return []
-    times = []
-    for part in raw.split(","):
-        part = part.strip()
-        if ":" in part:
-            try:
-                h, m = part.split(":")
-                times.append((int(h), int(m)))
-            except (ValueError, IndexError):
-                continue
-    return times
-
-
-def _minutes_since_midnight(dt=None):
-    if dt is None:
-        dt = datetime.now(timezone.utc)
-    return dt.hour * 60 + dt.minute
-
-
-def _schedule_min_gap(schedule):
-    if len(schedule) < 2:
-        _, hours_between = get_upload_config()
-        return hours_between
-    sorted_slots = sorted(h * 60 + m for h, m in schedule)
-    min_gap = min(
-        (sorted_slots[(i + 1) % len(sorted_slots)] - sorted_slots[i]) % 1440
-        for i in range(len(sorted_slots))
-    )
-    return min_gap / 60.0
-
-
-def _today_filled(state):
-    filled = list(state.get("filled_slots", []))
-    filled_date = state.get("filled_slots_date", "")
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    if filled_date != today:
-        return []
-    return filled
-
-
-def get_next_scheduled_slot():
-    schedule = get_upload_schedule()
-    if not schedule:
-        return None, None
-    state = load_upload_state()
-    filled = _today_filled(state)
-    now = datetime.now(timezone.utc)
-    now_min = now.hour * 60 + now.minute
-    best = None
-    for h, m in schedule:
-        slot_str = f"{h:02d}:{m:02d}"
-        if slot_str in filled:
-            continue
-        slot_min = h * 60 + m
-        mins_until = slot_min - now_min
-        target_day = now
-        if mins_until < 0:
-            mins_until += 1440
-            target_day = now + timedelta(days=1)
-        if mins_until > UPLOAD_LEAD_MIN:
-            continue
-        if best is None or mins_until < best[0]:
-            iso_time = target_day.replace(
-                hour=h, minute=m, second=0, microsecond=0, tzinfo=None
-            ).isoformat() + 'Z'
-            best = (mins_until, slot_str, iso_time)
-    if best is None:
-        return None, None
-    return best[1], best[2]
-
-
-def get_warmup_day():
-    state = load_upload_state()
-    if not state.get("warmup_start"):
-        return 0
-    start = datetime.fromisoformat(state["warmup_start"])
-    if start.tzinfo is not None:
-        start = start.replace(tzinfo=None)
-    delta = datetime.now(timezone.utc).replace(tzinfo=None) - start
-    return delta.days
-
-
-def is_warmup_complete():
-    state = load_upload_state()
-    if state.get("warmup_complete"):
-        return True
-    return get_warmup_day() >= _get_warmup_days()
-
-
-def can_upload_today(return_slot=False):
-    state = load_upload_state()
-
-    if not is_warmup_complete():
-        day = get_warmup_day()
-        config.log(f"warmup day {day}/{_get_warmup_days()} - no uploads yet")
-        if return_slot:
-            return (False, f"warmup day {day}/{_get_warmup_days()}", "")
-        return (False, f"warmup day {day}/{_get_warmup_days()}")
-
-    schedule = get_upload_schedule()
-    if schedule:
-        slot_str, iso_time = get_next_scheduled_slot()
-        if slot_str is None:
-            filled = _today_filled(state)
-            if len(filled) >= len(schedule):
-                msg = f"all {len(schedule)} schedule slots filled today"
-            else:
-                msg = f"next upload window not open yet (starts {UPLOAD_LEAD_MIN}min before slot)"
-            if return_slot:
-                return (False, msg, "")
-            return (False, msg)
-        if state.get("last_upload_hour"):
-            gap = _schedule_min_gap(schedule)
-            last = datetime.fromisoformat(state["last_upload_hour"])
-            if last.tzinfo is not None:
-                last = last.replace(tzinfo=None)
-            hours_since = (datetime.now(timezone.utc).replace(tzinfo=None) - last).total_seconds() / 3600
-            if hours_since < gap:
-                wait = gap - hours_since
-                msg = f"schedule gap: wait {wait:.1f}h more"
-                if return_slot:
-                    return (False, msg, "")
-                return (False, msg)
-        if return_slot:
-            return (True, slot_str, iso_time)
-        return (True, "ready")
-
-    max_per_day, hours_between = get_upload_config()
-
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-    # Quota and cooldown come from upload_logs (the authoritative record),
-    # never from upload_state fields, which can drift stale. If state says
-    # the last upload was yesterday but logs prove 2 uploads today, the cap
-    # still holds — this is what stops duplicate re-uploads after any drift.
-    log = load_daily_log()
-    today_uploads = [u for u in log["uploads"]
-                     if u.get("date") == today]
-    if len(today_uploads) >= max_per_day:
-        if return_slot:
-            return (False, f"already uploaded {max_per_day} today", "")
-        return (False, f"already uploaded {max_per_day} today")
-
-    if today_uploads:
-        # Gap from the most recent upload today (logs are newest-first)
-        last_time = today_uploads[0].get("time", "")
-        try:
-            last = datetime.fromisoformat(last_time) if last_time else None
-        except (ValueError, TypeError):
-            last = None
-        if last is not None:
-            if last.tzinfo is not None:
-                last = last.replace(tzinfo=None)
-            hours_since = (datetime.now(timezone.utc).replace(tzinfo=None) - last).total_seconds() / 3600
-            if hours_since < hours_between:
-                wait = hours_between - hours_since
-                if return_slot:
-                    return (False, f"wait {wait:.1f}h more", "")
-                return (False, f"wait {wait:.1f}h more")
-    elif state.get("last_upload_hour"):
-        last = datetime.fromisoformat(state["last_upload_hour"])
-        if last.tzinfo is not None:
-            last = last.replace(tzinfo=None)
-        hours_since = (datetime.now(timezone.utc).replace(tzinfo=None) - last).total_seconds() / 3600
-        if hours_since < hours_between:
-            wait = hours_between - hours_since
-            if return_slot:
-                return (False, f"wait {wait:.1f}h more", "")
-            return (False, f"wait {wait:.1f}h more")
-
-    if return_slot:
-        return (True, "", "")
-    return (True, "ready")
 
 
 def process_video(input_path, output_dir=None):
@@ -478,16 +204,8 @@ def _extract_keywords(description):
 
 def upload_daily(video_path, title=None, description=None,
                  tags=None, category_id="22", source_url=None, force=False,
-                 publish_at=None, source_channel=""):
-    if not force:
-        if publish_at:
-            can = True
-        else:
-            can, reason = can_upload_today()
-            if not can:
-                config.log(f"cannot upload: {reason}")
-                return None
-
+                 source_channel="", comment=None, raw=False,
+                 privacy_status=None):
     youtube = youtube_api.get_client()
 
     settings = config.load_tui_settings()
@@ -504,9 +222,9 @@ def upload_daily(video_path, title=None, description=None,
         config.log(f"shortened: {video_url} → {short_url}")
 
     custom_title = (settings.get("custom_title") or "").strip()
-    if custom_title:
+    if custom_title and not raw:
         title = _format_template(custom_title, title=title, url=short_url or video_url)
-    else:
+    elif not raw:
         title = f"{prefix}{title}{suffix}"
 
     thumbnail_path = None
@@ -519,8 +237,10 @@ def upload_daily(video_path, title=None, description=None,
     config.log(f"uploading: {title}")
 
     custom_desc = (settings.get("custom_description") or "").strip()
-    if custom_desc:
+    if custom_desc and (description is None or not raw):
         upload_desc = _format_template(custom_desc, title=title, url=short_url or video_url)
+    elif raw and description:
+        upload_desc = description
     else:
         upload_desc = "Download link in pinned comment"
         keywords = _extract_keywords(description) if description else ""
@@ -533,21 +253,23 @@ def upload_daily(video_path, title=None, description=None,
         description=upload_desc,
         tags=tags or [],
         category_id=category_id,
-        privacy_status="private" if publish_at else "public",
+        privacy_status=privacy_status or "public",
         thumbnail_path=thumbnail_path,
-        publish_at=publish_at,
     )
 
     if video_id:
         comment_text = None
-        custom_comment = (settings.get("custom_comment") or "").strip()
-        if custom_comment:
-            comment_text = _format_template(custom_comment,
-                                            url=short_url or video_url, title=title)
-        elif short_url:
-            comment_text = f"Download link: {short_url}"
-        elif video_url:
-            comment_text = f"Download link: {video_url}"
+        if comment:
+            comment_text = comment
+        else:
+            custom_comment = (settings.get("custom_comment") or "").strip()
+            if custom_comment:
+                comment_text = _format_template(custom_comment,
+                                                url=short_url or video_url, title=title)
+            elif short_url:
+                comment_text = f"Download link: {short_url}"
+            elif video_url:
+                comment_text = f"Download link: {video_url}"
 
         comment_id = None
         if comment_text:
@@ -563,16 +285,6 @@ def upload_daily(video_path, title=None, description=None,
         state["last_upload_date"] = today
         state["last_upload_hour"] = datetime.now(timezone.utc).isoformat()
         state["total_uploaded"] = state.get("total_uploaded", 0) + 1
-        if publish_at:
-            slot_str = publish_at[11:16]
-            filled_date = state.get("filled_slots_date", "")
-            filled = state.get("filled_slots", [])
-            if filled_date != today:
-                filled = []
-            if slot_str not in filled:
-                filled.append(slot_str)
-            state["filled_slots"] = filled
-            state["filled_slots_date"] = today
         # Mark the SOURCE video as processed only after a successful upload
         source_vid = ""
         if video_url:
@@ -594,19 +306,16 @@ def upload_daily(video_path, title=None, description=None,
             "comment_id": comment_id or "",
             "source_video_id": source_vid,
             "source_channel": source_channel or "",
+            "account_name": "",
         }
         if supabase_db.is_enabled():
             supabase_db.add_upload_log(entry, project_id=config.PROJECT_ID)
-            if source_vid and source_channel:
-                try:
-                    supabase_db.save_mirror_state(source_channel, source_vid, {
-                        "mirrored_video_id": video_id,
-                        "original_title": title,
-                        "mirrored_at": datetime.now(timezone.utc).isoformat(),
-                        "comment_id": comment_id or "",
-                    }, project_id=config.PROJECT_ID)
-                except Exception as e:
-                    config.log(f"mirror_state record failed: {e}")
+            try:
+                account = supabase_db.get_project_account(config.PROJECT_ID)
+                if account:
+                    supabase_db.increment_account_uploads(account["name"])
+            except Exception as e:
+                config.log(f"account upload count update failed: {e}")
         else:
             log = load_daily_log()
             log["uploads"].append(entry)
@@ -619,33 +328,9 @@ def upload_daily(video_path, title=None, description=None,
     return video_id
 
 
-def process_and_upload(input_path, title=None, description=None,
-                        tags=None, source_url=None):
-    can, reason = can_upload_today()
-    if not can:
-        return None, reason
-
-    processed = process_video(input_path)
-    if not processed:
-        return None, "processing failed or duplicate"
-
-    video_id = upload_daily(processed, title, description, tags, source_url=source_url)
-    if video_id:
-        return video_id, "uploaded"
-    return None, "upload failed"
-
-
 def get_status():
     state = load_upload_state()
-    warmup_day = get_warmup_day()
-    can, reason = can_upload_today()
-
     return {
-        "warmup_day": warmup_day,
-        "warmup_total": _get_warmup_days(),
-        "warmup_complete": is_warmup_complete(),
-        "can_upload": can,
-        "upload_reason": reason,
         "total_uploaded": state.get("total_uploaded", 0),
         "last_upload": state.get("last_upload_date"),
         "processed_count": len(state.get("processed_hashes", [])),

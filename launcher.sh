@@ -25,7 +25,7 @@ if [ "$SKIP_UPDATE" = false ] && [ -n "$REMOTE" ] && command -v git >/dev/null 2
         rm -rf "$TMP_REPO"
         git clone --depth 1 "$REMOTE" "$TMP_REPO" >/dev/null 2>&1 && ok=1
     fi
-    if [ "$ok" = 1 ] && [ -f "$TMP_REPO/mirror.py" ]; then
+    if [ "$ok" = 1 ] && [ -f "$TMP_REPO/yt_auto.py" ]; then
         NEW_HEAD=$(git -C "$TMP_REPO" rev-parse --short HEAD 2>/dev/null)
         if [ -n "$NEW_HEAD" ] && [ "$NEW_HEAD" != "$LAST_HEAD" ]; then
             if [ -n "$LAST_HEAD" ]; then
@@ -37,11 +37,9 @@ if [ "$SKIP_UPDATE" = false ] && [ -n "$REMOTE" ] && command -v git >/dev/null 2
             # missing from an existing installation.
             cp "$TMP_REPO"/*.py "$SRC/" 2>/dev/null
             cp "$TMP_REPO"/*.txt "$SRC/" 2>/dev/null
-            cp "$TMP_REPO"/*.json "$SRC/" 2>/dev/null
             cp "$TMP_REPO"/*.sql "$SRC/" 2>/dev/null
             cp "$TMP_REPO/install.sh" "$SRC/" 2>/dev/null
             cp "$TMP_REPO/launcher.sh" "$SRC/" 2>/dev/null
-            [ -d "$TMP_REPO/.github" ] && cp -r "$TMP_REPO/.github" "$SRC/" 2>/dev/null
             # Re-install deps only when requirements.txt actually changed
             REQ_SHA=$(sha256sum "$SRC/requirements.txt" 2>/dev/null | cut -d' ' -f1)
             META_REQ=$(python3 -c "import json; print(json.load(open('$META')).get('requirements_sha',''))" 2>/dev/null)

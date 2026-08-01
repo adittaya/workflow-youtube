@@ -1,36 +1,23 @@
 #!/usr/bin/env python3
 """Self-verification for YT VIDEO AUTOMATION.
 
-The bot has full database access and uses the database as its single source
-of truth. Every cycle it runs this module to CHECK its own state against the
-database, flag everything inconsistent, and HEAL only the small, provable
-inconsistencies (a log row proving an upload happened is not a guess). It
-never invents state — which is what lets it run 24/7 without hallucinating.
+Every run of `yt-auto verify` checks local state against the database (or
+local store), flags everything inconsistent, and HEALS only the small,
+provable inconsistencies (a log row proving an upload happened is not a
+guess). It never invents state.
 
-In CI this is invoked by continuous_loop.py. Standalone health report:
+Standalone health report:
 
     PROJECT_ID=2 python3 verify_state.py          # project 2 (auto-heal on)
     PROJECT_ID=2 python3 verify_state.py --no-fix # report only
     python3 verify_state.py --all                 # every project
 """
 import os
-import re
 import sys
-from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import supabase_db
-
-STALE_WORK_MIN = 45
-
-
-def _now():
-    return datetime.now(timezone.utc)
-
-
-def _today():
-    return _now().strftime("%Y-%m-%d")
 
 
 def _clean_list(items):
@@ -42,19 +29,6 @@ def _clean_list(items):
             seen.add(x)
             out.append(x)
     return out
-
-
-def _norm_channel(raw):
-    """Normalize a channel reference from a project's channels CSV into the
-    canonical form used by channel_cursors (@handle or UC... id)."""
-    raw = (raw or "").strip()
-    m = re.search(r'@([\w\-\.]+)', raw)
-    if m:
-        return "@" + m.group(1)
-    m = re.search(r'(UC[\w\-]{22,})', raw)
-    if m:
-        return m.group(1)
-    return raw or None
 
 
 class Verifier:
@@ -126,144 +100,29 @@ class Verifier:
             return
         problems = []
         if not supabase_db.is_enabled():
-            # Local-first mode: credentials/proxy come from local config, not
-            # the project row — only the queue-relevant settings are checked.
-            try:
-                per_day = int(project.get("uploads_per_day") or 0)
-            except (TypeError, ValueError):
-                per_day = 0
-            if per_day < 1:
-                problems.append(f"uploads_per_day invalid ({project.get('uploads_per_day')})")
-            try:
-                warmup_days = int(project.get("warmup_days") or 0)
-            except (TypeError, ValueError):
-                warmup_days = -1
-            if warmup_days < 0:
-                problems.append("warmup_days invalid")
+            # Local-first mode: credentials come from local config (accounts.json),
+            # not the project row — only presence of the local project is checked.
+            if not project.get("name"):
+                problems.append("project has no name")
             if problems:
                 self._warn("project_config", "; ".join(problems))
             else:
-                self._ok("project_config", f"local project — {per_day}/day")
+                self._ok("project_config", f"local project '{project.get('name')}'")
             return
-        if not project.get("github_repo"):
-            problems.append("github_repo not set")
         if not project.get("yt_client_id") or not project.get("yt_client_secret") or not project.get("yt_refresh_token"):
             problems.append("youtube credentials missing on project row")
-        try:
-            per_day = int(project.get("uploads_per_day") or 0)
-        except (TypeError, ValueError):
-            per_day = 0
-        if per_day < 1:
-            problems.append(f"uploads_per_day invalid ({project.get('uploads_per_day')})")
-        try:
-            warmup_days = int(project.get("warmup_days") or 0)
-        except (TypeError, ValueError):
-            warmup_days = -1
-        if warmup_days < 0:
-            problems.append("warmup_days invalid")
-        channels = [c.strip() for c in str(project.get("channels") or "").split(",") if c.strip()]
-        if not channels:
-            problems.append("no channels configured")
-        if not project.get("proxy_supabase_url") or not project.get("proxy_supabase_key"):
-            problems.append("proxy supabase not configured (downloads may fail)")
         if problems:
             self._warn("project_config", "; ".join(problems))
         else:
-            self._ok("project_config",
-                     f"{project.get('name')} — {len(channels)} channel(s), {per_day}/day")
-
-    def check_run_lock(self):
-        if not self._has("run_locks"):
-            self._warn("run_lock", "run_locks table missing — apply schema.sql")
-            return
-        rows = supabase_db._request("GET", f"run_locks?project_id=eq.{self.pid}&select=owner,expires_at")
-        if not rows:
-            self._warn("run_lock", "no run lock present (bot may not be running)")
-            return
-        lock = rows[0]
-        owner = lock.get("owner", "")
-        if self.owner and owner == self.owner:
-            self._ok("run_lock", f"lock held by this run ({owner})")
-        elif self.owner:
-            alive = supabase_db._lock_owner_alive(self.pid, owner)
-            if alive:
-                self._warn("run_lock", f"another run holds the lock ({owner})")
-            else:
-                self._fail("run_lock",
-                           f"stale lock held by dead owner {owner} — acquire would have stolen it")
-        else:
-            self._ok("run_lock", f"held by {owner}" if owner else "no owner")
-
-    def check_lock_cleanup(self):
-        if not self.fix or not self._has("run_locks"):
-            return
-        try:
-            removed = supabase_db.clear_expired_locks()
-            if removed:
-                self._warn("lock_cleanup", f"removed {removed} expired run lock(s)", healed=True)
-            else:
-                self._ok("lock_cleanup", "no expired locks")
-        except Exception as e:
-            self._warn("lock_cleanup", f"cleanup failed: {e}")
-
-    def check_heartbeat(self):
-        if not self._has("run_heartbeats"):
-            self._warn("heartbeat", "run_heartbeats table missing — apply schema.sql")
-            return
-        hb = supabase_db.get_heartbeat(self.pid)
-        if self.owner:
-            try:
-                supabase_db.update_heartbeat(project_id=self.pid, run_id=self.owner,
-                                             status="running", message="verify pass")
-            except Exception as e:
-                self._warn("heartbeat", f"heartbeat update failed: {e}")
-                return
-        if not hb:
-            self._warn("heartbeat", "no heartbeat recorded yet")
-            return
-        t = supabase_db._parse_ts(hb.get("last_seen"))
-        if not t:
-            self._warn("heartbeat", "heartbeat timestamp unparseable")
-            return
-        age_min = (_now() - t).total_seconds() / 60
-        run_id = hb.get("run_id", "")
-        if age_min > 60:
-            self._warn("heartbeat", f"last heartbeat {age_min:.0f} min ago (run {run_id})")
-        else:
-            self._ok("heartbeat", f"run {run_id} alive — {age_min:.0f} min ago, iter {hb.get('iteration', 0)}")
-
-    def check_warmup(self):
-        state = self._state()
-        if not state.get("warmup_start"):
-            self._warn("warmup", "warmup never started (account_created/history missing)")
-            return
-        start = supabase_db._parse_ts(state.get("warmup_start"))
-        if not start:
-            self._warn("warmup", f"warmup_start unparseable: {state.get('warmup_start')}")
-            return
-        days = (_now().replace(tzinfo=None) - start.replace(tzinfo=None)).days
-        try:
-            project = self._project()
-            warmup_days = int((project or {}).get("warmup_days") or 0)
-        except (TypeError, ValueError):
-            warmup_days = 0
-        expected_done = days >= warmup_days
-        if state.get("warmup_complete") != expected_done:
-            self._warn("warmup",
-                       f"day {days}/{warmup_days}, complete={state.get('warmup_complete')} "
-                       f"(expected {expected_done})")
-        elif expected_done:
-            self._ok("warmup", f"complete (day {days}/{warmup_days})")
-        else:
-            self._ok("warmup", f"day {days}/{warmup_days}")
+            self._ok("project_config", f"{project.get('name')} — credentials set")
 
     def check_dedup(self):
         """processed_hashes is the dedup key that stops re-uploads. Reconcile
         it against upload_logs: a log row PROVES the source was already
-        mirrored, so any logged source missing from processed_hashes is
+        uploaded, so any logged source missing from processed_hashes is
         appended (prevents the duplicate-reupload bug). Entries with no log
-        and no mirror_state record are flagged (audit gap), not removed —
-        removing dedup would risk re-uploading."""
+        are flagged (audit gap), not removed — removing dedup would risk
+        re-uploading."""
         if not self._has("upload_logs"):
             self._warn("dedup", "upload_logs table missing — apply schema.sql")
             return
@@ -289,144 +148,8 @@ class Verifier:
                            healed=True)
             else:
                 self._warn("dedup", f"{len(missing)} uploaded source(s) missing from processed_hashes: {missing}")
-        pending = supabase_db.get_pending_hashes(project_id=self.pid)
-        stale_pending = [h for h in pending if h in processed]
-        if stale_pending:
-            if self.fix:
-                remaining = [h for h in pending if h not in processed]
-                supabase_db.set_pending_hashes(remaining, project_id=self.pid)
-                self._warn("dedup", f"dropped {len(stale_pending)} already-processed video(s) from queue: {stale_pending}",
-                           healed=True)
-            else:
-                self._warn("dedup", f"{len(stale_pending)} processed video(s) still queued for upload: {stale_pending}")
         else:
-            self._ok("dedup", f"{len(processed)} processed, {len(logged_sources)} logged sources, queue clean")
-
-    def check_pending_queue(self):
-        if not self._has("work_queue"):
-            self._warn("pending_queue", "work_queue table missing — apply schema.sql")
-            return
-        pending = supabase_db.get_pending_hashes(project_id=self.pid)
-        processed = _clean_list(self._state().get("processed_hashes"))
-        items = supabase_db.get_work_queue(project_id=self.pid, limit=50, status="pending")
-        pending_item_ids = {it.get("video_id") for it in items}
-        for vid in pending:
-            if vid in processed:
-                continue
-            if vid not in pending_item_ids:
-                if self.fix:
-                    supabase_db.add_work_item("detect", project_id=self.pid,
-                                              video_id=vid, title="", status="pending")
-                    self._warn("pending_queue", f"re-created missing work item for queued video {vid}",
-                               healed=True)
-                else:
-                    self._warn("pending_queue", f"queued video {vid} has no pending work item")
-                return
-        for it in items:
-            if it.get("video_id") in processed:
-                if self.fix:
-                    supabase_db.update_work_item(it["id"], status="done",
-                                                 error="already processed — closed by verifier")
-                    self._warn("pending_queue", f"closed stale pending item {it['id']} for processed video",
-                               healed=True)
-                else:
-                    self._warn("pending_queue", f"stale pending item {it['id']} for processed video")
-        self._ok("pending_queue", f"{len(pending)} queued, {len(items)} pending work item(s)")
-
-    def check_today_quota(self):
-        state = self._state()
-        project = self._project()
-        try:
-            max_per_day = int((project or {}).get("uploads_per_day") or 2)
-        except (TypeError, ValueError):
-            max_per_day = 2
-        today_count = supabase_db.get_today_upload_count(_today(), project_id=self.pid)
-        last_date = state.get("last_upload_date")
-        if last_date == _today():
-            if today_count >= max_per_day:
-                self._ok("today_quota", f"quota reached ({today_count}/{max_per_day} today)")
-            elif today_count == 0:
-                self._warn("today_quota",
-                           "state says uploaded today but zero log rows — logs may have been deleted")
-            else:
-                self._ok("today_quota", f"{today_count}/{max_per_day} uploaded today")
-        else:
-            if today_count > 0:
-                if self.fix:
-                    # Logs PROVE uploads happened today even though state is
-                    # stale — heal the drift so quota/dedup stay correct.
-                    logs = supabase_db.get_upload_logs(limit=200, project_id=self.pid)
-                    today_logs = [l for l in logs
-                                  if (l.get("upload_date") or "")[:10] == _today()]
-                    latest = today_logs[0].get("upload_time") if today_logs else None
-                    if latest:
-                        state["last_upload_hour"] = latest
-                    state["last_upload_date"] = _today()
-                    total_logs = len([l for l in logs if l.get("upload_date")])
-                    if total_logs > int(state.get("total_uploaded") or 0):
-                        state["total_uploaded"] = total_logs
-                    self._save_state(state)
-                    self._warn("today_quota",
-                               f"healed stale state from {len(today_logs)} log row(s) today",
-                               healed=True)
-                else:
-                    self._warn("today_quota",
-                               f"{today_count} upload(s) today but last_upload_date={last_date}")
-            else:
-                self._ok("today_quota", f"no uploads today (last {last_date})")
-
-    def check_stale_work(self):
-        if not self.fix or not self._has("work_queue"):
-            return
-        try:
-            closed = supabase_db.close_stale_work_items(project_id=self.pid, stale_minutes=STALE_WORK_MIN)
-            if closed:
-                self._warn("stale_work", f"marked {closed} stale in_progress item(s) failed", healed=True)
-            else:
-                self._ok("stale_work", "no stale work items")
-        except Exception as e:
-            self._warn("stale_work", f"failed: {e}")
-
-    def check_cursors(self):
-        try:
-            if not supabase_db.is_enabled():
-                import config
-                raw = [c for c, meta in config.load_channels().items()
-                       if meta.get("enabled", True)]
-            else:
-                project = self._project()
-                raw = str((project or {}).get("channels") or "").split(",")
-            channels = [_norm_channel(c) for c in raw]
-            channels = [c for c in channels if c]
-        except Exception:
-            channels = []
-        if not channels:
-            self._warn("cursors", "no channels configured on project")
-            return
-        cursors = supabase_db.get_all_cursors(project_id=self.pid)
-        missing = [c for c in channels if c not in cursors]
-        if missing:
-            self._warn("cursors", f"no cursor yet for: {missing}")
-        else:
-            self._ok("cursors", f"{len(channels)} channel cursor(s) present")
-
-    def check_mirror_audit(self):
-        if not self._has("mirror_state"):
-            self._warn("mirror_audit", "mirror_state table missing — apply schema.sql")
-            return
-        try:
-            logs = supabase_db.get_upload_logs(limit=500, project_id=self.pid)
-            mirror_rows = supabase_db.get_all_mirror_states(project_id=self.pid)
-        except Exception as e:
-            self._warn("mirror_audit", f"load failed: {e}")
-            return
-        log_ids = {l.get("video_id") for l in logs if l.get("video_id")}
-        no_log = [r for r in mirror_rows if r.get("mirrored_video_id") not in log_ids]
-        if no_log:
-            self._warn("mirror_audit",
-                       f"{len(no_log)} mirror_state record(s) without an upload_log row (audit gap)")
-        else:
-            self._ok("mirror_audit", f"{len(logs)} log row(s), {len(mirror_rows)} mirror record(s) consistent")
+            self._ok("dedup", f"{len(processed)} processed, {len(logged_sources)} logged sources consistent")
 
     def check_alerts(self):
         if not self._has("alerts"):
@@ -448,8 +171,7 @@ class Verifier:
     def run_all(self):
         self.log(f"[verify] project {self.pid} — checking state against database")
         self.missing_tables = [t for t in (
-            "run_heartbeats", "verify_checks", "alerts", "mirror_state",
-            "work_queue", "run_locks", "upload_logs", "upload_state") if not supabase_db.table_exists(t)]
+            "verify_checks", "alerts", "upload_logs", "upload_state") if not supabase_db.table_exists(t)]
         if self.missing_tables:
             self._warn("schema",
                        f"table(s) missing: {self.missing_tables} — run schema.sql in the "
@@ -458,16 +180,7 @@ class Verifier:
         if self.results and self.results[0]["status"] == "fail":
             return self.summarize()
         self.check_project_config()
-        self.check_run_lock()
-        self.check_lock_cleanup()
-        self.check_heartbeat()
-        self.check_warmup()
         self.check_dedup()
-        self.check_pending_queue()
-        self.check_today_quota()
-        self.check_stale_work()
-        self.check_cursors()
-        self.check_mirror_audit()
         self.check_alerts()
         self._persist()
         self._resolve_fixed_alerts()

@@ -8,7 +8,6 @@ import supabase_db
 
 DATA_DIR = Path(os.environ.get("YT_DATA_DIR", os.path.expanduser("~/.yt-mirror")))
 CONFIG_PATH = DATA_DIR / "config.json"
-CHANNELS_PATH = DATA_DIR / "channels.json"
 STATE_PATH = DATA_DIR / "state.json"
 ACCOUNTS_PATH = DATA_DIR / "accounts.json"
 SETTINGS_PATH = DATA_DIR / "settings.json"
@@ -24,7 +23,6 @@ DEFAULTS = {
     "shortener_provider": "none",
     "shortener_api_key": "",
     "shortener_api_url": "",
-    "check_interval_minutes": 15,
     "mirror_title_prefix": "",
     "mirror_description_suffix": "",
     "custom_title": "",
@@ -80,51 +78,14 @@ def save(config):
 
 
 def load_channels():
-    if supabase_db.is_enabled() and not PROJECT_ID:
-        rows = supabase_db.get_all_channels()
-        return {r["id"]: {
-            "url": r.get("url", ""),
-            "alias": r.get("name", r["id"]),
-            "added_at": r.get("added_at", ""),
-            "enabled": r.get("enabled", True),
-        } for r in rows}
-    _ensure_dir()
-    try:
-        return json.loads(CHANNELS_PATH.read_text("utf-8"))
-    except Exception:
-        return {}
+    return {}
 
 
 def save_channels(channels):
-    if supabase_db.is_enabled() and not PROJECT_ID:
-        for ch_id, ch in channels.items():
-            supabase_db.save_channel(ch_id, {
-                "name": ch.get("alias", ch_id),
-                "url": ch.get("url", ""),
-                "enabled": ch.get("enabled", True),
-                "added_at": ch.get("added_at"),
-            })
-        return
-    _ensure_dir()
-    _write_json(CHANNELS_PATH, channels)
+    return
 
 
 def load_state():
-    if supabase_db.is_enabled():
-        pid = PROJECT_ID
-        processed_rows = supabase_db.get_all_mirror_states(project_id=pid)
-        stats = supabase_db.get_mirror_stats(project_id=pid)
-        processed = {}
-        for r in processed_rows:
-            key = f"{r['source_channel']}:{r['source_video_id']}"
-            processed[key] = {
-                "new_video_id": r.get("mirrored_video_id") or "",
-                "original_title": r.get("original_title", ""),
-                "mirrored_at": r.get("mirrored_at") or "",
-                "comment_id": r.get("comment_id", ""),
-                "shortened_urls": r.get("shortened_urls") or {},
-            }
-        return {"processed": processed, "stats": stats}
     _ensure_dir()
     try:
         return json.loads(STATE_PATH.read_text("utf-8"))
@@ -133,22 +94,6 @@ def load_state():
 
 
 def save_state(state):
-    if supabase_db.is_enabled():
-        pid = PROJECT_ID
-        for key, entry in state.get("processed", {}).items():
-            if ":" in key:
-                source, vid = key.split(":", 1)
-            else:
-                source, vid = key, ""
-            supabase_db.save_mirror_state(source, vid, {
-                "mirrored_video_id": entry.get("new_video_id") or entry.get("mirrored_video_id"),
-                "original_title": entry.get("original_title", ""),
-                "mirrored_at": entry.get("mirrored_at"),
-                "comment_id": entry.get("comment_id", ""),
-                "shortened_urls": entry.get("shortened_urls", {}),
-            }, project_id=pid)
-        supabase_db.update_mirror_stats(state.get("stats", {}), project_id=pid)
-        return
     _ensure_dir()
     _write_json(STATE_PATH, state)
 
@@ -186,10 +131,6 @@ def save_accounts(accounts):
 
 
 PROJECT_FIELD_MAP = {
-    "warmup_days": "warmup_days",
-    "uploads_per_day": "uploads_per_day",
-    "initial_backfill": "initial_backfill",
-    "upload_schedule": "upload_schedule",
     "comment_moderation": "comment_moderation",
     "mirror_title_prefix": "mirror_title_prefix",
     "mirror_description_suffix": "mirror_description_suffix",
@@ -204,7 +145,6 @@ PROJECT_FIELD_MAP = {
 def load_tui_settings():
     defaults = {
         "active_account": "",
-        "active_github": "",
         "comment_text": "Download: {url}",
         "mirror_title_prefix": "",
         "mirror_description_suffix": "",
@@ -215,14 +155,8 @@ def load_tui_settings():
         "category_id": "22",
         "shortener_api_key": "",
         "shortener_api_url": "",
-        "check_interval_minutes": 15,
-        "max_per_cycle": 3,
         "shortener_provider": "vplink",
         "comment_moderation": "heldForReview",
-        "warmup_days": 0,
-        "uploads_per_day": 2,
-        "initial_backfill": 5,
-        "upload_schedule": "",
     }
     if supabase_db.is_enabled():
         if PROJECT_ID:
@@ -282,46 +216,6 @@ def get_active_account_name():
 def is_configured():
     creds = get_yt_credentials()
     return bool(creds["client_id"] and creds["client_secret"] and creds["refresh_token"])
-
-
-def add_channel(url, alias=""):
-    channels = load_channels()
-    channel_id = _extract_channel_id(url)
-    if not channel_id:
-        return False, "Invalid channel URL — use @handle or channel ID"
-    if channel_id in channels:
-        return False, "Channel already tracked"
-    channels[channel_id] = {
-        "url": url,
-        "alias": alias or channel_id,
-        "added_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "enabled": True,
-    }
-    save_channels(channels)
-    return True, channel_id
-
-
-def remove_channel(channel_id):
-    channels = load_channels()
-    if channel_id not in channels:
-        return False, "Channel not found"
-    del channels[channel_id]
-    save_channels(channels)
-    return True, None
-
-
-def _extract_channel_id(url):
-    url = url.strip()
-    if "/channel/" in url:
-        return url.split("/channel/")[-1].split("/")[0].split("?")[0]
-    if "@" in url:
-        handle = url.split("@")[-1].split("/")[0].split("?")[0]
-        return f"@{handle}"
-    if url.startswith("UC") and len(url) > 20:
-        return url
-    if "youtube.com" in url and "/c/" in url:
-        return url.split("/c/")[-1].split("/")[0].split("?")[0]
-    return url
 
 
 def log(msg):

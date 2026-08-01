@@ -1,28 +1,24 @@
 # YT VIDEO AUTOMATION
 
-Local-first YouTube mirror bot: monitors target channels, detects new uploads,
-and mirrors them to your own channel with the same audio/video processing
-pipeline (Demucs vocal separation, FFmpeg edits, non-copyright BGM) to avoid
-Content ID.
+Manual YouTube upload tool: paste a video link, it downloads the video, runs
+the audio/video processing pipeline (Demucs vocal separation, FFmpeg edits,
+non-copyright BGM) to avoid Content ID, and uploads to your channel.
 
-Runs entirely on your machine using local JSON state files — **no Supabase or
-GitHub required**. Cloud mode (Supabase + GitHub Actions 24/7) remains
-available as an opt-in.
+Runs on your machine using local JSON state files — **no GitHub or 24/7
+daemon**. Cloud storage via Supabase remains available as an opt-in.
 
 ## Features
 
-- **Detect → Process → Upload** loop every 15 minutes
-- **Local daemon**: `yt-auto run` runs continuously (detect → upload → sleep),
-  schedulable with `cron` or `nohup`
-- **Single pass**: `yt-auto run --once` for one detect+upload+verify cycle
+- **Manual upload**: `yt-auto upload URL` — link → process → title/comment/
+  description prompts → publish (or save as private draft)
 - **Video processing**: Demucs vocal separation (strips original music),
   FFmpeg edits (crop/speed/grain/brightness/fade), non-copyright BGM mix
-- **Comments**: posts the shortened download link on the mirrored video
+- **Comments**: posts the shortened download link on the uploaded video
   (VPLink/CleanURI/TinyURL or plain URL)
 - **Self-verification**: `yt-auto verify` checks state against the logs and
   heals only provable inconsistencies
-- **Run-lock guard**: parallel runs are serialized via a local lock with
-  heartbeat + stale-owner stealing
+- **Multi-account**: saved YouTube accounts with OAuth refresh-token health
+  tracking; projects pick who uploads
 
 ## Quick Start (local mode)
 
@@ -33,32 +29,29 @@ YouTube Data API v3 enabled (Desktop app, consent screen published).
 # 1. Install dependencies
 pip3 install -r requirements.txt
 
-# 2. Guided setup (YouTube credentials + channels)
+# 2. Guided setup (YouTube credentials)
 python3 yt_auto.py setup
 
 # 3. OAuth login — get a refresh token (opens browser)
 python3 yt_auto.py oauth
 
-# 4. Check status
-python3 yt_auto.py status
-
-# 5. Run the daemon (cron/no block of this terminal)
-nohup python3 yt_auto.py run > ~/.yt-mirror/daemon.log 2>&1 &
+# 4. Upload a video
+python3 yt_auto.py upload https://www.youtube.com/watch?v=...
 ```
 
-Or as a one-off:
+Or use the management TUI:
 
 ```bash
-python3 yt_auto.py run --once
+python3 tui.py
 ```
 
 ## CLI Reference
 
 ```
-yt-auto run [--once] [--dry-run] [--duration H]   continuous daemon / single pass
+yt-auto upload <URL>                              interactive upload: link → process →
+                                                  title/comment/description prompts → publish
 yt-auto setup                                     guided first-time configuration
-yt-auto oauth                                     YouTube OAuth login
-yt-auto channels list|add <url> [alias]|remove <id>
+yt-auto oauth                                     YouTube OAuth login (get refresh token)
 yt-auto status [--json]                           current state summary
 yt-auto logs [N] [--json]                         recent upload log entries
 yt-auto verify [--no-fix]                         self-verification of state
@@ -79,8 +72,7 @@ Download → Demucs vocal separation → FFmpeg edits → Non-copyright BGM mix 
   fade in/out (crop auto-scales to source resolution)
 - **BGM**: a non-copyright track is mixed under the vocals at a low volume
   (falls back to vocals-only if unavailable)
-- Uploads use the `android` yt-dlp client (avoids bot checks) through a
-  rotating proxy pool when configured
+- Downloads use the `android` yt-dlp client (avoids bot checks)
 
 ## State & Files
 
@@ -89,24 +81,20 @@ Everything lives in `~/.yt-mirror/` (override with `YT_DATA_DIR`):
 | File | Purpose |
 |------|---------|
 | `config.json` | YouTube credentials, shortener config |
-| `channels.json` | Tracked channels |
-| `settings.json` | Upload schedule / per-day quota / warmup settings |
-| `upload_state.json` | Warmup, total uploaded, processed/pending hashes |
+| `accounts.json` | Saved YouTube accounts |
+| `settings.json` | Title/comment/description templates, shortener config |
+| `upload_state.json` | Total uploaded, last upload, processed hashes |
 | `daily_log.json` | Upload audit trail |
-| `state.json` | Mirror records + stats |
-| `store/` | Local tables (projects, cursors, work queue, run locks, alerts) |
+| `store/` | Local tables (projects, upload logs, alerts) |
 
 All writes are atomic (`mkstemp` + rename, `0600`).
 
 ## Cloud Mode (opt-in)
 
-Set `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` (or use the TUI's `[C]` Database
-connection) and the same code persists to Supabase and can be deployed to
-GitHub Actions for 24/7 operation (see `.github/workflows/`). The TUI
-(`python3 tui.py`) is hybrid — it runs on local JSON files by default and
-manages cloud projects, OAuth and deploys once a Supabase connection is set.
-Each project carries a `Proxy system` toggle (field 9) that routes downloads
-through the residential proxy pool when enabled.
+Set `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` (or use the TUI's `[4]` Database
+connection) and the same code persists to Supabase instead of local JSON. The
+TUI (`python3 tui.py`) is hybrid — it runs on local JSON files by default and
+manages cloud projects/accounts once a Supabase connection is set.
 
 ## Security
 

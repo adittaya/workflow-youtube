@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Self-verification for the YouTube Mirror Bot.
+"""Self-verification for YT VIDEO AUTOMATION.
 
 The bot has full database access and uses the database as its single source
 of truth. Every cycle it runs this module to CHECK its own state against the

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# YouTube Mirror Bot launcher — auto-updates to the latest version on every
+# YT VIDEO AUTOMATION launcher — auto-updates to the latest version on every
 # launch (skip with --no-update). Installed by install.sh into ~/.local/bin.
 META="$HOME/.yt-mirror/.install_meta.json"
 SRC="$HOME/.yt-mirror/src"
@@ -77,4 +77,4 @@ if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
 fi
 
 cd "$SRC" || exit 1
-exec python3 "$SRC/tui.py" "${ARGS[@]}"
+exec python3 "$SRC/yt_auto.py" "${ARGS[@]}"

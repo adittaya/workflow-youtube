@@ -3,17 +3,18 @@ set -e
 
 INSTALL_DIR="${YT_MIRROR_HOME:-$HOME/.yt-mirror}"
 BIN_DIR="${HOME}/.local/bin"
-BIN="${BIN_DIR}/VPLINKYT"
+BIN="${BIN_DIR}/yt-auto"
 SRC_DIR="${INSTALL_DIR}/src"
 
 echo "╔══════════════════════════════════════════════════════════╗"
-echo "║        Y O U T U B E   M I R R O R   I N S T A L L     ║"
+echo "║      Y T   V I D E O   A U T O M A T I O N              ║"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo ""
 
 # --- Detect source — local git clone or one-liner ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
-REPO_URL="https://github.com/adittaya/workflow-shorturl-yt.git"
+# Point this at the new repo once it exists (or set YT_REPO_URL when running).
+REPO_URL="${YT_REPO_URL:-https://github.com/adittaya/workflow-shorturl-yt.git}"
 
 if [ -f "$SCRIPT_DIR/mirror.py" ]; then
     COPY_SRC="$SCRIPT_DIR"
@@ -56,7 +57,7 @@ fi
 echo "[3/7] Installing Python dependencies..."
 pip3 install --break-system-packages -q -r "$COPY_SRC/requirements.txt" 2>/dev/null \
   || pip3 install -q -r "$COPY_SRC/requirements.txt" 2>/dev/null \
-  || { echo "  Trying with --user..."; pip3 install --user -q -r "$SCRIPT_DIR/requirements.txt"; }
+  || { echo "  Trying with --user..."; pip3 install --user -q -r "$COPY_SRC/requirements.txt"; }
 
 # --- yt-dlp ---
 echo "[4/7] Checking yt-dlp..."
@@ -106,12 +107,15 @@ mkdir -p "$BIN_DIR"
 if [ -f "$COPY_SRC/launcher.sh" ]; then
     cp "$COPY_SRC/launcher.sh" "$BIN"
     chmod +x "$BIN"
+    # Compatibility symlink for the old name (opens the yt-auto CLI).
+    ln -sf "$BIN" "$BIN_DIR/VPLINKYT"
 else
     cat > "$BIN" << 'FALLBACK'
 #!/usr/bin/env bash
-exec python3 "$HOME/.yt-mirror/src/tui.py" "$@"
+exec python3 "$HOME/.yt-mirror/src/yt_auto.py" "$@"
 FALLBACK
     chmod +x "$BIN"
+    ln -sf "$BIN" "$BIN_DIR/VPLINKYT"
 fi
 
 if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
@@ -125,11 +129,11 @@ echo ""
 echo "  Source:  $SRC_DIR"
 echo "  Config:  $INSTALL_DIR"
 echo "  Binary:  $BIN"
-echo "  Auto-update: enabled (pulls latest on every VPLINKYT launch)"
+echo "  Auto-update: enabled (pulls latest on every launch)"
 echo ""
 echo "Run:"
-echo "  VPLINKYT              # Open management TUI (auto-updates)"
-echo "  VPLINKYT --no-update  # Skip auto-update"
-echo "  python3 $SRC_DIR/mirror.py      # Run mirror directly"
-echo "  python3 $SRC_DIR/daily_mirror.py # Run daily upload pipeline"
-echo "  python3 $SRC_DIR/tui.py          # Open TUI directly"
+echo "  yt-auto run                # Continuous daemon (detect → upload → sleep)"
+echo "  yt-auto setup              # Guided first-time configuration"
+echo "  yt-auto oauth              # YouTube OAuth login (get refresh token)"
+echo "  yt-auto status             # Current state summary"
+echo "  python3 $SRC_DIR/tui.py             # Legacy cloud-management TUI"

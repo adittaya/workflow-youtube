@@ -1,84 +1,71 @@
-# YouTube Mirror Bot
+# YT VIDEO AUTOMATION
 
-Monitors target YouTube channels, mirrors new uploads to your channel with VPLink shortened download links in comments. Includes video processing (Demucs vocal separation, FFmpeg edits, non-copyright BGM) to avoid Content ID.
+Local-first YouTube mirror bot: monitors target channels, detects new uploads,
+and mirrors them to your own channel with the same audio/video processing
+pipeline (Demucs vocal separation, FFmpeg edits, non-copyright BGM) to avoid
+Content ID.
 
-## One-Line Install
+Runs entirely on your machine using local JSON state files — **no Supabase or
+GitHub required**. Cloud mode (Supabase + GitHub Actions 24/7) remains
+available as an opt-in.
 
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/adittaya/workflow-shorturl-yt/main/install.sh)
-```
+## Features
 
-Or via git:
+- **Detect → Process → Upload** loop every 15 minutes
+- **Local daemon**: `yt-auto run` runs continuously (detect → upload → sleep),
+  schedulable with `cron` or `nohup`
+- **Single pass**: `yt-auto run --once` for one detect+upload+verify cycle
+- **Video processing**: Demucs vocal separation (strips original music),
+  FFmpeg edits (crop/speed/grain/brightness/fade), non-copyright BGM mix
+- **Comments**: posts the shortened download link on the mirrored video
+  (VPLink/CleanURI/TinyURL or plain URL)
+- **Self-verification**: `yt-auto verify` checks state against the logs and
+  heals only provable inconsistencies
+- **Run-lock guard**: parallel runs are serialized via a local lock with
+  heartbeat + stale-owner stealing
 
-```bash
-git clone https://github.com/adittaya/workflow-shorturl-yt.git && cd workflow-shorturl-yt && bash install.sh
-```
+## Quick Start (local mode)
 
-Then run `VPLINKYT` to open the management TUI.
-
-> Local install is lightweight (~50MB). All video processing (torch, demucs, ffmpeg) runs on GitHub Actions runners.
-
-## What It Does
-
-1. **Monitors** channels every 6 hours (GitHub Actions cron)
-2. **Detects** new uploads via uploads playlist
-3. **Downloads** video + thumbnail (yt-dlp)
-4. **Processes** — Demucs vocal separation, FFmpeg edits (crop/speed/grain/brightness/fade), non-copyright BGM mix
-5. **Uploads** to your YouTube channel with modified title/description/tags
-6. **Posts comment** with VPLink shortened download link (pinned, view-only)
-
-## Setup
-
-### Prerequisites
-- Python 3.10+
-- ffmpeg (`sudo apt install ffmpeg`)
-- Google Cloud Console project with YouTube Data API v3 enabled
-- OAuth consent screen (External, Published App)
-- Desktop App OAuth client → download `client_secrets.json`
-
-### First Time
+Prerequisites: Python 3.10+, `ffmpeg`, and a Google Cloud OAuth client with the
+YouTube Data API v3 enabled (Desktop app, consent screen published).
 
 ```bash
-# 1. Install
-bash install.sh
+# 1. Install dependencies
+pip3 install -r requirements.txt
 
-# 2. Get OAuth token (run locally, opens browser)
-python3 ~/.yt-mirror/src/get_refresh_token.py
+# 2. Guided setup (YouTube credentials + channels)
+python3 yt_auto.py setup
 
-# 3. Add channels to monitor
-VPLINKYT  # → [C] Channels → [A] Add
+# 3. OAuth login — get a refresh token (opens browser)
+python3 yt_auto.py oauth
 
-# 4. Deploy to GitHub Actions
-VPLINKYT  # → [D] Deploy → enter GitHub token + repo
+# 4. Check status
+python3 yt_auto.py status
+
+# 5. Run the daemon (cron/no block of this terminal)
+nohup python3 yt_auto.py run > ~/.yt-mirror/daemon.log 2>&1 &
 ```
 
-### GitHub Secrets
-
-| Secret | Purpose |
-|--------|---------|
-| `YT_CLIENT_ID` | OAuth client ID |
-| `YT_CLIENT_SECRET` | OAuth client secret |
-| `YT_REFRESH_TOKEN` | OAuth refresh token |
-| `CHANNELS` | Channels JSON (auto-set by deploy) |
-| `SETTINGS` | Settings JSON (auto-set by deploy) |
-| `SHORTLINK_KEYS` | VPLink API key (auto-set by deploy) |
-| `GH_PAT` | GitHub PAT for state pushes |
-
-## TUI Commands
+Or as a one-off:
 
 ```bash
-VPLINKYT                    # Open management TUI
-python3 ~/.yt-mirror/src/daily_mirror.py status    # Check warmup status
-python3 ~/.yt-mirror/src/daily_mirror.py warmup --reset  # Reset warmup
+python3 yt_auto.py run --once
 ```
 
-## Account Warmup
+## CLI Reference
 
-New YouTube accounts need 14 days of watching/liking/subscribing before uploading. The bot tracks this automatically:
+```
+yt-auto run [--once] [--dry-run] [--duration H]   continuous daemon / single pass
+yt-auto setup                                     guided first-time configuration
+yt-auto oauth                                     YouTube OAuth login
+yt-auto channels list|add <url> [alias]|remove <id>
+yt-auto status [--json]                           current state summary
+yt-auto logs [N] [--json]                         recent upload log entries
+yt-auto verify [--no-fix]                         self-verification of state
+yt-auto version
+```
 
-- **Day 0-14**: Warmup period — no uploads, just monitoring
-- **Day 15+**: Uploads enabled — 1 video/day max, 18h gap between uploads
-- Auto-resets if you change the OAuth account
+`--project <id>` selects a project (defaults to `$PROJECT_ID`).
 
 ## Video Processing Pipeline
 
@@ -86,33 +73,41 @@ New YouTube accounts need 14 days of watching/liking/subscribing before uploadin
 Download → Demucs vocal separation → FFmpeg edits → Non-copyright BGM mix → Upload
 ```
 
-- **5 edit presets**: random crop, speed change, film grain, brightness, fade in/out
-- **Auto-scaling**: crop values auto-adjust if they exceed source resolution
-- **CRF 28**: reasonable file sizes
-- **BGM**: built-in lo-fi study track (extensible)
+- **Demucs** separates vocals from the original music, which is discarded
+  (graceful fallback to the original audio if it fails)
+- **5 edit presets**: random crop, speed change, film grain, brightness,
+  fade in/out (crop auto-scales to source resolution)
+- **BGM**: a non-copyright track is mixed under the vocals at a low volume
+  (falls back to vocals-only if unavailable)
+- Uploads use the `android` yt-dlp client (avoids bot checks) through a
+  rotating proxy pool when configured
 
-## Project Structure
+## State & Files
 
-```
-├── mirror.py              # Main mirror engine
-├── monitor.py             # Channel polling, new video detection
-├── daily_uploader.py      # Warmup tracker, daily upload logic
-├── daily_mirror.py        # CLI entry point
-├── video_processor.py     # FFmpeg editing (5 presets)
-├── audio_separator.py     # Demucs + FFmpeg vocal separation
-├── bgm_manager.py         # Non-copyright BGM library
-├── youtube_api.py         # YouTube Data API v3 wrapper
-├── shortener.py           # VPLink/CleanURI/TinyURL/URL shorteners
-├── download_helpers.py    # yt-dlp video/thumbnail download
-├── config.py              # Config management, state persistence
-├── github_api.py          # GitHub API wrapper
-├── tui.py                 # Full management TUI
-├── install.sh             # One-line installer
-├── get_refresh_token.py   # OAuth PKCE token setup
-└── .github/workflows/
-    └── youtube.yml        # GitHub Actions (6h cron)
-```
+Everything lives in `~/.yt-mirror/` (override with `YT_DATA_DIR`):
 
-## License
+| File | Purpose |
+|------|---------|
+| `config.json` | YouTube credentials, shortener config |
+| `channels.json` | Tracked channels |
+| `settings.json` | Upload schedule / per-day quota / warmup settings |
+| `upload_state.json` | Warmup, total uploaded, processed/pending hashes |
+| `daily_log.json` | Upload audit trail |
+| `state.json` | Mirror records + stats |
+| `store/` | Local tables (projects, cursors, work queue, run locks, alerts) |
 
-Private — do not distribute.
+All writes are atomic (`mkstemp` + rename, `0600`).
+
+## Cloud Mode (opt-in)
+
+Set `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` and the same code persists to
+Supabase and can be deployed to GitHub Actions for 24/7 operation (see
+`.github/workflows/`). The `VPLINKYT` TUI (`python3 tui.py`) manages cloud
+projects, OAuth and deploys.
+
+## Security
+
+- YouTube refresh tokens and API keys are stored locally with `0600` perms and
+  never committed. Runtime state files are gitignored.
+- If a key ever leaks into a public repo, **rotate it** (the history rewrite
+  cannot un-leak it) and scrub the history before pushing again.

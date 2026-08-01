@@ -288,6 +288,14 @@ def cmd_oauth(args):
         return 1
 
 
+def _prompt(text):
+    try:
+        return input(text).strip()
+    except EOFError:
+        print()
+        return ""
+
+
 def cmd_setup(args):
     import config
     import supabase_db
@@ -296,8 +304,8 @@ def cmd_setup(args):
     cfg = config.load()
     if not cfg.get("yt_client_id") or not cfg.get("yt_client_secret"):
         print("Step 1/4 — YouTube API credentials (https://console.cloud.google.com/apis/credentials)")
-        cid = input("OAuth Client ID: ").strip()
-        csec = input("OAuth Client Secret: ").strip()
+        cid = _prompt("OAuth Client ID: ")
+        csec = _prompt("OAuth Client Secret: ")
         if cid and csec:
             config.save({"yt_client_id": cid, "yt_client_secret": csec})
     if not config.is_configured():
@@ -305,7 +313,7 @@ def cmd_setup(args):
 
     print("Step 2/4 — channels to mirror (one per line, blank to finish)")
     while True:
-        url = input("  channel URL or @handle: ").strip()
+        url = _prompt("  channel URL or @handle: ")
         if not url:
             break
         ok, res = config.add_channel(url)
@@ -316,18 +324,18 @@ def cmd_setup(args):
     else:
         print("Step 3/4 — upload settings (defaults shown, Enter keeps them)")
         try:
-            uploads_per_day = int(input("  uploads per day [2]: ").strip() or "2")
+            uploads_per_day = int(_prompt("  uploads per day [2]: ") or "2")
         except ValueError:
             uploads_per_day = 2
         try:
-            warmup_days = int(input("  warmup days (0 = none) [0]: ").strip() or "0")
+            warmup_days = int(_prompt("  warmup days (0 = none) [0]: ") or "0")
         except ValueError:
             warmup_days = 0
         try:
-            backfill = int(input("  initial backfill videos [5]: ").strip() or "5")
+            backfill = int(_prompt("  initial backfill videos [5]: ") or "5")
         except ValueError:
             backfill = 5
-        schedule = input("  upload schedule (e.g. 08:00,20:00, blank for spread): ").strip()
+        schedule = _prompt("  upload schedule (e.g. 08:00,20:00, blank for spread): ")
         _save_local_settings({
             "uploads_per_day": uploads_per_day,
             "warmup_days": warmup_days,

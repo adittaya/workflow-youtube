@@ -48,10 +48,10 @@ def get_repo(owner, repo, token):
     return gh(f"/repos/{owner}/{repo}", token)
 
 
-def create_repo(token, name, description="YouTube Mirror Bot"):
+def create_repo(token, name, description="YT VIDEO AUTOMATION", private=True):
     return gh("/user/repos", token, "POST", {
         "name": name,
-        "private": False,
+        "private": private,
         "auto_init": True,
         "description": description,
     })

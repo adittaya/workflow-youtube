@@ -518,27 +518,14 @@ def upload_daily(video_path, title=None, description=None,
 
     config.log(f"uploading: {title}")
 
-    url_footer = ""
-    if short_url or video_url:
-        url_footer = "Original: " + (short_url or video_url)
-
     custom_desc = (settings.get("custom_description") or "").strip()
     if custom_desc:
         upload_desc = _format_template(custom_desc, title=title, url=short_url or video_url)
-        if url_footer:
-            upload_desc += "\n\n" + url_footer
     else:
         upload_desc = "Download link in pinned comment\n\n"
-        body = ""
         if description:
             keywords = _extract_keywords(description)
-            body = keywords or description
-        if url_footer:
-            upload_desc += url_footer
-            if body:
-                upload_desc += "\n\n"
-        if body:
-            upload_desc += body
+            upload_desc += keywords or description
 
     video_id = youtube_api.upload_video(
         youtube, video_path,

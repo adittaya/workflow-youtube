@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compile all modules
+        shell: bash
+        run: |
+          python -m compileall -q installer
+          echo "compile OK"
+
+      - name: Run installer test suite
+        shell: bash
+        run: python installer/tests/run_tests.py
+
+      - name: CLI smoke (version / help)
+        shell: bash
+        run: |
+          python -m installer version
+          python -m installer --non-interactive status
+          python -m installer --non-interactive verify

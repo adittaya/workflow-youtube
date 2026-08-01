@@ -20,6 +20,24 @@ daemon**. Cloud storage via Supabase remains available as an opt-in.
 - **Multi-account**: saved YouTube accounts with OAuth refresh-token health
   tracking; projects pick who uploads
 
+## Install via the Bootstrap Installer
+
+A production-grade, cross-platform installer is included in `installer/`. It
+handles system + pip dependencies (apt/dnf/pacman/zypper/brew/pkg/winget),
+installs the `yt-auto` and `installer` commands, writes your config, rolls back
+on failure, and self-updates — with a verify/doctor/uninstall suite.
+
+```bash
+# from a source checkout:
+./installer/bin/installer install          # interactive
+./installer/bin/installer install --dry-run
+./installer/bin/installer doctor --fix     # diagnose + auto-fix
+./installer/bin/installer verify           # check everything
+./installer/bin/installer uninstall        # remove (keeps data unless --purge)
+```
+
+Full docs: [`installer/README.md`](installer/README.md).
+
 ## Quick Start (local mode)
 
 Prerequisites: Python 3.10+, `ffmpeg`, and a Google Cloud OAuth client with the

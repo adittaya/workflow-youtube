@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Development shim for the installer when run straight from the repo.
+# Installed globally by `installer install` at ~/.local/bin/installer.
+set -e
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$DIR"
+exec python3 -m installer "$@"

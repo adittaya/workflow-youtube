@@ -1,0 +1,58 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Verify version matches tag
+        run: |
+          pyver="$(python -c 'from installer.version import __version__; print(__version__)')"
+          tag="${GITHUB_REF_NAME#v}"
+          echo "installer version: ${pyver}  tag: ${tag}"
+          if [ "${pyver}" != "${tag}" ]; then
+            echo "::error::installer/version.py (${pyver}) does not match tag (${tag})"
+            exit 1
+          fi
+
+      - name: Run tests before releasing
+        run: python installer/tests/run_tests.py
+
+      - name: Build release notes
+        id: notes
+        run: |
+          {
+            echo "## yt-auto bootstrap installer ${GITHUB_REF_NAME}"
+            echo ""
+            echo "Install:"
+            echo ""
+            echo '```bash'
+            echo "python3 -m installer"
+            echo '```'
+            echo ""
+            echo "### What changed"
+            echo ""
+            git log --oneline --no-merges "$(git describe --tags --abbrev=0 ${GITHUB_REF_NAME}~1 2>/dev/null || echo HEAD~10)..HEAD"
+          } > release_notes.md
+          cat release_notes.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: "installer ${{ github.ref_name }}"
+          body_path: release_notes.md
+          files: |
+            installer/windows/install.ps1
+          generate_release_notes: false

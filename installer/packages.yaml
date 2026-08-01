@@ -1,0 +1,111 @@
+# Package definitions for the yt-auto bootstrap installer.
+#
+# Each entry maps a *logical* tool to concrete package names on every supported
+# package manager (apt, dnf, pacman, zypper, brew, pkg, winget). The `verify`
+# binary is probed for presence/version; `optional` tools are reported by
+# verify/doctor but never block installation. Add new tools here without code.
+#
+# NOTE: uses a small dependency-free YAML subset (nested mappings + inline
+# lists). Keep keys quoted-free and scalar values on one line.
+
+packages:
+  git:
+    description: Version control and self-update source
+    verify: git
+    min_version: "2.30"
+    systems:
+      apt: [git]
+      dnf: [git]
+      pacman: [git]
+      zypper: [git]
+      brew: [git]
+      pkg: [git]
+      winget: [Git.Git]
+
+  python:
+    description: Runtime for yt-auto
+    verify: python3
+    min_version: "3.10"
+    systems:
+      apt: [python3, python3-pip, python3-venv]
+      dnf: [python3, python3-pip]
+      pacman: [python, python-pip]
+      zypper: [python3, python3-pip]
+      brew: [python]
+      pkg: [python, python-pip]
+      winget: [Python.Python.3.12]
+
+  ffmpeg:
+    description: Video and audio processing engine
+    verify: ffmpeg
+    min_version: "4.0"
+    systems:
+      apt: [ffmpeg]
+      dnf: [ffmpeg-free]
+      pacman: [ffmpeg]
+      zypper: [ffmpeg]
+      brew: [ffmpeg]
+      pkg: [ffmpeg]
+      winget: [Gyan.FFmpeg]
+
+  # Optional tools — never required, shown by verify/doctor.
+  nodejs:
+    description: Optional JavaScript runtime
+    verify: node
+    optional: true
+    systems:
+      apt: [nodejs]
+      dnf: [nodejs]
+      pacman: [nodejs]
+      zypper: [nodejs]
+      brew: [node]
+      pkg: [nodejs]
+      winget: [OpenJS.NodeJS.LTS]
+
+  docker:
+    description: Optional container runtime
+    verify: docker
+    optional: true
+    systems:
+      apt: [docker.io]
+      dnf: [docker]
+      pacman: [docker]
+      zypper: [docker]
+      brew: [docker]
+      pkg: [docker]
+      winget: [Docker.DockerDesktop]
+
+  chromium:
+    description: Optional headless browser for video checks
+    verify: chromium
+    optional: true
+    systems:
+      apt: [chromium-browser]
+      dnf: [chromium]
+      pacman: [chromium]
+      zypper: [chromium]
+      brew: [chromium]
+      pkg: [chromium]
+      winget: [ChromeHeadlessShell.ChromeHeadlessShell]
+
+  vscode:
+    description: Optional code editor
+    verify: code
+    optional: true
+    systems:
+      apt: [code]
+      dnf: [code]
+      pacman: [code]
+      zypper: [code]
+      brew: [visual-studio-code]
+      pkg: [code]
+      winget: [Microsoft.VisualStudioCode]
+
+pip_packages:
+  yt-dlp:
+    description: Video downloader (android client)
+    verify: yt-dlp
+  google-api-python-client:
+    description: YouTube Data API v3 client
+  google-auth-oauthlib:
+    description: OAuth flow support

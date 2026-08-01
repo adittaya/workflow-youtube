@@ -1,0 +1,68 @@
+"""Tests for environment detection and package helpers."""
+
+import unittest
+from pathlib import Path
+
+from installer.core import env, packages as pkgmod
+from installer.core.config import _load_yaml
+from installer.core.packages import PackageRegistry, parse_version, version_meets
+
+
+class EnvDetectionTests(unittest.TestCase):
+    def test_system_is_linux_on_posix(self):
+        if __import__("sys").platform.startswith("linux"):
+            self.assertTrue(env.is_linux())
+
+    def test_architecture_normalised(self):
+        self.assertIn(env.architecture(), ("x86_64", "aarch64", "i386"))
+
+    def test_display_environment_has_required_keys(self):
+        for key in ("system", "architecture", "shell", "package_manager",
+                    "python", "root", "admin"):
+            self.assertIn(key, env.display_environment())
+
+    def test_home_dir_resolved(self):
+        self.assertTrue(str(env.home_dir()))
+
+
+class VersionTests(unittest.TestCase):
+    def test_parse_version(self):
+        self.assertEqual(parse_version("git version 2.43.0"), (2, 43, 0))
+        self.assertEqual(parse_version("v26.5.1"), (26, 5, 1))
+        self.assertEqual(parse_version("3.12.3"), (3, 12, 3))
+        self.assertEqual(parse_version("no digits"), ())
+
+    def test_version_meets(self):
+        self.assertTrue(version_meets("2.43.0", "2.30"))
+        self.assertFalse(version_meets("2.1.0", "2.30"))
+        self.assertTrue(version_meets("1.0", ""))
+
+    def test_registry_from_yaml(self):
+        pkg_yaml = _load_yaml(
+            "packages:\n"
+            "  git:\n"
+            "    verify: git\n"
+            "    systems:\n"
+            "      apt: [git]\n"
+            "      brew: [git]\n"
+        )
+        reg = PackageRegistry.from_dict(pkg_yaml)
+        self.assertIn("git", reg.names())
+        self.assertEqual(reg.get("git").system_package_names("apt"), ["git"])
+        self.assertEqual(reg.get("git").system_package_names("pacman"), [])
+
+    def test_system_install_names(self):
+        reg = PackageRegistry.from_yaml(Path(__file__).resolve().parents[1] / "packages.yaml")
+        concrete, missing = reg.system_install_names("apt", ["git", "doesnotexist"])
+        self.assertIn("git", concrete)
+        self.assertEqual(missing, ["doesnotexist"])
+
+    def test_check_package_returns_shape(self):
+        reg = PackageRegistry.from_yaml(Path(__file__).resolve().parents[1] / "packages.yaml")
+        info = pkgmod.check_package(reg, "git")
+        for key in ("name", "verify", "installed", "version", "min_version", "min_ok", "optional"):
+            self.assertIn(key, info)
+
+
+if __name__ == "__main__":
+    unittest.main()

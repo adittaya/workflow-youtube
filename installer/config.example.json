@@ -1,0 +1,22 @@
+{
+  "install_dir": "~/.local/share/yt-auto/src",
+  "data_dir": "~/.local/share/yt-auto",
+  "mirror_home": "~/.yt-mirror",
+  "shell_profile": "ask",
+  "upgrade": false,
+  "packages": [
+    "git",
+    "python",
+    "ffmpeg",
+    "yt-dlp"
+  ],
+  "optional_packages": [
+    "nodejs",
+    "docker",
+    "chromium",
+    "vscode"
+  ],
+  "env": {
+    "YT_MIRROR_HOME": "~/.yt-mirror"
+  }
+}

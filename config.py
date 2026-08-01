@@ -8,7 +8,6 @@ import supabase_db
 
 DATA_DIR = Path(os.environ.get("YT_DATA_DIR", os.path.expanduser("~/.yt-mirror")))
 CONFIG_PATH = DATA_DIR / "config.json"
-STATE_PATH = DATA_DIR / "state.json"
 ACCOUNTS_PATH = DATA_DIR / "accounts.json"
 SETTINGS_PATH = DATA_DIR / "settings.json"
 
@@ -75,27 +74,6 @@ def save(config):
     merged = {**existing, **config}
     _write_json(CONFIG_PATH, merged)
     return merged
-
-
-def load_channels():
-    return {}
-
-
-def save_channels(channels):
-    return
-
-
-def load_state():
-    _ensure_dir()
-    try:
-        return json.loads(STATE_PATH.read_text("utf-8"))
-    except Exception:
-        return {"processed": {}, "stats": {"total_mirrored": 0, "total_comments": 0, "total_shortened": 0}}
-
-
-def save_state(state):
-    _ensure_dir()
-    _write_json(STATE_PATH, state)
 
 
 def load_accounts():
@@ -208,11 +186,6 @@ def get_yt_credentials():
     }
 
 
-def get_active_account_name():
-    tui_settings = load_tui_settings()
-    return tui_settings.get("active_account", "")
-
-
 def is_configured():
     creds = get_yt_credentials()
     return bool(creds["client_id"] and creds["client_secret"] and creds["refresh_token"])
@@ -224,11 +197,6 @@ def log(msg):
 
 
 _start_time = time.time()
-
-
-def set_start_time(t):
-    global _start_time
-    _start_time = t
 
 
 if __name__ == "__main__":

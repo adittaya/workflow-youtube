@@ -41,8 +41,7 @@
 - `yt_auto.py` — CLI: `upload`, `setup`, `oauth`, `status`, `logs`, `verify`,
   `version`
 - `config.py` — local config/state helpers (`~/.yt-mirror/`), atomic `0600`
-  writes (`mkstemp` + rename). `load_channels()`/`save_channels()` are no-op
-  stubs (mirroring is gone)
+  writes (`mkstemp` + rename)
 - `daily_uploader.py` — `process_video()` pipeline hook + `upload_daily()`
   (force=True); upload audit via `upload_logs`/`daily_log.json`
 - `download_helpers.py` — yt-dlp download (`android` client), iterates
@@ -87,6 +86,4 @@
 
 - `YT_COOKIES` secret was dead (no `--cookies` passed) — now wired; verify on a
   live download
-- `install.sh` still points at the old repo URL; update `REPO_URL` once the
-  new git is connected
 - No tests/lint CI on the code itself

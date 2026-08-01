@@ -133,11 +133,6 @@ def separate_vocals(audio_path, output_dir=None, model="htdemucs"):
     return separate_vocals_ffmpeg(audio_path, output_dir)
 
 
-def separate_video_audio(video_path, output_dir=None, model="htdemucs"):
-    audio_path = extract_audio(video_path)
-    return separate_vocals(audio_path, output_dir, model)
-
-
 def replace_audio(video_path, new_audio_path, output_path):
     video_path = Path(video_path)
     new_audio_path = Path(new_audio_path)

@@ -159,13 +159,6 @@ def set_setting(key, value):
     _upsert("settings", {"key": key, "value": value, "updated_at": datetime.now(timezone.utc).isoformat()}, on_conflict="key")
 
 
-def get_all_settings():
-    if not _DB_ENABLED:
-        return _read_json(_settings_path(), {})
-    rows = _request("GET", "settings?select=key,value")
-    return {r["key"]: r["value"] for r in rows} if rows else {}
-
-
 # ─── Accounts ────────────────────────────────────────────────────────────
 
 def _local_accounts_rows():

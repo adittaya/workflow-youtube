@@ -193,28 +193,3 @@ def _random_edit_preset():
     preset = random.choice(presets)
     preset.pop("name", None)
     return preset
-
-
-def batch_process(input_dir, output_dir, count=1):
-    input_dir = Path(input_dir)
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    video_files = []
-    for ext in ["*.mp4", "*.mkv", "*.webm", "*.avi"]:
-        video_files.extend(input_dir.glob(ext))
-
-    if not video_files:
-        return []
-
-    processed = []
-    for i, vf in enumerate(video_files[:count]):
-        out = output_dir / f"processed_{i:03d}_{vf.name}"
-        try:
-            preset = _random_edit_preset()
-            apply_edits(vf, out, preset)
-            processed.append(str(out))
-        except Exception as e:
-            print(f"  skip {vf.name}: {e}")
-
-    return processed

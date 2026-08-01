@@ -7,19 +7,6 @@ import config
 from PIL import Image, ImageEnhance
 
 
-def download_thumbnail(url, output_path):
-    if not url:
-        return False
-    try:
-        import urllib.request
-        urllib.request.urlretrieve(url, output_path)
-        config.log(f"thumbnail downloaded: {output_path}")
-        return True
-    except Exception as e:
-        config.log(f"thumbnail download failed: {e}")
-        return False
-
-
 def process_thumbnail(video_id, output_path=None):
     if output_path is None:
         output_path = os.path.join(tempfile.mkdtemp(), f"{video_id}_thumb.jpg")

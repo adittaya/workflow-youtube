@@ -34,6 +34,26 @@ def _colors(enabled: bool) -> Dict[str, str]:
     return C
 
 
+def _unicode_safe() -> bool:
+    """True if stdout can encode non-ASCII glyphs (not e.g. Windows cp1252)."""
+    try:
+        "✓✗⚠·╔═║╚╝⠋".encode(sys.stdout.encoding or "ascii", "strict")
+        return True
+    except (LookupError, UnicodeEncodeError):
+        return False
+
+
+SYM = (
+    {"ok": "✓ ", "error": "✗ ", "warn": "⚠ ", "info": "· ",
+     "tl": "╔", "tr": "╗", "bl": "╚", "br": "╝", "h": "═", "v": "║",
+     "frames": "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"}
+    if _unicode_safe()
+    else {"ok": "+ ", "error": "! ", "warn": "! ", "info": "- ",
+          "tl": "+", "tr": "+", "bl": "+", "br": "+", "h": "-", "v": "|",
+          "frames": "|/-\\"}
+)
+
+
 class UI:
     def __init__(self, log=None, non_interactive: Optional[bool] = None,
                  color: Optional[bool] = None):
@@ -59,30 +79,30 @@ class UI:
         print(self._paint(text, ["dim"]), flush=True)
 
     def ok(self, text: str) -> None:
-        print(self._paint("✓ ", ["green"]) + text, flush=True)
+        print(self._paint(SYM["ok"], ["green"]) + text, flush=True)
 
     def info(self, text: str) -> None:
-        print(self._paint("· ", ["cyan"]) + text, flush=True)
+        print(self._paint(SYM["info"], ["cyan"]) + text, flush=True)
 
     def warn(self, text: str) -> None:
-        print(self._paint("⚠ ", ["yellow"]) + text, flush=True)
+        print(self._paint(SYM["warn"], ["yellow"]) + text, flush=True)
 
     def error(self, text: str) -> None:
-        print(self._paint("✗ ", ["red"]) + text, flush=True)
+        print(self._paint(SYM["error"], ["red"]) + text, flush=True)
 
     # -- screens -----------------------------------------------------------
     def welcome(self, app: str, version: str, tagline: str) -> None:
         width = 64
-        print(self._paint("╔" + "═" * width + "╗", ["cyan"]))
+        print(self._paint(SYM["tl"] + SYM["h"] * width + SYM["tr"], ["cyan"]))
         for line in (f"{app.upper()} BOOTSTRAP INSTALLER", tagline, f"version {version}"):
             pad = max(0, width - len(line))
-            print(self._paint("║ ", ["cyan"]) + line + " " * pad + self._paint(" ║", ["cyan"]))
-        print(self._paint("╚" + "═" * width + "╝", ["cyan"]))
+            print(self._paint(SYM["v"] + " ", ["cyan"]) + line + " " * pad + self._paint(" " + SYM["v"], ["cyan"]))
+        print(self._paint(SYM["bl"] + SYM["h"] * width + SYM["br"], ["cyan"]))
         print()
 
     def success_summary(self, items: Sequence[Tuple[str, str]]) -> None:
         print()
-        print(self._paint("✓ INSTALLATION COMPLETE", ["green", "bold"]))
+        print(self._paint(SYM["ok"] + "INSTALLATION COMPLETE", ["green", "bold"]))
         for label, value in items:
             print(f"  {label:<28} {value}")
 
@@ -93,7 +113,7 @@ class UI:
             self.log.step(text)
 
     def complete_step(self, text: str) -> None:
-        print("\r" + self._paint("✓ ", ["green"]) + text + " " * 8, flush=True)
+        print("\r" + self._paint(SYM["ok"], ["green"]) + text + " " * 8, flush=True)
 
     @contextlib.contextmanager
     def spinner(self, message: str = "Working", delay: float = 0.1):
@@ -101,7 +121,7 @@ class UI:
         stop = threading.Event()
 
         def animate():
-            frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+            frames = SYM["frames"]
             i = 0
             while not stop.is_set():
                 frame = frames[i % len(frames)]

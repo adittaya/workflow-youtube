@@ -70,6 +70,29 @@ def download_video(url, output_dir=None):
     return None
 
 
+def _cookies_arg():
+    """Resolve a cookies file for yt-dlp: prefer YT_COOKIES_FILE if it exists,
+    otherwise materialize the YT_COOKIES secret text into
+    ~/.yt-mirror/cookies.txt (matching the CI workflows' behavior)."""
+    path = os.environ.get("YT_COOKIES_FILE", "")
+    if path and os.path.exists(path):
+        return path
+    raw = os.environ.get("YT_COOKIES", "")
+    if not raw:
+        return None
+    data_dir = os.environ.get("YT_DATA_DIR", os.path.expanduser("~/.yt-mirror"))
+    fallback = os.path.join(data_dir, "cookies.txt")
+    try:
+        os.makedirs(data_dir, exist_ok=True)
+        with open(fallback, "w") as f:
+            f.write(raw if raw.endswith("\n") else raw + "\n")
+        os.chmod(fallback, 0o600)
+        return fallback
+    except Exception as e:
+        config.log(f"cookies write failed: {e}")
+        return None
+
+
 def _try_download(url, output_dir, proxy):
     output_template = os.path.join(output_dir, "video.%(ext)s")
     cmd = [
@@ -85,6 +108,9 @@ def _try_download(url, output_dir, proxy):
     ]
     if proxy:
         cmd.extend(["--proxy", proxy])
+    cookies = _cookies_arg()
+    if cookies:
+        cmd.extend(["--cookies", cookies])
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:

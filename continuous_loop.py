@@ -217,10 +217,10 @@ def upload_one_pending():
         if refresh_proxies():
             result = download_helpers.download_video(source_url, f'/tmp/daily_{target_id}')
         if not result:
-            config.log(f'download failed: {target_id} — removing from queue, trying next')
+            config.log(f'download failed: {target_id} — re-queuing for next cycle')
             if item_id:
                 supabase_db.update_work_item(item_id, status='failed', error='download failed')
-            up_state['pending_hashes'] = pending_hashes
+            up_state['pending_hashes'] = [target_id] + pending_hashes
             daily_uploader.save_upload_state(up_state)
             return False
 

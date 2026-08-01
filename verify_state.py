@@ -68,6 +68,16 @@ class Verifier:
 
     # ── plumbing ──────────────────────────────────────────────────────────
 
+    def _project(self):
+        """Project row for this pid. In local-first mode the single local
+        project row is used when the pid row itself is missing."""
+        project = supabase_db.get_project(self.pid)
+        if not project and not supabase_db.is_enabled():
+            projects = supabase_db.list_projects()
+            if projects:
+                project = projects[0]
+        return project
+
     def _record(self, name, status, message="", healed=False, details=None):
         self.results.append({
             "check": name,
@@ -106,14 +116,35 @@ class Verifier:
 
     def check_project_config(self):
         try:
-            project = supabase_db.get_project(self.pid)
+            project = self._project()
         except Exception as e:
             self._fail("project_config", f"could not load project row: {e}")
             return
         if not project:
-            self._fail("project_config", f"no project row for id {self.pid}")
+            self._fail("project_config",
+                       "no project row for id %s (run `yt-auto setup`)" % self.pid)
             return
         problems = []
+        if not supabase_db.is_enabled():
+            # Local-first mode: credentials/proxy come from local config, not
+            # the project row — only the queue-relevant settings are checked.
+            try:
+                per_day = int(project.get("uploads_per_day") or 0)
+            except (TypeError, ValueError):
+                per_day = 0
+            if per_day < 1:
+                problems.append(f"uploads_per_day invalid ({project.get('uploads_per_day')})")
+            try:
+                warmup_days = int(project.get("warmup_days") or 0)
+            except (TypeError, ValueError):
+                warmup_days = -1
+            if warmup_days < 0:
+                problems.append("warmup_days invalid")
+            if problems:
+                self._warn("project_config", "; ".join(problems))
+            else:
+                self._ok("project_config", f"local project — {per_day}/day")
+            return
         if not project.get("github_repo"):
             problems.append("github_repo not set")
         if not project.get("yt_client_id") or not project.get("yt_client_secret") or not project.get("yt_refresh_token"):
@@ -212,7 +243,7 @@ class Verifier:
             return
         days = (_now().replace(tzinfo=None) - start.replace(tzinfo=None)).days
         try:
-            project = supabase_db.get_project(self.pid)
+            project = self._project()
             warmup_days = int((project or {}).get("warmup_days") or 0)
         except (TypeError, ValueError):
             warmup_days = 0
@@ -304,7 +335,7 @@ class Verifier:
 
     def check_today_quota(self):
         state = self._state()
-        project = supabase_db.get_project(self.pid)
+        project = self._project()
         try:
             max_per_day = int((project or {}).get("uploads_per_day") or 2)
         except (TypeError, ValueError):
@@ -358,9 +389,14 @@ class Verifier:
 
     def check_cursors(self):
         try:
-            project = supabase_db.get_project(self.pid)
-            channels = [_norm_channel(c) for c in
-                        str((project or {}).get("channels") or "").split(",")]
+            if not supabase_db.is_enabled():
+                import config
+                raw = [c for c, meta in config.load_channels().items()
+                       if meta.get("enabled", True)]
+            else:
+                project = self._project()
+                raw = str((project or {}).get("channels") or "").split(",")
+            channels = [_norm_channel(c) for c in raw]
             channels = [c for c in channels if c]
         except Exception:
             channels = []
@@ -487,15 +523,17 @@ def main():
             pid = args[args.index("--project") + 1]
         elif os.environ.get("PROJECT_ID"):
             pid = os.environ.get("PROJECT_ID")
+        elif not supabase_db.is_enabled():
+            pid = ""
         else:
             print("usage: PROJECT_ID=N python3 verify_state.py [--no-fix] | python3 verify_state.py --all")
             sys.exit(2)
-    if not supabase_db.is_enabled():
-        print("error: supabase not configured (SUPABASE_URL / SUPABASE_SERVICE_KEY)")
-        sys.exit(2)
 
     if all_projects:
         projects = supabase_db.list_projects()
+        if not projects:
+            print("no projects configured")
+            sys.exit(0)
         total = {"fails": 0, "warns": 0, "oks": 0, "healed": 0}
         for p in projects:
             print(f"\n===== project {p['id']} — {p.get('name')} =====")

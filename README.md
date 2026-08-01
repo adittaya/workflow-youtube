@@ -22,18 +22,23 @@ daemon**. Cloud storage via Supabase remains available as an opt-in.
 
 ## Install via the Bootstrap Installer
 
-A production-grade, cross-platform installer is included in `installer/`. It
-handles system + pip dependencies (apt/dnf/pacman/zypper/brew/pkg/winget),
-installs the `yt-auto` and `installer` commands, writes your config, rolls back
-on failure, and self-updates — with a verify/doctor/uninstall suite.
+**One-line full setup** (Linux/macOS; requires `curl` and Python 3.10+):
 
 ```bash
-# from a source checkout:
-./installer/bin/installer install          # interactive
-./installer/bin/installer install --dry-run
-./installer/bin/installer doctor --fix     # diagnose + auto-fix
-./installer/bin/installer verify           # check everything
-./installer/bin/installer uninstall        # remove (keeps data unless --purge)
+bash <(curl -fsSL https://raw.githubusercontent.com/adittaya/workflow-youtube/main/bootstrap.sh)
+```
+
+The installer handles everything: system + pip dependencies (apt/dnf/pacman/
+zypper/brew/pkg/winget), installs the `yt-auto` and `installer` commands,
+writes your config, rolls back on failure, and self-updates — with a
+verify/doctor/uninstall suite.
+
+```bash
+# from a source checkout (or after the one-liner above):
+installer install --dry-run          # plan only, no changes
+installer doctor --fix                # diagnose + auto-fix
+installer verify                      # check everything
+installer uninstall                   # remove (keeps data unless --purge)
 ```
 
 Full docs: [`installer/README.md`](installer/README.md).

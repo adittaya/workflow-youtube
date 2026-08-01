@@ -20,6 +20,9 @@ Requires only **Python 3.10+** and a package manager.
 # from a repo clone
 python3 -m installer
 
+# or the one-line bootstrap (no clone needed; fetches latest from GitHub)
+bash <(curl -fsSL https://raw.githubusercontent.com/adittaya/workflow-youtube/main/bootstrap.sh)
+
 # or install the global command first, then drive it
 python3 installer/bin/installer        # POSIX dev shim
 installer install

@@ -431,6 +431,51 @@ def _format_template(tmpl, **kw):
         return tmpl
 
 
+def _extract_keywords(description):
+    """Pull only the keyword/tag block out of a copied description: hashtags
+    found anywhere plus the trailing run of keyword-like lines at the bottom.
+    Returns '' when nothing keyword-ish exists."""
+    if not description:
+        return ""
+    lines = str(description).splitlines()
+
+    hashtags = []
+    for line in lines:
+        for tok in re.findall(r"#[A-Za-z0-9_]+", line):
+            if tok not in hashtags:
+                hashtags.append(tok)
+
+    def _keyword_line(s):
+        if s.startswith("#"):
+            return True
+        if re.search(r"https?://", s):
+            return False
+        if any(c in s for c in ".!?;"):
+            return False
+        tokens = [t for t in re.split(r"[,/\\\s]+", s) if t]
+        if not tokens:
+            return False
+        return all(len(t) <= 40 for t in tokens)
+
+    trailing = []
+    for line in reversed(lines):
+        s = line.strip()
+        if not s:
+            if trailing:
+                break
+            continue
+        if _keyword_line(s):
+            trailing.insert(0, s)
+        else:
+            break
+
+    parts = list(hashtags)
+    for line in trailing:
+        if line not in parts:
+            parts.append(line)
+    return "\n".join(parts)
+
+
 def upload_daily(video_path, title=None, description=None,
                  tags=None, category_id="22", source_url=None, force=False,
                  publish_at=None, source_channel=""):
@@ -484,10 +529,16 @@ def upload_daily(video_path, title=None, description=None,
             upload_desc += "\n\n" + url_footer
     else:
         upload_desc = "Download link in pinned comment\n\n"
+        body = ""
         if description:
-            upload_desc += description + "\n\n"
+            keywords = _extract_keywords(description)
+            body = keywords or description
         if url_footer:
             upload_desc += url_footer
+            if body:
+                upload_desc += "\n\n"
+        if body:
+            upload_desc += body
 
     video_id = youtube_api.upload_video(
         youtube, video_path,

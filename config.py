@@ -15,6 +15,8 @@ SETTINGS_PATH = DATA_DIR / "settings.json"
 
 PROJECT_ID = os.environ.get("PROJECT_ID", "")
 
+VERSION = "0.1.0"
+
 DEFAULTS = {
     "yt_client_id": "",
     "yt_client_secret": "",
@@ -25,6 +27,9 @@ DEFAULTS = {
     "check_interval_minutes": 15,
     "mirror_title_prefix": "",
     "mirror_description_suffix": "",
+    "custom_title": "",
+    "custom_description": "",
+    "custom_comment": "",
     "comment_text": "Download link: {url}",
     "privacy_status": "public",
     "category_id": "22",
@@ -188,6 +193,9 @@ PROJECT_FIELD_MAP = {
     "comment_moderation": "comment_moderation",
     "mirror_title_prefix": "mirror_title_prefix",
     "mirror_description_suffix": "mirror_description_suffix",
+    "custom_title": "custom_title",
+    "custom_description": "custom_description",
+    "custom_comment": "custom_comment",
     "shortener_provider": "shortlink_provider",
     "shortener_api_key": "shortlink_api_key",
 }
@@ -200,6 +208,9 @@ def load_tui_settings():
         "comment_text": "Download: {url}",
         "mirror_title_prefix": "",
         "mirror_description_suffix": "",
+        "custom_title": "",
+        "custom_description": "",
+        "custom_comment": "",
         "privacy_status": "public",
         "category_id": "22",
         "shortener_api_key": "",

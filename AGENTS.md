@@ -4,8 +4,8 @@
 
 - **Project:** YT VIDEO AUTOMATION — monitors target channels, mirrors new uploads to own channel with processing (Demucs vocal separation → FFmpeg edits → BGM mix) to avoid Content ID
 - **Model:** **local-first by default** — runs on the user's machine via the `yt-auto` CLI with local JSON state in `~/.yt-mirror/`. No Supabase/GitHub required
-- **Cloud (opt-in):** setting `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` routes the same code through Supabase, deployable to GitHub Actions 24/7 via `.github/workflows/youtube.yml` / `score.yml`. The `VPLINKYT` TUI (`tui.py`) manages cloud projects/OAuth/deploys
-- **Entry points:** `yt_auto.py` = main local CLI; `tui.py` = legacy cloud TUI; `continuous_loop.py` = daemon loop shared by both
+- **Cloud (opt-in):** setting `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` routes the same code through Supabase, deployable to GitHub Actions 24/7 via `.github/workflows/youtube.yml` / `score.yml`. The TUI (`tui.py`) is hybrid — local JSON by default, cloud projects/OAuth/deploys once a Supabase connection is set (`[C]` in the project list)
+- **Entry points:** `yt_auto.py` = main local CLI; `tui.py` = management TUI (hybrid local/cloud); `continuous_loop.py` = daemon loop shared by both
 
 ## Local Run Model
 
@@ -85,7 +85,6 @@ fallback. Do not flip `cancel-in-progress` to `true` — it breaks the chain.
 
 - `YT_COOKIES` secret was dead (no `--cookies` passed) — now wired; verify on a
   live download
-- `install.sh` still points at the old repo URL and installs `VPLINKYT`; update
-  `REPO_URL`/binary once the new git is connected
-- TUI (`tui.py`) is not yet branded; cloud-only paths unchanged
+- `install.sh` still points at the old repo URL; update `REPO_URL` once the
+  new git is connected
 - No tests/lint CI on the code itself; deploys push straight to production

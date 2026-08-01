@@ -424,6 +424,13 @@ def process_video(input_path, output_dir=None):
     return str(final_path)
 
 
+def _format_template(tmpl, **kw):
+    try:
+        return tmpl.format(**kw)
+    except (KeyError, IndexError, ValueError):
+        return tmpl
+
+
 def upload_daily(video_path, title=None, description=None,
                  tags=None, category_id="22", source_url=None, force=False,
                  publish_at=None, source_channel=""):
@@ -444,13 +451,18 @@ def upload_daily(video_path, title=None, description=None,
 
     if title is None:
         title = f"Daily Upload {datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
-    title = f"{prefix}{title}{suffix}"
 
     video_url = source_url or ""
     short_url = None
     if video_url:
         short_url = shortener.shorten_url(video_url)
         config.log(f"shortened: {video_url} → {short_url}")
+
+    custom_title = (settings.get("custom_title") or "").strip()
+    if custom_title:
+        title = _format_template(custom_title, title=title, url=short_url or video_url)
+    else:
+        title = f"{prefix}{title}{suffix}"
 
     thumbnail_path = None
     if source_url:
@@ -461,11 +473,21 @@ def upload_daily(video_path, title=None, description=None,
 
     config.log(f"uploading: {title}")
 
-    upload_desc = "Download link in pinned comment\n\n"
-    if description:
-        upload_desc += description + "\n\n"
+    url_footer = ""
     if short_url or video_url:
-        upload_desc += "Original: " + (short_url or video_url)
+        url_footer = "Original: " + (short_url or video_url)
+
+    custom_desc = (settings.get("custom_description") or "").strip()
+    if custom_desc:
+        upload_desc = _format_template(custom_desc, title=title, url=short_url or video_url)
+        if url_footer:
+            upload_desc += "\n\n" + url_footer
+    else:
+        upload_desc = "Download link in pinned comment\n\n"
+        if description:
+            upload_desc += description + "\n\n"
+        if url_footer:
+            upload_desc += url_footer
 
     video_id = youtube_api.upload_video(
         youtube, video_path,
@@ -480,7 +502,11 @@ def upload_daily(video_path, title=None, description=None,
 
     if video_id:
         comment_text = None
-        if short_url:
+        custom_comment = (settings.get("custom_comment") or "").strip()
+        if custom_comment:
+            comment_text = _format_template(custom_comment,
+                                            url=short_url or video_url, title=title)
+        elif short_url:
             comment_text = f"Download link: {short_url}"
         elif video_url:
             comment_text = f"Download link: {video_url}"

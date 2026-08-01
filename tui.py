@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""YouTube Mirror Bot — Multi-project management TUI (all data in Supabase)."""
+"""YT VIDEO AUTOMATION — management TUI (hybrid: local JSON or Supabase)."""
 
 import json, os, sys, time, http.server, urllib.request, urllib.error, urllib.parse, re
 from pathlib import Path
@@ -69,7 +69,19 @@ def _read_json(path):
 
 def _write_json(path, data):
     _ensure_dir()
-    path.write_text(json.dumps(data, indent=2))
+    import tempfile as _tf
+    fd, tmp = _tf.mkstemp(dir=str(DATA_DIR), prefix=f"{Path(path).name}.", suffix=".tmp")
+    try:
+        os.write(fd, json.dumps(data, indent=2).encode("utf-8"))
+        os.close(fd)
+        os.chmod(tmp, 0o600)
+        os.rename(tmp, str(path))
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except Exception:
+            pass
+        raise
 
 # ─── UI Helpers ───────────────────────────────────────────────────────────────
 
@@ -77,10 +89,13 @@ def clear():
     os.system("clear" if os.name != "nt" else "cls")
 
 def banner():
+    mode = "local JSON" if not supabase_db.is_enabled() else "supabase (cloud)"
+    title = f"YT VIDEO AUTOMATION  ·  v{config.VERSION}  ·  {mode}"
+    box = "═" * (len(title) + 4)
     print(f"""
-{C_CYAN}{C_BOLD}╔══════════════════════════════════════════════════════════╗
-║         Y O U T U B E   M I R R O R   B O T              ║
-╚══════════════════════════════════════════════════════════╝{C_RESET}""")
+{C_CYAN}{C_BOLD}╔{box}╗
+║  {title}  ║
+╚{box}╝{C_RESET}""")
 
 def divider():
     print(f"  {C_DIM}{'─' * 56}{C_RESET}")
@@ -149,6 +164,68 @@ def _parse_channel(raw):
         return raw
     return raw
 
+
+# ─── Local-mode sync (hybrid DB) ────────────────────────────────────────────
+
+def _local_settings_path():
+    return DATA_DIR / "settings.json"
+
+
+def _is_true(v):
+    return str(v).strip().lower() in ("true", "1", "yes", "on")
+
+
+def _sync_local_project(p):
+    """Local mode: mirror a project's fields onto the files the local daemon
+    reads (settings.json, config.json, channels.json) so the TUI and
+    `yt-auto run` share one source of truth."""
+    if supabase_db.is_enabled() or not p:
+        return
+    settings = {}
+    try:
+        settings = json.loads(_local_settings_path().read_text("utf-8"))
+    except Exception:
+        pass
+    for k in ("uploads_per_day", "warmup_days", "initial_backfill", "upload_schedule",
+              "comment_moderation", "mirror_title_prefix",
+              "custom_title", "custom_description", "custom_comment"):
+        if k in p and p[k] not in (None, ""):
+            settings[k] = p[k]
+    settings["shortlink_provider"] = p.get("shortlink_provider") or "none"
+    if p.get("shortlink_api_key"):
+        settings["shortlink_api_key"] = p["shortlink_api_key"]
+    settings["proxy_enabled"] = _is_true(p.get("proxy_enabled"))
+    if settings["proxy_enabled"]:
+        settings["proxy_supabase_url"] = p.get("proxy_supabase_url", "")
+        settings["proxy_supabase_key"] = p.get("proxy_supabase_key", "")
+    _write_json(_local_settings_path(), settings)
+
+    cfg = config.load()
+    patch = {}
+    for k in ("yt_client_id", "yt_client_secret", "yt_refresh_token"):
+        if p.get(k):
+            patch[k] = p[k]
+    if patch:
+        config.save(patch)
+
+    if p.get("channels"):
+        channels = {}
+        for raw in str(p["channels"]).split(","):
+            raw = raw.strip()
+            if not raw:
+                continue
+            cid = _parse_channel(raw)
+            channels[cid] = {
+                "alias": cid.lstrip("@"),
+                "url": f"https://www.youtube.com/{cid}",
+                "enabled": True,
+                "added_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+        config.save_channels(channels)
+    else:
+        config.save_channels({})
+
+
 # ─── Screen: Project List ─────────────────────────────────────────────────────
 
 def project_list_screen():
@@ -158,7 +235,13 @@ def project_list_screen():
         print(f"\n  {C_BOLDWHITE}PROJECTS{C_RESET}")
         divider()
 
-        projects = supabase_db.list_projects()
+        try:
+            projects = supabase_db.list_projects()
+        except Exception as e:
+            error(f"Database unreachable: {str(e)[:60]}")
+            if supabase_db.is_enabled():
+                warn("Supabase connection failed — press [C] to fix or switch to LOCAL mode")
+            projects = None
 
         if not projects:
             print(f"\n  {C_DIM}No projects yet. Create one to get started.{C_RESET}")
@@ -174,11 +257,14 @@ def project_list_screen():
         if projects:
             print(f"  {C_BOLD}[D]{C_RESET} Delete project")
             print(f"  {C_BOLD}[1-{len(projects)}]{C_RESET} Select project")
-        print(f"  {C_BOLD}[C]{C_RESET} Change Supabase connection (re-enter URL/key)")
+        print(f"  {C_BOLD}[C]{C_RESET} Database connection (local ⇄ Supabase)")
         print(f"  {C_BOLD}[0]{C_RESET} Quit\n")
-        connected_to = _read_json(BOOTSTRAP_PATH).get("supabase_url", "")
-        if connected_to:
-            print(f"  {C_DIM}Connected: {connected_to}{C_RESET}")
+        if supabase_db.is_enabled():
+            connected_to = _read_json(BOOTSTRAP_PATH).get("supabase_url", "")
+            print(f"  {C_DIM}Database: Supabase (cloud){C_RESET}" + (f"  —  {connected_to}" if connected_to else ""))
+        else:
+            print(f"  {C_DIM}Database: local JSON — data in {DATA_DIR}{C_RESET}")
+            print(f"  {C_DIM}Press [C] to connect Supabase for cloud mode.{C_RESET}")
         print()
 
         choice = prompt("Choice").strip().upper()
@@ -193,6 +279,8 @@ def project_list_screen():
                     p = supabase_db.create_project(name)
                     if p and p.get("id"):
                         success(f"Project '{name}' created")
+                        if not supabase_db.is_enabled():
+                            _sync_local_project(p)
                     else:
                         error("Failed to create project — name may already exist")
                 except Exception as e:
@@ -218,15 +306,21 @@ def project_list_screen():
                             error(f"Failed to delete: {e}")
             continue
         elif choice == "C":
-            su = prompt("Supabase URL", _read_json(BOOTSTRAP_PATH).get("supabase_url", ""))
-            sk = prompt("Supabase Service Key", _read_json(BOOTSTRAP_PATH).get("supabase_key", ""))
-            if su and sk:
-                _write_json(BOOTSTRAP_PATH, {"supabase_url": su, "supabase_key": sk})
-                supabase_db.configure(su, sk)
-                if supabase_db.is_enabled():
-                    success("Connected to Supabase — projects reloaded")
-                else:
-                    error("Connection failed — check URL and key")
+            if supabase_db.is_enabled():
+                if confirm("Disconnect from Supabase and switch to LOCAL mode?"):
+                    supabase_db.disable()
+                    _write_json(BOOTSTRAP_PATH, {})
+                    success("Local mode — data now stored in ~/.yt-mirror/")
+            else:
+                su = prompt("Supabase URL", _read_json(BOOTSTRAP_PATH).get("supabase_url", ""))
+                sk = prompt("Supabase Service Key", _read_json(BOOTSTRAP_PATH).get("supabase_key", ""))
+                if su and sk:
+                    _write_json(BOOTSTRAP_PATH, {"supabase_url": su, "supabase_key": sk})
+                    supabase_db.configure(su, sk)
+                    if supabase_db.is_enabled():
+                        success("Connected to Supabase — cloud mode")
+                    else:
+                        error("Connection failed — check URL and key")
             continue
         elif choice.isdigit() and projects:
             idx = int(choice) - 1
@@ -301,22 +395,26 @@ def project_menu(project):
 # ─── Screen: Setup & Deploy (project-scoped) ─────────────────────────────────
 
 FIELD_SPEC = [
-    ("yt_client_id", "YouTube Client ID", False),
-    ("yt_client_secret", "YouTube Client Secret", False),
-    ("yt_refresh_token", "YouTube Refresh Token", False),
-    ("github_token", "GitHub Token (PAT)", False),
-    ("github_repo", "GitHub Repo (user/repo)", False),
-    ("channels", "Channel URLs (comma-separated, @abc,@xyz)", False),
-    ("shortlink_provider", "Shortlink provider (vplink/cleanuri/tinyurl)", False),
-    ("shortlink_api_key", "Shortlink API key", False),
-    ("proxy_supabase_url", "Proxy Supabase URL (optional)", False),
-    ("proxy_supabase_key", "Proxy Supabase Service Key (optional)", False),
-    ("warmup_days", "Warmup days (before first upload)", True),
-    ("comment_moderation", "Comment mode (heldForReview/published)", False),
-    ("mirror_title_prefix", "Title prefix (optional)", False),
-    ("uploads_per_day", "Uploads per day (24/N = hours between)", True),
-    ("initial_backfill", "Initial backfill (videos to queue on first detect)", True),
-    ("upload_schedule", "Upload schedule (comma-separated HH:MM, empty=cooldown)", False),
+    ("yt_client_id", "YouTube Client ID", "str"),
+    ("yt_client_secret", "YouTube Client Secret", "str"),
+    ("yt_refresh_token", "YouTube Refresh Token", "str"),
+    ("github_token", "GitHub Token (PAT)", "str"),
+    ("github_repo", "GitHub Repo (user/repo)", "str"),
+    ("channels", "Channel URLs (comma-separated, @abc,@xyz)", "str"),
+    ("shortlink_provider", "Shortlink provider (vplink/cleanuri/tinyurl)", "str"),
+    ("shortlink_api_key", "Shortlink API key", "str"),
+    ("proxy_enabled", "Proxy system (pool for downloads)", "bool"),
+    ("proxy_supabase_url", "Proxy Supabase URL", "str"),
+    ("proxy_supabase_key", "Proxy Supabase Service Key", "str"),
+    ("warmup_days", "Warmup days (before first upload)", "int"),
+    ("comment_moderation", "Comment mode (heldForReview/published)", "str"),
+    ("mirror_title_prefix", "Title prefix (optional)", "str"),
+    ("custom_title", "Custom title (optional, {title} {url})", "str"),
+    ("custom_description", "Custom description (optional, {title} {url})", "str"),
+    ("custom_comment", "Custom comment (optional, {url} download link)", "str"),
+    ("uploads_per_day", "Uploads per day (24/N = hours between)", "int"),
+    ("initial_backfill", "Initial backfill (videos to queue on first detect)", "int"),
+    ("upload_schedule", "Upload schedule (comma-separated HH:MM, empty=cooldown)", "str"),
 ]
 
 def _display_val(val, sensitive=False):
@@ -447,10 +545,13 @@ def screen_setup(project):
         print(f"\n  {C_BOLDWHITE}SETUP — {p['name']}{C_RESET}")
         divider()
 
-        for i, (key, label, is_num) in enumerate(FIELD_SPEC, 1):
+        for i, (key, label, kind) in enumerate(FIELD_SPEC, 1):
             val = p.get(key, "")
             sensitive = "secret" in key or "token" in key or "key" in key or "refresh" in key
-            display = _display_val(val, sensitive)
+            if kind == "bool":
+                display = f"{C_GREEN}✓ enabled{C_RESET}" if _is_true(val) else f"{C_DIM}✗ disabled{C_RESET}"
+            else:
+                display = _display_val(val, sensitive)
             print(f"  {C_BOLD}[{i:2d}]{C_RESET} {label:35s} {display}")
 
         print()
@@ -497,8 +598,18 @@ def screen_setup(project):
         elif choice.isdigit():
             idx = int(choice) - 1
             if 0 <= idx < len(FIELD_SPEC):
-                key, label, is_num = FIELD_SPEC[idx]
+                key, label, kind = FIELD_SPEC[idx]
                 old = p.get(key, "")
+                if kind == "bool":
+                    new_val = not _is_true(old)
+                    try:
+                        supabase_db.update_project(pid, **{key: new_val})
+                        success(f"{label}: {'enabled' if new_val else 'disabled'}")
+                        p[key] = new_val
+                        _sync_local_project(supabase_db.get_project(pid) or p)
+                    except Exception as e:
+                        error(f"Failed: {e}")
+                    continue
                 new_val = prompt(f"{label}", old)
                 if new_val is not None:
                     new_val = new_val.strip()
@@ -519,7 +630,7 @@ def screen_setup(project):
                         if key == "channels" and new_val != old:
                             hint = f" (normalized: {new_val})"
                         try:
-                            if is_num:
+                            if kind == "int":
                                 try:
                                     num_val = int(new_val)
                                 except (ValueError, TypeError):
@@ -530,6 +641,7 @@ def screen_setup(project):
                                 supabase_db.update_project(pid, **{key: new_val})
                             success(f"{label} saved{hint}")
                             p[key] = new_val
+                            _sync_local_project(supabase_db.get_project(pid) or p)
                         except Exception as e:
                             error(f"Failed: {e}")
                             continue
@@ -766,10 +878,13 @@ def _do_doctor(project):
     else:
         report("Upload schedule", True, "cooldown mode (uploads_per_day)")
 
-    # ── 13. Proxy Supabase ──
+    # ── 13. Proxy system ──
+    proxy_enabled = _is_true(p.get("proxy_enabled"))
     pu = p.get("proxy_supabase_url", "")
     pk = p.get("proxy_supabase_key", "")
-    if pu and pk:
+    if not proxy_enabled:
+        report("Proxy system", True, "disabled — toggle field [9] to enable")
+    elif pu and pk:
         try:
             api = pu.rstrip("/") + "/rest/v1/proxy_results?select=ip&vplink_ok=eq.true&limit=1"
             req = urllib.request.Request(api, headers={
@@ -777,13 +892,13 @@ def _do_doctor(project):
             with urllib.request.urlopen(req, timeout=15) as resp:
                 data = json.loads(resp.read())
                 if data:
-                    report("Proxy Supabase", True, "connected, proxies available")
+                    report("Proxy system", True, "enabled — connected, proxies available")
                 else:
-                    report("Proxy Supabase", False, "connected but no VPLINK-verified proxies")
+                    report("Proxy system", False, "enabled but no VPLINK-verified proxies")
         except Exception as e:
-            report("Proxy Supabase", False, f"connection failed: {str(e)[:60]}")
+            report("Proxy system", False, f"enabled but connection failed: {str(e)[:60]}")
     else:
-        report("Proxy Supabase", True, "not configured (optional)")
+        report("Proxy system", False, "enabled but URL/key missing — set fields [10]/[11]")
 
     # ── 14. Deploy status ──
     if p.get("deployed_at"):
@@ -809,6 +924,8 @@ def _do_doctor(project):
                     error(f"Failed to set {key}: {e}")
             fixed = applied
             p = supabase_db.get_project(pid) or p
+            if not supabase_db.is_enabled():
+                _sync_local_project(p)
     if fixed > 0:
         success(f"{fixed} auto-fix(es) applied")
     if issues > 0:
@@ -822,6 +939,12 @@ def _do_doctor(project):
 # ─── Deploy ──────────────────────────────────────────────────────────────────
 
 def _do_deploy(project):
+    if not supabase_db.is_enabled():
+        error("Cloud deploy requires a Supabase connection — press [C] to connect first")
+        info("In local mode the bot runs via `yt-auto run` on this machine instead.")
+        input("\n  Press Enter to continue...")
+        return
+
     missing = []
     for key, label in [
         ("yt_client_id", "YouTube Client ID"),
@@ -876,12 +999,13 @@ def _do_deploy(project):
                 "added_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
             }
 
+    proxy_enabled = _is_true(project.get("proxy_enabled"))
     secrets = {
         "PROJECT_ID": str(project["id"]),
         "SUPABASE_URL": su_url,
         "SUPABASE_SERVICE_KEY": su_key,
-        "PROXY_SUPABASE_URL": project.get("proxy_supabase_url", ""),
-        "PROXY_SUPABASE_SERVICE_KEY": project.get("proxy_supabase_key", ""),
+        "PROXY_SUPABASE_URL": project.get("proxy_supabase_url", "") if proxy_enabled else "",
+        "PROXY_SUPABASE_SERVICE_KEY": project.get("proxy_supabase_key", "") if proxy_enabled else "",
         "YT_CLIENT_ID": project.get("yt_client_id", ""),
         "YT_CLIENT_SECRET": project.get("yt_client_secret", ""),
         "YT_REFRESH_TOKEN": project.get("yt_refresh_token", ""),
@@ -898,6 +1022,9 @@ def _do_deploy(project):
             "comment_moderation": project.get("comment_moderation", "heldForReview"),
             "warmup_days": int(project.get("warmup_days", 0)),
             "mirror_title_prefix": project.get("mirror_title_prefix", ""),
+            "custom_title": project.get("custom_title", ""),
+            "custom_description": project.get("custom_description", ""),
+            "custom_comment": project.get("custom_comment", ""),
             "uploads_per_day": int(project.get("uploads_per_day", 2)),
             "initial_backfill": int(project.get("initial_backfill", 5)),
             "upload_schedule": project.get("upload_schedule", ""),
@@ -948,7 +1075,7 @@ def _do_deploy(project):
     else:
         # Step 1: Create repo
         step(f"Creating repo {rn}...")
-        resp = github_api.create_repo(token, rn, "YouTube Mirror Bot")
+        resp = github_api.create_repo(token, rn)
         if isinstance(resp, dict) and resp.get("error"):
             error(f"Create repo failed: {resp.get('message', '')}")
             return
@@ -1096,6 +1223,8 @@ def _do_oauth(project):
                 rt = tokens.get("refresh_token", "")
                 if rt:
                     supabase_db.update_project(project["id"], yt_refresh_token=rt)
+                    if not supabase_db.is_enabled():
+                        _sync_local_project(supabase_db.get_project(project["id"]) or project)
                     success("Refresh token obtained and saved to project!")
                     warn("Refresh token expires in 7 days — re-run [O] before expiry")
                 else:
@@ -1305,11 +1434,14 @@ def screen_status(project):
     else:
         _fail("No channels configured", fix="Add channel URLs in Setup field 6")
 
-    # 2. Supabase connection
-    print(f"\n  {C_DIM}── Supabase Database ──{C_RESET}")
+    # 2. Database connection (hybrid: Supabase or local JSON)
+    print(f"\n  {C_DIM}── Database ──{C_RESET}")
     try:
         test = supabase_db.get_upload_state(project_id=project["id"])
-        _ok("Connected to Supabase")
+        if supabase_db.is_enabled():
+            _ok("Connected to Supabase (cloud mode)")
+        else:
+            _ok("Local JSON store — data in ~/.yt-mirror/")
         ws = test.get("warmup_start")
         wc = test.get("warmup_complete", False)
         if ws:
@@ -1330,7 +1462,7 @@ def screen_status(project):
         else:
             _warn("Warmup not started", fix="Deploy and let workflow run, or press [W]")
     except Exception as e:
-        _fail("Supabase connection failed", str(e)[:80])
+        _fail("Database read failed", str(e)[:80])
 
     # 3. GitHub access
     print(f"\n  {C_DIM}── GitHub ──{C_RESET}")
@@ -1557,24 +1689,12 @@ if __name__ == "__main__":
     if bootstrap.get("supabase_url") and bootstrap.get("supabase_key"):
         supabase_db.configure(bootstrap["supabase_url"], bootstrap["supabase_key"])
     else:
+        supabase_db.disable()
         clear()
         banner()
-        print(f"\n  {C_BOLD}First-time setup — connect to Supabase{C_RESET}")
-        print(f"  {C_DIM}All project data is stored in Supabase.{C_RESET}")
-        print(f"  {C_DIM}Enter your Supabase project URL and service key.{C_RESET}\n")
-        su = prompt("Supabase URL")
-        sk = prompt("Supabase Service Key")
-        if su and sk:
-            _write_json(BOOTSTRAP_PATH, {"supabase_url": su, "supabase_key": sk})
-            supabase_db.configure(su, sk)
-            success("Supabase configured! Now create your first project.")
-        else:
-            error("Supabase credentials required")
-            sys.exit(1)
-
-    if not supabase_db.is_enabled():
-        error("Supabase not connected — check URL and key")
-        sys.exit(1)
+        print(f"\n  {C_BOLD}Running in LOCAL mode{C_RESET}")
+        print(f"  {C_DIM}All project data is stored as JSON in {DATA_DIR}.{C_RESET}")
+        print(f"  {C_DIM}Press [C] in the project list to connect Supabase for cloud deploy.{C_RESET}\n")
 
     try:
         project_list_screen()

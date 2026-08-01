@@ -100,10 +100,13 @@ All writes are atomic (`mkstemp` + rename, `0600`).
 
 ## Cloud Mode (opt-in)
 
-Set `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` and the same code persists to
-Supabase and can be deployed to GitHub Actions for 24/7 operation (see
-`.github/workflows/`). The `VPLINKYT` TUI (`python3 tui.py`) manages cloud
-projects, OAuth and deploys.
+Set `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` (or use the TUI's `[C]` Database
+connection) and the same code persists to Supabase and can be deployed to
+GitHub Actions for 24/7 operation (see `.github/workflows/`). The TUI
+(`python3 tui.py`) is hybrid — it runs on local JSON files by default and
+manages cloud projects, OAuth and deploys once a Supabase connection is set.
+Each project carries a `Proxy system` toggle (field 9) that routes downloads
+through the residential proxy pool when enabled.
 
 ## Security
 

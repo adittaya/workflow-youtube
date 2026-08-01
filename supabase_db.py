@@ -19,6 +19,14 @@ def configure(url=None, key=None):
     _DB_ENABLED = bool(_SUPABASE_URL and _SUPABASE_KEY)
 
 
+def disable():
+    """Force local mode, ignoring SUPABASE_URL / SUPABASE_SERVICE_KEY env vars."""
+    global _SUPABASE_URL, _SUPABASE_KEY, _DB_ENABLED
+    _SUPABASE_URL = None
+    _SUPABASE_KEY = None
+    _DB_ENABLED = False
+
+
 def is_enabled():
     return _DB_ENABLED
 

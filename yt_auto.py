@@ -22,11 +22,13 @@ import sys
 import tempfile
 import time
 
+import config
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
-VERSION = "0.1.0"
+VERSION = config.VERSION
 
 
 def _import_backend():
@@ -70,6 +72,19 @@ def _pid(args):
     return os.environ.get("PROJECT_ID", getattr(args, "project", "") or "")
 
 
+def _apply_local_proxy():
+    """Local mode: when the proxy system is enabled in settings.json, expose
+    the proxy Supabase credentials so the downloader can use the proxy pool."""
+    try:
+        settings = json.loads(config.SETTINGS_PATH.read_text("utf-8"))
+    except Exception:
+        return
+    if str(settings.get("proxy_enabled", "")).strip().lower() in ("true", "1", "yes", "on"):
+        if settings.get("proxy_supabase_url") and settings.get("proxy_supabase_key"):
+            os.environ["PROXY_SUPABASE_URL"] = str(settings["proxy_supabase_url"])
+            os.environ["PROXY_SUPABASE_SERVICE_KEY"] = str(settings["proxy_supabase_key"])
+
+
 # ─── commands ────────────────────────────────────────────────────────────
 
 def cmd_run(args):
@@ -83,6 +98,7 @@ def cmd_run(args):
         cl.RUN_DURATION = float(args.duration) * 3600
 
     pid = _pid(args)
+    _apply_local_proxy()
 
     if args.once:
         owner = f"{pid}:local-{time.time():.0f}"

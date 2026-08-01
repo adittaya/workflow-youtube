@@ -522,10 +522,10 @@ def upload_daily(video_path, title=None, description=None,
     if custom_desc:
         upload_desc = _format_template(custom_desc, title=title, url=short_url or video_url)
     else:
-        upload_desc = "Download link in pinned comment\n\n"
-        if description:
-            keywords = _extract_keywords(description)
-            upload_desc += keywords or description
+        upload_desc = "Download link in pinned comment"
+        keywords = _extract_keywords(description) if description else ""
+        if keywords:
+            upload_desc += "\n\n" + keywords
 
     video_id = youtube_api.upload_video(
         youtube, video_path,

@@ -1,6 +1,5 @@
 """Tests for config storage (JSON / YAML / TOML)."""
 
-import json
 import os
 import tempfile
 import unittest

@@ -24,28 +24,19 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 try:
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import padding
-    from cryptography.hazmat.backends import default_backend
-    HAS_CRYPTO = True
+    from google.oauth2.credentials import Credentials
+    from googleapiclient.discovery import build
+    HAS_GAPI = True
 except ImportError:
-    HAS_CRYPTO = False
+    HAS_GAPI = False
 
 import config
 import supabase_db
 import youtube_api
 import daily_uploader
 import download_helpers
-import shortener
 import verify_state
 import doctor
-
-try:
-    from google.oauth2.credentials import Credentials
-    from googleapiclient.discovery import build
-    HAS_GAPI = True
-except ImportError:
-    HAS_GAPI = False
 
 DATA_DIR = Path(os.environ.get("YT_DATA_DIR", os.path.expanduser("~/.yt-mirror")))
 BOOTSTRAP_PATH = DATA_DIR / "config.json"
@@ -372,7 +363,6 @@ def _sync_local_project(p):
     settings["active_account"] = p.get("account_id") or ""
     _write_json(_local_settings_path(), settings)
 
-    cfg = config.load()
     patch = {}
     for k in ("yt_client_id", "yt_client_secret", "yt_refresh_token"):
         if p.get(k):

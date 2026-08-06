@@ -1,6 +1,5 @@
 """Tests for shell profile editing (idempotent, reversible)."""
 
-import os
 import tempfile
 import unittest
 from pathlib import Path

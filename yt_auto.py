@@ -45,12 +45,10 @@ def _pid(args):
 # ─── commands ────────────────────────────────────────────────────────────
 
 def cmd_status(args):
-    import config
     import supabase_db
     import daily_uploader
     pid = _pid(args)
 
-    state = daily_uploader.load_upload_state()
     status = daily_uploader.get_status()
     try:
         alerts = supabase_db.get_open_alerts(project_id=pid, limit=10)
@@ -96,7 +94,6 @@ def cmd_logs(args):
 
 
 def cmd_verify(args):
-    import supabase_db
     import verify_state
     pid = _pid(args)
     res = verify_state.run_for(pid, owner=f"cli-{time.time():.0f}", fix=not args.no_fix)
@@ -212,7 +209,6 @@ def _prompt(text):
 
 def cmd_setup(args):
     import config
-    import supabase_db
 
     cfg = config.load()
     if not cfg.get("yt_client_id") or not cfg.get("yt_client_secret"):
@@ -267,7 +263,6 @@ def cmd_upload(args):
         print("video not found")
         return 1
     source_title = details.get("title", "")
-    source_desc = details.get("description", "")
     source_tags = details.get("tags", [])
     source_channel = details.get("channel_id", "")
 
@@ -327,7 +322,7 @@ def cmd_proxy(args):
             print(f"proxy pool not configured (message: {summary.get('message')})")
             return 1
         print(f"pool:      {'ON' if summary.get('enabled') else 'OFF'}")
-        print(f"configured: yes")
+        print("configured: yes")
         print(f"total:     {summary.get('total', 0)}")
         print(f"alive:     {summary.get('alive', 0)}")
         best = summary.get("best")

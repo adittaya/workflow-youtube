@@ -11,8 +11,7 @@ import contextlib
 import os
 import sys
 import threading
-import time
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
 from installer.core import utils
 

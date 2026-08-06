@@ -1,7 +1,6 @@
 import subprocess
 import os
 import sys
-import tempfile
 from pathlib import Path
 
 TEMP_DIR = Path(os.environ.get("YT_TEMP_DIR", "/tmp/yt-process"))

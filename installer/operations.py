@@ -163,7 +163,6 @@ def install_global_commands(src_dir: Path, log=None) -> Tuple[Path, Path, Path]:
     their paths (installer, yt-auto, YOUTUBE)."""
     binpath = env.bin_dir()
     binpath.mkdir(parents=True, exist_ok=True)
-    installer_main = src_dir / "installer" / "__main__.py"
 
     installer_shim = binpath / INSTALLER_NAME
     utils.atomic_write(installer_shim,
@@ -443,7 +442,7 @@ def run_doctor(ui, config, auto_fix: bool) -> int:
     store = cfgmod.ConfigStore(INSTALLER_NAME, "config.json", "json", cfg_dir)
     registry = pkgmod.PackageRegistry.from_yaml(_packages_path())
     doc = Doctor(store, cfg_dir, registry, auto_fix=auto_fix)
-    broken = doc.run_all()
+    doc.run_all()
     ui.title("Doctor report")
     n = doc.render(ui)
     if n == 0:

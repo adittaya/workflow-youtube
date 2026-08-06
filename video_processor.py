@@ -90,7 +90,7 @@ def apply_edits(input_path, output_path, edits=None):
         color = edits.get("text_color", "white")
         x = edits.get("text_x", "(w-text_w)/2")
         y = edits.get("text_y", "h-th-30")
-        enable = edits.get("text_enable", f"between(t,2,7)")
+        enable = edits.get("text_enable", "between(t,2,7)")
         filters.append(
             f"drawtext=text='{text}':fontsize={fontsize}:fontcolor={color}"
             f":x={x}:y={y}:enable='{enable}'"

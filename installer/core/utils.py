@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable, Iterable, List, Optional, Sequence
+from typing import Optional, Sequence
 
 CommandResult = subprocess.CompletedProcess
 
@@ -124,7 +124,6 @@ def atomic_write(path: Path, text: str, mode: int = 0o600) -> None:
     """Write text atomically (tempfile + rename) so readers never see a
     partially written file."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = path.with_suffix(path.suffix + ".tmp"), 0
     import tempfile
 
     with tempfile.NamedTemporaryFile(

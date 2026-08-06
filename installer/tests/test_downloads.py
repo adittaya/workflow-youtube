@@ -12,7 +12,6 @@ import threading
 import unittest
 from pathlib import Path
 
-from installer.core import utils
 from installer.downloads import DownloadError, Downloader
 
 BODY = b"hello downloader payload 0123456789" * 40
@@ -96,6 +95,4 @@ class DownloaderTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    import tempfile
-
     unittest.main()

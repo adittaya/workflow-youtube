@@ -2,7 +2,6 @@ import os
 import subprocess
 import json
 import tempfile
-import re
 import config
 from PIL import Image, ImageEnhance
 

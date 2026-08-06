@@ -12,9 +12,9 @@ The same checks power ``installer verify`` and the post-install summary.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
-from installer.core import env, packages as pkgmod, utils
+from installer.core import env, packages as pkgmod
 
 
 @dataclass

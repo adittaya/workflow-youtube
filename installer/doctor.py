@@ -7,12 +7,12 @@ Produces a checklist (OK/WARN/BROKEN) with one suggested fix per problem.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, List, Optional
 
 from installer.core import env, packages as pkgmod, utils
-from installer.version import INSTALLER_NAME, MIN_PYTHON
+from installer.version import MIN_PYTHON
 
 
 @dataclass
@@ -87,7 +87,7 @@ class Doctor:
                 title=f"Tool: {name}",
                 ok=bool(info["installed"] and info["min_ok"]),
                 detail=info["version"] or "not installed",
-                fix_hint=f"Run: installer install",
+                fix_hint="Run: installer install",
                 severity="warn" if optional else "broken",
             ))
 

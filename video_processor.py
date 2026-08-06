@@ -40,6 +40,10 @@ def apply_edits(input_path, output_path, edits=None):
     duration = float(info.get("format", {}).get("duration", 60))
     width, height = _get_resolution(info)
 
+    trim_start = float(edits.get("trim_start", 0) or 0)
+    trim_end = float(edits.get("trim_end", 0) or 0)
+    out_duration = max(1.0, duration - trim_start - trim_end)
+
     filters = []
     audio_filters = []
 
@@ -84,6 +88,14 @@ def apply_edits(input_path, output_path, edits=None):
         c = edits["contrast"]
         filters.append(f"eq=contrast={c}")
 
+    if edits.get("fps"):
+        try:
+            fps = int(edits["fps"])
+            if fps >= 1:
+                filters.append(f"fps={fps}")
+        except (TypeError, ValueError):
+            pass
+
     if edits.get("text_overlay"):
         text = edits["text_overlay"]
         fontsize = edits.get("fontsize", 36)
@@ -102,10 +114,13 @@ def apply_edits(input_path, output_path, edits=None):
 
     if edits.get("fade_out"):
         d = edits["fade_out"]
-        start = max(0, duration - d)
+        start = max(0, out_duration - d)
         filters.append(f"fade=t=out:st={start}:d={d}")
 
-    cmd = ["ffmpeg", "-y", "-i", str(input_path)]
+    cmd = ["ffmpeg", "-y"]
+    if trim_start > 0:
+        cmd.extend(["-ss", f"{trim_start:g}"])
+    cmd.extend(["-i", str(input_path)])
 
     vf = ",".join(filters) if filters else None
     af = ",".join(audio_filters) if audio_filters else None
@@ -120,8 +135,10 @@ def apply_edits(input_path, output_path, edits=None):
         "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
         "-movflags", "+faststart",
-        str(output_path)
     ])
+    if trim_start > 0 or trim_end > 0:
+        cmd.extend(["-t", f"{out_duration:g}"])
+    cmd.append(str(output_path))
 
     _run(cmd, "edit")
     return output_path
@@ -193,3 +210,13 @@ def _random_edit_preset():
     preset = random.choice(presets)
     preset.pop("name", None)
     return preset
+
+
+def preset_edits(extra=None):
+    """Random anti-Content-ID preset plus optional processing overrides
+    (fps, trim_start, trim_end, ...). The random crop/speed/grain edits keep
+    the video distinguishable from the source; the overrides apply on top."""
+    edits = _random_edit_preset()
+    if extra:
+        edits.update(extra)
+    return edits

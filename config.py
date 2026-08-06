@@ -135,6 +135,12 @@ def load_tui_settings():
         "shortener_api_url": "",
         "shortener_provider": "vplink",
         "comment_moderation": "heldForReview",
+        "fps": 20,
+        "trim_start": 20,
+        "trim_end": 10,
+        "bgm_source": "yt_link",
+        "bgm_yt_url": "",
+        "bgm_dir": "",
     }
     if supabase_db.is_enabled():
         if PROJECT_ID:
@@ -156,6 +162,21 @@ def load_tui_settings():
         return {**defaults, **saved}
     except Exception:
         return defaults
+
+
+def save_tui_setting(key, value):
+    """Persist a TUI setting in the format load_tui_settings() reads back:
+    plain key in local settings.json, `tui_<key>` in the Supabase settings
+    table (mirrors the tui_ prefix load_tui_settings uses in cloud mode)."""
+    if supabase_db.is_enabled() and not PROJECT_ID:
+        supabase_db.set_setting(f"tui_{key}", value)
+    else:
+        supabase_db.set_setting(key, value)
+
+
+def save_tui_settings(**fields):
+    for key, value in fields.items():
+        save_tui_setting(key, value)
 
 
 PROXY_DEFAULTS = {

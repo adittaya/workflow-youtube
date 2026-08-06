@@ -1,12 +1,16 @@
 import os
 import random
+import hashlib
 import subprocess
 import urllib.request
 import urllib.parse
 from pathlib import Path
 
+import config
+
 DATA_DIR = Path(os.environ.get("YT_DATA_DIR", os.path.expanduser("~/.yt-mirror")))
 BGM_DIR = DATA_DIR / "bgm"
+YT_BGM_SUBDIR = BGM_DIR / "yt_downloads"
 
 BUILTIN_TRACKS = [
     {
@@ -78,11 +82,16 @@ def ensure_bgm_library():
             download_bgm(track["url"], dest.name)
 
 
-def get_bgm_for_duration(target_duration):
-    ensure_bgm_dir()
-    ensure_bgm_library()
-
-    files = list(BGM_DIR.glob("*.mp3")) + list(BGM_DIR.glob("*.wav"))
+def _pick_from_dir(directory, target_duration):
+    """Pick the track in `directory` whose length best matches target_duration.
+    Scans top-level audio files only (never descends into subdirs like
+    yt_downloads/). Returns None when the directory has no audio files."""
+    directory = Path(directory)
+    if not directory.is_dir():
+        return None
+    files = list(directory.glob("*.mp3")) + list(directory.glob("*.wav")) \
+        + list(directory.glob("*.ogg")) + list(directory.glob("*.m4a")) \
+        + list(directory.glob("*.flac"))
     if not files:
         return None
 
@@ -105,6 +114,87 @@ def get_bgm_for_duration(target_duration):
             continue
 
     return str(best) if best else str(random.choice(files))
+
+
+def get_bgm_for_duration(target_duration):
+    """Builtin royalty-free library: download the whitelist, pick a match."""
+    ensure_bgm_dir()
+    ensure_bgm_library()
+    return _pick_from_dir(BGM_DIR, target_duration)
+
+
+def download_bgm_from_youtube(url, filename=None):
+    """Download the audio of a copyright-free music video via yt-dlp and use it
+    as the BGM. The file lands in ~/.yt-mirror/bgm/yt_downloads/ so it is never
+    picked up by the builtin/local library selection. Returns the file path or
+    None on failure."""
+    if not url:
+        return None
+    ensure_bgm_dir()
+    YT_BGM_SUBDIR.mkdir(parents=True, exist_ok=True)
+    if filename is None:
+        filename = f"bgm_{hashlib.md5(url.encode('utf-8')).hexdigest()[:12]}"
+
+    try:
+        import proxy_pool
+        proxy_pool.ensure_working()
+    except Exception:
+        pass
+
+    out_template = str(YT_BGM_SUBDIR / f"{filename}.%(ext)s")
+    cmd = [
+        "yt-dlp", "--no-playlist", "--no-warnings", "--force-ipv4",
+        "--extractor-args", "youtube:player_client=android",
+        "-f", "bestaudio/best",
+        "-x", "--audio-format", "m4a", "--audio-quality", "0",
+        "-o", out_template, url,
+    ]
+    proxy = config.get_proxy_url()
+    if proxy:
+        cmd.extend(["--proxy", proxy])
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+
+    candidates = list(YT_BGM_SUBDIR.glob(f"{filename}.*"))
+    for c in candidates:
+        if c.suffix.lower() in (".mp3", ".wav", ".ogg", ".m4a", ".flac") and c.stat().st_size > 0:
+            return str(c)
+    return None
+
+
+def resolve_bgm(source, target_duration, settings=None):
+    """Resolve a BGM track based on the `bgm_source` setting:
+      - none    → None (vocals-only audio, nothing mixed in)
+      - yt_link → download the audio from bgm_yt_url (copyright-free link the
+                  user supplied during Quick Deploy)
+      - builtin → whitelisted royalty-free library
+      - local   → user's own royalty-free folder (bgm_dir) or ~/.yt-mirror/bgm
+    Returns the track path or None (never mixes in unverified random files)."""
+    source = (source or "none").strip().lower()
+    if source == "none":
+        return None
+
+    if source == "yt_link":
+        settings = settings or {}
+        url = (settings.get("bgm_yt_url") or "").strip()
+        if not url:
+            return None
+        return download_bgm_from_youtube(url)
+
+    if source == "builtin":
+        return get_bgm_for_duration(target_duration)
+
+    if source == "local":
+        settings = settings or {}
+        directory = (settings.get("bgm_dir") or "").strip() or BGM_DIR
+        return _pick_from_dir(directory, target_duration)
+
+    return None
 
 
 def trim_bgm(bgm_path, duration, output_path=None):

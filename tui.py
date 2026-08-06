@@ -627,6 +627,41 @@ def _set_pool_key(current):
     pause()
 
 
+def _set_processing_num(key, label, current, minimum=0):
+    new = prompt(f"{label} (current {current})").strip()
+    if not new:
+        return
+    try:
+        value = int(float(new))
+    except ValueError:
+        error("Must be a number")
+        pause()
+        return
+    if value < minimum:
+        error(f"Must be at least {minimum}")
+        pause()
+        return
+    config.save_tui_setting(key, value)
+    success(f"{label} set to {value}")
+    pause()
+
+
+def _set_bgm_source(current):
+    print(f"\n  {C_DIM}BGM source options:{C_RESET}")
+    print(f"    {C_BOLD}none{C_RESET}     — vocals-only, nothing mixed in (100% safe)")
+    print(f"    {C_BOLD}yt_link{C_RESET}  — download audio from your copyright-free YouTube link")
+    print(f"    {C_BOLD}builtin{C_RESET}  — builtin royalty-free library")
+    print(f"    {C_BOLD}local{C_RESET}    — files from your own royalty-free folder")
+    new = prompt("BGM source", current).strip().lower()
+    if new not in ("none", "yt_link", "builtin", "local"):
+        error("Invalid BGM source")
+        pause()
+        return
+    config.save_tui_setting("bgm_source", new)
+    success(f"BGM source set to '{new}'")
+    pause()
+
+
 def _pool_refresh_now():
     import proxy_pool
     if not proxy_pool.is_configured():
@@ -723,6 +758,32 @@ def settings_screen():
         print(f"  {C_BOLD}[P]{C_RESET} Refresh & test pool — then activate fastest")
         print(f"  {C_BOLD}[S]{C_RESET} Pool status")
         print()
+        divider()
+        print(f"\n  {C_BOLDWHITE}PROCESSING — copyright-safe BGM, fps & trim{C_RESET}")
+        print(f"  {C_DIM}Frame rate, seconds cut from start/end, and where the{C_RESET}")
+        print(f"  {C_DIM}non-copyright BGM comes from (your link, library, or none).{C_RESET}")
+        divider()
+        t = config.load_tui_settings()
+
+        def _tnum(key, default):
+            try:
+                return int(float(t.get(key) or default))
+            except (TypeError, ValueError):
+                return default
+
+        tfps = _tnum("fps", 20)
+        tts = _tnum("trim_start", 20)
+        tte = _tnum("trim_end", 10)
+        tbsrc = str(t.get("bgm_source") or "yt_link")
+        tburl = str(t.get("bgm_yt_url") or "").strip()
+        tbdir = str(t.get("bgm_dir") or "").strip()
+        print(f"  {C_BOLD}[A]{C_RESET} Frame rate           {tfps} fps")
+        print(f"  {C_BOLD}[B]{C_RESET} Cut from start (s)   {tts}")
+        print(f"  {C_BOLD}[C]{C_RESET} Cut from end (s)     {tte}")
+        print(f"  {C_BOLD}[D]{C_RESET} BGM source           {tbsrc}  ({C_DIM}none | yt_link | builtin | local{C_RESET})")
+        print(f"  {C_BOLD}[E]{C_RESET} Copyright-free YT link  {tburl or f'{C_DIM}(empty){C_RESET}'}")
+        print(f"  {C_BOLD}[F]{C_RESET} Local BGM folder     {tbdir or f'{C_DIM}(empty){C_RESET}'}")
+        print()
 
         choice = prompt("Choice").strip().upper()
         if choice == "0":
@@ -753,6 +814,22 @@ def settings_screen():
             _test_proxy_now()
         elif choice == "X":
             _clear_proxy()
+        elif choice == "A":
+            _set_processing_num("fps", "Frame rate (fps)", tfps, minimum=1)
+        elif choice == "B":
+            _set_processing_num("trim_start", "Cut from start (seconds)", tts, minimum=0)
+        elif choice == "C":
+            _set_processing_num("trim_end", "Cut from end (seconds)", tte, minimum=0)
+        elif choice == "D":
+            _set_bgm_source(tbsrc)
+        elif choice == "E":
+            new_url = prompt("Copyright-free music YouTube link", tburl)
+            config.save_tui_setting("bgm_yt_url", new_url.strip())
+            success("Copyright-free BGM link saved")
+        elif choice == "F":
+            new_dir = prompt("Local BGM folder path", tbdir)
+            config.save_tui_setting("bgm_dir", new_dir.strip())
+            success("Local BGM folder saved")
 
 
 # ─── YOUTUBE ACCOUNTS ─────────────────────────────────────────────────────────
@@ -1642,6 +1719,79 @@ def _ask_comment():
     return _read_multiline("Paste your custom comment")
 
 
+def _ask_processing_options():
+    """Frame rate + start/end cut + copyright-free BGM, prefilled with the
+    saved Settings. The answers persist as the new defaults."""
+    print(f"\n  {C_BOLDWHITE}PROCESSING OPTIONS{C_RESET}")
+    print(f"  {C_DIM}Frame rate, seconds cut from the start/end, and the{C_RESET}")
+    print(f"  {C_DIM}copyright-free BGM source for this upload.{C_RESET}")
+    s = config.load_tui_settings()
+
+    def _num(key, default):
+        try:
+            return int(float(s.get(key) or default))
+        except (TypeError, ValueError):
+            return default
+
+    cur_fps = _num("fps", 20)
+    cur_ts = _num("trim_start", 20)
+    cur_te = _num("trim_end", 10)
+
+    raw = prompt(f"Output frame rate (default {cur_fps})").strip()
+    fps = _num("fps", 20)
+    if raw:
+        try:
+            fps = int(float(raw))
+        except ValueError:
+            warn(f"'{raw}' not a number — keeping {fps}")
+
+    raw = prompt(f"Cut seconds from the START (default {cur_ts})").strip()
+    ts = _num("trim_start", 20)
+    if raw:
+        try:
+            ts = max(0, int(float(raw)))
+        except ValueError:
+            warn(f"'{raw}' not a number — keeping {ts}")
+
+    raw = prompt(f"Cut seconds from the END (default {cur_te})").strip()
+    te = _num("trim_end", 10)
+    if raw:
+        try:
+            te = max(0, int(float(raw)))
+        except ValueError:
+            warn(f"'{raw}' not a number — keeping {te}")
+
+    print()
+    print(f"  {C_BOLDWHITE}Copyright-free BGM{C_RESET}")
+    print(f"  {C_DIM}The safest is none (vocals-only). Or paste the link to a{C_RESET}")
+    print(f"  {C_DIM}copyright-free music video — its audio is downloaded and{C_RESET}")
+    print(f"  {C_DIM}mixed under the vocals. builtin = royalty-free library.{C_RESET}")
+    cur_src = str(s.get("bgm_source") or "yt_link").strip().lower()
+    bgm_choice = prompt("BGM: y=your YT music link / b=builtin / n=none", cur_src).strip().lower()
+    source = "none"
+    yt_url = ""
+    if bgm_choice in ("y", "yes", "yt_link"):
+        url = prompt("Paste the copyright-free music YouTube link",
+                     (s.get("bgm_yt_url") or "").strip() or None).strip()
+        if re.search(r'(?:v=|youtu\.be/|youtube\.com/embed/)([\w-]{11})', url):
+            yt_url = url
+            source = "yt_link"
+            info("BGM: audio from your link will be mixed under the vocals")
+        else:
+            warn("That doesn't look like a YouTube link — BGM disabled (vocals-only)")
+    elif bgm_choice in ("b", "builtin"):
+        source = "builtin"
+        info("BGM: builtin royalty-free library")
+    else:
+        info("BGM: none — vocals-only audio (most copyright-safe)")
+
+    config.save_tui_settings(
+        fps=fps, trim_start=ts, trim_end=te, bgm_source=source,
+    )
+    if yt_url:
+        config.save_tui_setting("bgm_yt_url", yt_url)
+
+
 def _upload_with_failover(processed, title, description, tags, source_url,
                           comment, source_channel):
     """Test the proxy, upload, and on any proxy-related failure re-rotate the
@@ -1794,6 +1944,9 @@ def _quick_deploy_flow(name, acct):
                 warn(msg)
     else:
         info("Proxy mode skipped — direct connection")
+
+    # 6.5) Processing options: frame rate, start/end cut, copyright-free BGM
+    _ask_processing_options()
 
     # 7) Process: download → vocal separation → edits → BGM mix
     info("Downloading video...")

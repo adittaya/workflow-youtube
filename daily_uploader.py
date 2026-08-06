@@ -106,10 +106,29 @@ def process_video(input_path, output_dir=None):
     else:
         config.log("  step 1: source has no audio track — skipping separation")
 
-    # Step 2: FFmpeg edits
+    # Step 2: FFmpeg edits (anti-Content-ID preset + fps + start/end trim)
     config.log("  step 2: applying video edits...")
+    settings = config.load_tui_settings()
+
+    def _int_setting(key, default):
+        try:
+            return int(float(settings.get(key) or default))
+        except (TypeError, ValueError):
+            return default
+
+    fps = _int_setting("fps", 20)
+    trim_start = _int_setting("trim_start", 20)
+    trim_end = _int_setting("trim_end", 10)
+    config.log(f"  edits: fps={fps}, trim {trim_start}s from start, {trim_end}s from end")
     edited_path = output_dir / f"edited_{input_path.name}"
-    video_processor.apply_edits(base_path, edited_path)
+    video_processor.apply_edits(
+        base_path, edited_path,
+        video_processor.preset_edits({
+            "fps": fps,
+            "trim_start": trim_start,
+            "trim_end": trim_end,
+        }),
+    )
 
     # Step 3: get video duration
     config.log("  step 3: getting video duration...")
@@ -120,12 +139,13 @@ def process_video(input_path, output_dir=None):
     final_path = edited_path
     config.log("  step 4: adding non-copyright BGM...")
     if audio_separator.has_audio(edited_path):
-        bgm_path = bgm_manager.get_bgm_for_duration(duration)
+        bgm_source = (settings.get("bgm_source") or "yt_link").strip().lower()
+        bgm_path = bgm_manager.resolve_bgm(bgm_source, duration, settings)
         if bgm_path:
+            config.log(f"  BGM track: {Path(bgm_path).name}")
             trimmed = bgm_manager.trim_bgm(bgm_path, duration,
                                            output_dir / "trimmed_bgm.wav")
             final_path = output_dir / f"final_{input_path.name}"
-            settings = config.load_tui_settings()
             try:
                 vocal_vol = float(settings.get("vocal_volume", 0.85))
             except (TypeError, ValueError):
@@ -139,7 +159,7 @@ def process_video(input_path, output_dir=None):
                 original_vol=vocal_vol, bgm_vol=bgm_vol
             )
         else:
-            config.log("  no BGM available — keeping vocals-only audio")
+            config.log("  no copyright-free BGM available — keeping vocals-only audio")
     else:
         config.log("  no audio to mix — keeping edited video")
 

@@ -248,6 +248,8 @@ def _resolve_client_creds():
 def _run_oauth_flow(client_id, client_secret):
     import hashlib, base64 as b64
 
+    client_id = config.sanitize_client_id(client_id)
+
     if not client_id or not client_secret:
         error("Client ID and Secret are required first")
         return None
@@ -887,8 +889,9 @@ def _add_account_oauth():
         return
 
     cid, csec = _resolve_client_creds()
+    cid = config.sanitize_client_id(cid)
     if not cid:
-        cid = prompt("YouTube Client ID")
+        cid = config.sanitize_client_id(prompt("YouTube Client ID"))
     if not csec:
         csec = prompt("YouTube Client Secret")
     if not cid or not csec:
@@ -896,7 +899,7 @@ def _add_account_oauth():
         pause()
         return
 
-    print(f"\n  {C_DIM}Using Client ID: {doctor.sanitize_client_id(cid)}{C_RESET}")
+    print(f"\n  {C_DIM}Using Client ID: {cid}{C_RESET}")
     rt = _run_oauth_flow(cid, csec)
     if not rt:
         pause()

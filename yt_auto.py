@@ -106,6 +106,7 @@ def cmd_oauth(args):
     cfg = config.load()
     cid = os.environ.get("YT_CLIENT_ID", "") or cfg.get("yt_client_id", "")
     csec = os.environ.get("YT_CLIENT_SECRET", "") or cfg.get("yt_client_secret", "")
+    cid = config.sanitize_client_id(cid)
     if not cid or not csec:
         print("YouTube client ID/secret missing.")
         print("Set YT_CLIENT_ID + YT_CLIENT_SECRET env vars, or run `yt-auto setup` first.")
@@ -213,7 +214,7 @@ def cmd_setup(args):
     cfg = config.load()
     if not cfg.get("yt_client_id") or not cfg.get("yt_client_secret"):
         print("Step 1/2 — YouTube API credentials (https://console.cloud.google.com/apis/credentials)")
-        cid = _prompt("OAuth Client ID: ")
+        cid = config.sanitize_client_id(_prompt("OAuth Client ID: "))
         csec = _prompt("OAuth Client Secret: ")
         if cid and csec:
             config.save({"yt_client_id": cid, "yt_client_secret": csec})

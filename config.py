@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import tempfile
 import time
 from pathlib import Path
@@ -32,6 +33,27 @@ DEFAULTS = {
     "category_id": "22",
     "dry_run": False,
 }
+
+
+def sanitize_client_id(value):
+    """Strip a full URL down to a bare Google OAuth client ID.
+
+    Users paste the client ID together with a scheme/port (e.g.
+    ``http://1234-abc.apps.googleusercontent.com``); Google rejects that with
+    ``invalid_client`` (401: OAuth client was not found). Reduce to the
+    canonical ``….apps.googleusercontent.com`` form when possible, otherwise
+    drop the scheme and any query fragment.
+    """
+    if value is None:
+        return ""
+    v = str(value).strip()
+    if not v:
+        return v
+    m = re.search(r"([\w\-]+\.apps\.googleusercontent\.com)", v)
+    if m:
+        return m.group(1)
+    v = re.sub(r"^https?://", "", v).split("/")[0]
+    return v.split("?")[0]
 
 
 def _ensure_dir():

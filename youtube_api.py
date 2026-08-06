@@ -46,6 +46,7 @@ def get_client(client_id=None, client_secret=None, refresh_token=None):
         }
     else:
         creds_data = config.get_yt_credentials()
+    creds_data["client_id"] = config.sanitize_client_id(creds_data.get("client_id", ""))
     if not all(creds_data.values()):
         raise RuntimeError("YouTube credentials not configured — set YT_CLIENT_ID, YT_CLIENT_SECRET, YT_REFRESH_TOKEN")
     creds = Credentials(

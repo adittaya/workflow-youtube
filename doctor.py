@@ -64,15 +64,7 @@ def fuzzy(value, choices):
 
 
 def sanitize_client_id(value):
-    v = _clean(value)
-    if not v:
-        return v
-    m = re.search(r"([\w\-]+\.apps\.googleusercontent\.com)", v)
-    if m:
-        return m.group(1)
-    v = re.sub(r"^https?://", "", v).split("/")[0]
-    v = v.split("?")[0]
-    return v
+    return config.sanitize_client_id(value)
 
 
 # ─── Live checks ─────────────────────────────────────────────────────────────

@@ -2,8 +2,9 @@
 
 The installer installs a source copy of the project. ``installer update``
 updates that copy — either with ``git pull`` when the install was from a clone,
-or by downloading the latest release archive. Version checks use the GitHub
-Releases API and are robust to being offline (they report "unable to check").
+or by downloading the latest source archive. Version checks use the GitHub
+Releases API; when no release exists (this project ships from ``main``) the
+main-branch archive is fetched instead.
 """
 
 from __future__ import annotations
@@ -20,7 +21,9 @@ from installer.core import utils
 from installer.version import REPO
 
 API = f"https://api.github.com/repos/{REPO}/releases/latest"
-TARBALL = f"https://github.com/{REPO}/releases/latest/download"
+# The project ships from the `main` branch (no releases published), so archive
+# updates fetch the same codeload tarball bootstrap.sh uses.
+MAIN_TARBALL = f"https://codeload.github.com/{REPO}/tar.gz/refs/heads/main"
 
 
 @dataclass
@@ -79,12 +82,12 @@ def update_from_git(install_dir: Path, log=None) -> tuple[bool, str]:
 
 
 def update_from_archive(install_dir: Path, log=None) -> tuple[bool, str]:
-    """Download the latest release archive and replace the source copy."""
+    """Download the latest main-branch source and replace the copy."""
     from installer.downloads import Downloader, extract_archive
 
-    url = f"{TARBALL}/workflow-youtube.tar.gz"
+    url = MAIN_TARBALL
     dl = Downloader(log=log)
-    tmp = install_dir / ".update.tmp" / "release.tar.gz"
+    tmp = install_dir / ".update.tmp" / "repo.tar.gz"
     try:
         tmp.parent.mkdir(parents=True, exist_ok=True)
         dl.download(url, tmp)

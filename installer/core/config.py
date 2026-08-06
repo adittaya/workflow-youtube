@@ -10,13 +10,17 @@ format. JSON is lossless and is the default.
 from __future__ import annotations
 
 import json
-import tomllib  # Python >= 3.11
 from pathlib import Path
 from typing import Any, Optional
 
+try:
+    import tomllib  # Python >= 3.11
+except ImportError:  # Python 3.10 — TOML support degrades gracefully
+    tomllib = None
+
 from installer.core import env
 
-SUPPORTED = ("json", "yaml", "toml")
+SUPPORTED = ("json", "yaml", "toml") if tomllib is not None else ("json", "yaml")
 
 
 # --------------------------------------------------------------------------
@@ -124,6 +128,8 @@ def _dump_yaml(data: dict, indent: int = 0) -> str:
 # --------------------------------------------------------------------------
 
 def _load_toml(text: str) -> dict:
+    if tomllib is None:
+        raise ConfigError("TOML config requires Python 3.11+")
     return tomllib.loads(text)
 
 

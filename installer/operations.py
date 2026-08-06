@@ -25,6 +25,15 @@ def default_dirs(app: str = APP_NAME):
     return cfg_dir, data_dir, install_dir
 
 
+def resolve_dirs(config: cfgmod.Config):
+    """Actual dirs to use, honouring any install_dir/data_dir config overrides
+    (``installer config set install_dir …``) with platform defaults."""
+    cfg_dir = Path(env.config_home(INSTALLER_NAME))
+    data_dir = Path(config.get("data_dir") or env.data_home(APP_NAME)).expanduser()
+    install_dir = Path(config.get("install_dir") or (data_dir / "src")).expanduser()
+    return cfg_dir, data_dir, install_dir
+
+
 def defaults() -> dict:
     """Default installer configuration."""
     cfg_dir, data_dir, install_dir = default_dirs()
@@ -32,6 +41,7 @@ def defaults() -> dict:
         "install_dir": str(install_dir),
         "data_dir": str(data_dir),
         "mirror_home": str(env.home_dir() / ".yt-mirror"),
+        "source_url": "",
         "shell_profile": "ask",           # ask | yes | no
         "upgrade": False,
         "packages": ["git", "python", "ffmpeg", "yt-dlp"],
@@ -74,7 +84,10 @@ def find_local_source() -> Optional[Path]:
 def copy_project(src: Path, dest: Path, log=None) -> None:
     """Copy the project source (code, scripts, installer package) to ``dest``.
 
-    Re-installing from the installed copy is a no-op (src == dest).
+    The destination is treated as an installer-managed copy: files the source
+    no longer ships are removed so a renamed/deleted module can never shadow
+    the current one. Re-installing from the installed copy is a no-op
+    (src == dest).
     """
     src, dest = src.resolve(), dest.resolve()
     if src == dest:
@@ -82,19 +95,40 @@ def copy_project(src: Path, dest: Path, log=None) -> None:
             log.debug("source already at destination; nothing to copy")
         return
     dest.mkdir(parents=True, exist_ok=True)
-    for pattern in ("*.py", "*.sh", "*.txt", "*.sql"):
+
+    patterns = ("*.py", "*.sh", "*.txt", "*.sql")
+    src_files = {}
+    for pattern in patterns:
         for f in src.glob(pattern):
             if f.name.startswith("test_"):
                 continue
+            src_files[f.name] = f
+
+    for pattern in patterns:
+        for f in dest.glob(pattern):
+            if f.name in src_files:
+                continue
+            if log:
+                log.debug(f"removing stale file: {f.name}")
             try:
-                shutil.copy2(f, dest / f.name)
+                f.unlink()
             except OSError:
                 pass
-    # Installer package (excluding tests/caches so installs stay lean).
+
+    for name, f in src_files.items():
+        try:
+            shutil.copy2(f, dest / name)
+        except OSError:
+            pass
+
+    # Installer package (excluding tests/caches so installs stay lean). Fully
+    # managed: replace it wholesale so stale installer modules never linger.
     src_pkg = src / "installer"
     if src_pkg.is_dir():
         dst_pkg = dest / "installer"
-        shutil.copytree(src_pkg, dst_pkg, dirs_exist_ok=True, ignore=shutil.ignore_patterns(
+        if dst_pkg.exists():
+            utils.remove_path(dst_pkg)
+        shutil.copytree(src_pkg, dst_pkg, ignore=shutil.ignore_patterns(
             "__pycache__", "*.pyc", "tests", ".pytest_cache"))
     if log:
         log.debug(f"copied project source from {src} to {dest}")
@@ -200,7 +234,7 @@ def run_install(ui, config: cfgmod.Config, *, non_interactive: bool = False,
     from installer.core.logging import get_logger
 
     log = get_logger()
-    cfg_dir, data_dir, install_dir = default_dirs()
+    cfg_dir, data_dir, install_dir = resolve_dirs(config)
     base_dir = cfg_dir
     st = statemod.InstallState.load(base_dir)
     journal = rollmod.RollbackJournal(base_dir / "rollback.json").load()
@@ -223,7 +257,7 @@ def run_install(ui, config: cfgmod.Config, *, non_interactive: bool = False,
         ui.error("No supported package manager detected.")
         return 1
 
-    # Stage: system packages
+    # Stage: system packages (critical — a failure aborts the install)
     st.begin_stage("system_packages")
     requested = list(config.get("packages", []))
     missing = [n for n in requested if not pkgmod.check_package(registry, n)["installed"]]
@@ -236,24 +270,13 @@ def run_install(ui, config: cfgmod.Config, *, non_interactive: bool = False,
                 ok, _ = install_system_packages(manager, registry, missing, log)
             if ok:
                 ui.ok(f"Installed: {', '.join(missing)}")
-                for n in missing:
-                    journal.record_command(
-                        ["installer", "uninstall", "--packages", n], f"rollback install {n}")
             else:
-                ui.warn("Some system packages could not be installed.")
+                ui.error(f"Could not install required packages: {', '.join(missing)}")
+                st.end_stage("system_packages", "failed", ", ".join(missing))
+                st.save()
+                journal.rollback(log)
+                return 1
     st.end_stage("system_packages", "done")
-    st.save()
-
-    # Stage: pip packages
-    st.begin_stage("pip_packages")
-    pip_names = config.get("pip_packages", ["yt-dlp"])
-    for pname in pip_names:
-        if not pkgmod.check_package(registry, pname)["installed"]:
-            if dry_run:
-                ui.dim(f"would install pip: {pname}")
-            elif install_pip_requirements(install_dir / "requirements.txt", log):
-                pass
-    st.end_stage("pip_packages", "done")
     st.save()
 
     # Stage: copy source
@@ -268,6 +291,7 @@ def run_install(ui, config: cfgmod.Config, *, non_interactive: bool = False,
         ui.error(f"Source copy failed: {exc}")
         st.end_stage("copy_source", "failed", str(exc))
         st.save()
+        journal.rollback(log)
         return 1
     st.end_stage("copy_source", "done", kind)
     st.save()
@@ -278,15 +302,20 @@ def run_install(ui, config: cfgmod.Config, *, non_interactive: bool = False,
     if dry_run:
         ui.dim(f"would pip-install: {req_file.name}")
     elif req_file.exists() and not install_pip_requirements(req_file, log):
-        ui.warn("Python dependencies could not be installed (pip).")
-    st.end_stage("pip_requirements", "done")
-    st.save()
+        ui.warn("Python dependencies could not be installed (pip). "
+                "Run 'installer repair' after fixing pip, or install them manually.")
+        st.end_stage("pip_requirements", "failed",
+                     "pip install failed; run 'installer repair'")
+        st.save()
+    else:
+        st.end_stage("pip_requirements", "done")
+        st.save()
 
     # Stage: config + data dirs
     st.begin_stage("config")
     cfg_dir.mkdir(parents=True, exist_ok=True)
     data_dir.mkdir(parents=True, exist_ok=True)
-    mirror = Path(config["mirror_home"])
+    mirror = Path(config["mirror_home"]).expanduser()
     for sub in ("bgm", "separated", "processed"):
         (mirror / sub).mkdir(parents=True, exist_ok=True)
     config.set("install_dir", str(install_dir))
@@ -364,7 +393,16 @@ def run_update(ui, config) -> int:
     ui.info(f"Current version: {current}")
     latest = update.fetch_latest_release(log)
     if latest is None:
-        ui.warn("Unable to check for updates (offline?).")
+        # No GitHub release published — this project ships from the main
+        # branch, so fall back to fetching the latest main-branch source.
+        ui.warn("No GitHub release published (this project ships from main).")
+        if not ui.confirm("Fetch the latest main-branch source and update now?"):
+            return 0
+        ok, msg = update.perform_update(Path(config["install_dir"]), log)
+        if ok:
+            ui.ok(f"Updated: {msg}")
+            return 0
+        ui.error(f"Update failed: {msg}")
         return 1
     ui.info(f"Latest release:  {latest.tag}")
     if not update.is_newer(latest, current):
@@ -384,10 +422,12 @@ def run_update(ui, config) -> int:
 
 
 def run_verify(ui, config) -> int:
-    cfg_dir, _, install_dir = default_dirs()
+    cfg_dir, _, install_dir = resolve_dirs(config)
     registry = pkgmod.PackageRegistry.from_yaml(_packages_path())
     cfg_path = cfg_dir / "config.json"
-    checks = verification.verify_installation(cfg_path, install_dir.parent, registry)
+    # Install state lives in the config home — verify against that, not the
+    # data dir (passing the wrong base_dir made the check always 'incomplete').
+    checks = verification.verify_installation(cfg_path, cfg_dir, registry)
     verification.render_report(checks, ui)
     ok, total = verification.summary_report(checks)
     ui.line()
@@ -399,8 +439,8 @@ def run_verify(ui, config) -> int:
 
 
 def run_status(ui, config) -> int:
-    _, data_dir, install_dir = default_dirs()
-    st = statemod.InstallState.load(env.config_home(INSTALLER_NAME))
+    cfg_dir, data_dir, install_dir = resolve_dirs(config)
+    st = statemod.InstallState.load(cfg_dir)
     ui.title("Environment")
     for k, v in env.display_environment().items():
         print(f"  {k:<18} {v}")
@@ -455,14 +495,14 @@ def run_doctor(ui, config, auto_fix: bool) -> int:
 def run_uninstall(ui, config, *, remove_config: bool, purge_data: bool) -> int:
     from installer import uninstall
 
-    cfg_dir, data_dir, install_dir = default_dirs()
+    cfg_dir, data_dir, install_dir = resolve_dirs(config)
     if not ui.confirm("Remove the yt-auto installation? This does NOT touch ~/.yt-mirror data.", default=False):
         ui.dim("Aborted.")
         return 0
     result = uninstall.uninstall(
         install_dir, cfg_dir,
         remove_config=remove_config,
-        data_dir=Path(config["mirror_home"]) if purge_data else None)
+        data_dir=Path(config["mirror_home"]).expanduser() if purge_data else None)
     for d in result.removed_dirs:
         ui.ok(f"Removed {d}")
     for p in result.edited_profiles:

@@ -77,5 +77,5 @@ Write-Host "✓ Source         -> $src"
 # --- 4. Hand off to the Python installer --------------------------------
 $flag = @()
 if ($NonInteractive) { $flag = @("--non-interactive") }
-python (Join-Path $src "installer\__main__.py") install @flag
+python (Join-Path $src "__main__.py") install @flag
 exit $LASTEXITCODE

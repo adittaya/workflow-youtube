@@ -15,6 +15,15 @@ if [ ! -x /usr/bin/curl ] && [ ! -x /bin/curl ] && ! command -v curl &>/dev/null
     exit 1
 fi
 
+if ! command -v python3 &>/dev/null; then
+    echo "ERROR: python3 is required (the installer itself runs on Python)." >&2
+    echo "  Ubuntu/Debian: sudo apt-get install -y python3 python3-pip" >&2
+    echo "  Fedora:        sudo dnf install -y python3 python3-pip" >&2
+    echo "  Arch:          sudo pacman -S --noconfirm python python-pip" >&2
+    echo "  macOS:         install Xcode CLT or Homebrew python" >&2
+    exit 1
+fi
+
 TMP="$(mktemp -d)"
 cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT

@@ -1681,7 +1681,9 @@ def _do_instant_upload(project):
 
 def _read_multiline(msg):
     """Read multi-line pasted content until a line equal to 'END' (or EOF).
-    Returns the text with its internal line breaks preserved."""
+    Returns the text with its internal line breaks preserved. A visible cue is
+    printed after every line so it is never ambiguous that more input is being
+    read (pasting a block with or without a trailing newline both work)."""
     print(f"  {C_CYAN}▸{C_RESET} {msg} — paste it, then type END on its own line")
     lines = []
     while True:
@@ -1692,12 +1694,14 @@ def _read_multiline(msg):
         if line.strip().lower() == "end":
             break
         lines.append(line)
+        print(f"  {C_DIM}▸ keep pasting lines, or type END on its own line to finish{C_RESET}")
     return "\n".join(lines).strip()
 
 
-def _ask_copy_or_custom(label, source):
+def _ask_copy_or_custom(label, source, single_line=False):
     """Ask one question: use the exact value from the source video, or paste a
-    custom one (multi-line paste supported). Returns the chosen value."""
+    custom one. Multi-line paste (END-terminated) is supported for long
+    fields; single-line fields (e.g. the title) just take one line + Enter."""
     print()
     print(f"  {C_BOLDWHITE}{label}{C_RESET}")
     preview = str(source) if source else "(source has none)"
@@ -1707,6 +1711,8 @@ def _ask_copy_or_custom(label, source):
     choice = prompt(f"Copy the exact source {label.lower()}? (y=copy / n=custom)", "y").strip().lower()
     if choice in ("", "y", "yes"):
         return source
+    if single_line:
+        return prompt(f"Paste your custom {label.lower()}")
     return _read_multiline(f"Paste your custom {label.lower()}")
 
 
@@ -1926,7 +1932,7 @@ def _quick_deploy_flow(name, acct):
 
     # 3-5) Title → description → comment, one question at a time
     print(f"\n  {C_DIM}── Source: {details.get('title', '')}{C_RESET}")
-    title = _ask_copy_or_custom("Title", details.get("title", ""))
+    title = _ask_copy_or_custom("Title", details.get("title", ""), single_line=True)
     description = _ask_copy_or_custom("Description", details.get("description", ""))
     comment = _ask_comment()
 

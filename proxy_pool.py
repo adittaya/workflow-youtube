@@ -320,8 +320,8 @@ def ensure_working(force=False):
             pass
     url = config.get_proxy_url()
     if url:
-        ok, _lat, _note = _probe(url, TEST_E2_URL, 6)
-        if ok:
+        _lat, _status = _probe(url, TEST_E2_URL, 6)
+        if _lat is not None:
             return s.get("proxy_active_ip")
     best, msg = refresh_and_activate()
     if best:

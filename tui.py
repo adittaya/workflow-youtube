@@ -1599,9 +1599,25 @@ def _do_instant_upload(project):
 
 # ─── QUICK DEPLOY (guided question flow) ─────────────────────────────────────
 
+def _read_multiline(msg):
+    """Read multi-line pasted content until a line equal to 'END' (or EOF).
+    Returns the text with its internal line breaks preserved."""
+    print(f"  {C_CYAN}▸{C_RESET} {msg} — paste it, then type END on its own line")
+    lines = []
+    while True:
+        try:
+            line = input()
+        except EOFError:
+            break
+        if line.strip().lower() == "end":
+            break
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
 def _ask_copy_or_custom(label, source):
     """Ask one question: use the exact value from the source video, or paste a
-    custom one. Returns the chosen value."""
+    custom one (multi-line paste supported). Returns the chosen value."""
     print()
     print(f"  {C_BOLDWHITE}{label}{C_RESET}")
     preview = str(source) if source else "(source has none)"
@@ -1611,8 +1627,7 @@ def _ask_copy_or_custom(label, source):
     choice = prompt(f"Copy the exact source {label.lower()}? (y=copy / n=custom)", "y").strip().lower()
     if choice in ("", "y", "yes"):
         return source
-    custom = prompt(f"Paste your custom {label.lower()}")
-    return custom
+    return _read_multiline(f"Paste your custom {label.lower()}")
 
 
 def _ask_comment():
@@ -1624,7 +1639,7 @@ def _ask_comment():
     choice = prompt("Use the download-link default comment? (y=default / n=custom)", "y").strip().lower()
     if choice in ("", "y", "yes"):
         return None
-    return prompt("Paste your custom comment")
+    return _read_multiline("Paste your custom comment")
 
 
 def _upload_with_failover(processed, title, description, tags, source_url,

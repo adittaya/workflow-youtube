@@ -14,8 +14,11 @@
   local JSON by default, cloud projects/accounts once a Supabase connection is
   set (`[4]` in the main menu).
 - **Entry points:** `yt_auto.py` = main local CLI (`upload`/`setup`/`oauth`/
-  `status`/`logs`/`verify`/`version`); `tui.py` = management TUI (hybrid
-  local/cloud).
+  `status`/`logs`/`verify`/`version`/`proxy`); `tui.py` = management TUI (hybrid
+  local/cloud) with a `[Q] Quick Deploy` guided upload (pick a saved account →
+  live token check → video link → copy-or-custom title/description/comment →
+  proxy-mode prompt (`-y`) → download/process → test proxy → upload with
+  proxy-pool re-rotation on failure).
 
 ## Manual Run Model
 
@@ -41,17 +44,35 @@
 - `yt_auto.py` — CLI: `upload`, `setup`, `oauth`, `status`, `logs`, `verify`,
   `version`
 - `config.py` — local config/state helpers (`~/.yt-mirror/`), atomic `0600`
-  writes (`mkstemp` + rename)
+  writes (`mkstemp` + rename); proxy helpers: `get_proxy_settings()` /
+  `save_proxy_settings()` (settings store: local `settings.json` or Supabase
+  `settings` table), `get_proxy_url()` (auth-embedded URL), `mask_proxy_url()`,
+  `apply_proxy_env()` (sets `http_proxy`/`https_proxy`/`ALL_PROXY` + `no_proxy`
+  for localhost)
+- `proxy_pool.py` — automated proxy pool manager: reads the pool DB
+  (`proxy_results` inventory in a separate Supabase project), live-tests every
+  proxy (TCP + HTTPS) writing results back, picks the fastest working one and
+  activates it in the shared proxy settings; `ensure_working()` re-tests the
+  active proxy and auto-repools on failure. Credentials from settings
+  (`proxy_pool_url`/`proxy_pool_key`) or `PROXY_POOL_URL`/`PROXY_POOL_KEY` env.
+  Wired into `youtube_api.get_client()` and `download_helpers.download_video()`.
 - `daily_uploader.py` — `process_video()` pipeline hook + `upload_daily()`
   (force=True); upload audit via `upload_logs`/`daily_log.json`
-- `download_helpers.py` — yt-dlp download (`android` client), iterates
-  `WORKING_PROXIES` on failure; `--cookies` from `YT_COOKIES`/`YT_COOKIES_FILE`
+- `download_helpers.py` — yt-dlp download (`android` client), iterates proxy
+  list (configured Settings proxy first, then `WORKING_PROXIES` JSON, then
+  `YT_PROXY`); `--cookies` from `YT_COOKIES`/`YT_COOKIES_FILE`; calls
+  `proxy_pool.ensure_working()` before downloading when the pool is enabled
 - `verify_state.py` — self-verification/healing; checks credentials, dedup and
   alerts only (24/7 checks were removed)
 - `doctor.py` — project/account checks with auto-fixes (OAuth token live test,
-  shortlink/comment field fuzzing); GitHub/channel/schedule/proxy checks removed
+  shortlink/comment field fuzzing); `test_proxy()` live proxy check + proxy
+  config check in `check_project` (auto-disables via a `("setting", ...)` fix
+  when the proxy is unreachable); GitHub/channel/schedule checks removed
 - `youtube_api.py` — YouTube Data API v3 wrapper (`MAX_RETRIES=3`,
-  retriable statuses 500/502/503/504)
+  retriable statuses 500/502/503/504); `get_client()` accepts optional explicit
+  creds and builds an `AuthorizedHttp` over a proxy-routed `httplib2.Http`
+  when a proxy is configured (`google_auth_httplib2`); calls
+  `proxy_pool.ensure_working()` first when the pool is enabled
 - `video_processor.py` / `audio_separator.py` / `bgm_manager.py` — processing
   pipeline with graceful degradation
 - `shortener.py` — VPLink/CleanURI/TinyURL/generic; falls back to the original URL

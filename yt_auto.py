@@ -105,6 +105,7 @@ def cmd_verify(args):
 
 def cmd_oauth(args):
     import config
+    config.apply_proxy_env()
     cfg = config.load()
     cid = os.environ.get("YT_CLIENT_ID", "") or cfg.get("yt_client_id", "")
     csec = os.environ.get("YT_CLIENT_SECRET", "") or cfg.get("yt_client_secret", "")
@@ -254,6 +255,8 @@ def cmd_upload(args):
         print("YouTube credentials not configured — run `yt-auto oauth` first.")
         return 1
 
+    config.apply_proxy_env()
+
     try:
         youtube = youtube_api.get_client()
         details = youtube_api.get_video_details(youtube, video_id)
@@ -312,6 +315,48 @@ def cmd_upload(args):
             config.log(f"cleanup failed: {e}")
 
 
+def cmd_proxy(args):
+    import json as _json
+    import proxy_pool
+    if args.action == "status":
+        summary = proxy_pool.pool_summary()
+        if args.json:
+            print(_json.dumps(summary, indent=2, default=str))
+            return 0
+        if not summary.get("configured"):
+            print(f"proxy pool not configured (message: {summary.get('message')})")
+            return 1
+        print(f"pool:      {'ON' if summary.get('enabled') else 'OFF'}")
+        print(f"configured: yes")
+        print(f"total:     {summary.get('total', 0)}")
+        print(f"alive:     {summary.get('alive', 0)}")
+        best = summary.get("best")
+        if best:
+            print(f"fastest:   {best['ip']}:{best.get('port')} ({best.get('latency_ms')}ms)")
+        else:
+            print("fastest:   none working")
+        active = summary.get("active")
+        if active:
+            print(f"active:    {active['ip']}:{active.get('port')} ({active.get('latency_ms')}ms)")
+        else:
+            print("active:    none (run `yt-auto proxy refresh`)")
+        return 0
+    if args.action == "refresh":
+        if not proxy_pool.is_configured():
+            print("proxy pool not configured — set PROXY_POOL_URL / PROXY_POOL_KEY")
+            return 1
+
+        def progress(done, total, ip):
+            print(f"\r  tested {done}/{total} — {ip}    ", end="", flush=True)
+
+        print("refreshing & testing proxy pool...")
+        best, msg = proxy_pool.refresh_and_activate(progress=progress)
+        print()
+        print(msg)
+        return 0 if best else 1
+    return 1
+
+
 def cmd_version(args):
     print(VERSION)
     return 0
@@ -346,6 +391,10 @@ def build_parser():
 
     sub.add_parser("version", help="print version")
 
+    p_proxy = sub.add_parser("proxy", help="proxy pool: refresh (test+activate) or status")
+    p_proxy.add_argument("action", choices=["refresh", "status"], help="what to do")
+    p_proxy.add_argument("--json", action="store_true", help="JSON output (status)")
+
     return parser
 
 
@@ -364,6 +413,7 @@ def main(argv=None):
         "setup": cmd_setup,
         "upload": cmd_upload,
         "version": cmd_version,
+        "proxy": cmd_proxy,
     }
     if not args.cmd:
         parser.print_help()

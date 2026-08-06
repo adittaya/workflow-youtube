@@ -19,8 +19,33 @@ RETRIABLE_STATUS_CODES = [500, 502, 503, 504]
 UPLOAD_CHUNK_SIZE = 1024 * 1024 * 10
 
 
-def get_client():
-    creds_data = config.get_yt_credentials()
+def _proxy_http():
+    """Return an httplib2.Http routed through the configured proxy, or None."""
+    proxy_url = config.get_proxy_url()
+    if not proxy_url:
+        return None
+    import httplib2
+    return httplib2.Http(
+        timeout=60,
+        proxy_info=httplib2.proxy_info_from_url(proxy_url, "https"),
+    )
+
+
+def get_client(client_id=None, client_secret=None, refresh_token=None):
+    try:
+        import proxy_pool
+        proxy_pool.ensure_working()
+    except Exception:
+        pass
+    config.apply_proxy_env()
+    if client_id or client_secret or refresh_token:
+        creds_data = {
+            "client_id": client_id or "",
+            "client_secret": client_secret or "",
+            "refresh_token": refresh_token or "",
+        }
+    else:
+        creds_data = config.get_yt_credentials()
     if not all(creds_data.values()):
         raise RuntimeError("YouTube credentials not configured — set YT_CLIENT_ID, YT_CLIENT_SECRET, YT_REFRESH_TOKEN")
     creds = Credentials(
@@ -30,6 +55,10 @@ def get_client():
         client_id=creds_data["client_id"],
         client_secret=creds_data["client_secret"],
     )
+    http = _proxy_http()
+    if http is not None:
+        from google_auth_httplib2 import AuthorizedHttp
+        return build("youtube", "v3", http=AuthorizedHttp(creds, http=http), cache_discovery=False)
     return build("youtube", "v3", credentials=creds, cache_discovery=False)
 
 

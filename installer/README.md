@@ -2,8 +2,9 @@
 
 A production-grade, cross-platform bootstrap installer for the **yt-auto**
 YouTube upload automation tool. One command installs every system package,
-Python tool, the project source, a global `yt-auto` command, configuration, and
-a self-updating `installer` CLI — on Linux, macOS, Windows and Termux.
+Python tool, the project source, a global `yt-auto` command, the `YOUTUBE`
+interactive TUI command, configuration, and a self-updating `installer` CLI —
+on Linux, macOS, Windows and Termux.
 
 It installs *an environment*, not a single binary: it detects the OS/distro/
 architecture/shell/package manager, installs missing packages through a unified
@@ -66,8 +67,9 @@ All commands support `--non-interactive` (safe for CI) and `-v` (verbose logs).
 6. **Configure** — platform-standard config dir
    (`~/.config/installer/` · `%APPDATA%\installer\` · `~/.config/installer/`),
    `~/.yt-mirror` data layout, env vars.
-7. **Global commands** — `installer` and `yt-auto` in
-   `~/.local/bin` (POSIX) with PATH added to your shell profile (never twice).
+7. **Global commands** — `installer`, `yt-auto` and `YOUTUBE` (interactive
+   TUI) in `~/.local/bin` (POSIX) with PATH added to your shell profile
+   (never twice).
 8. **Verify** — table of Installed/Version/Status/Missing.
 9. **Log & roll back** — every step is logged; a failed critical step undoes
    completed actions via the rollback journal.

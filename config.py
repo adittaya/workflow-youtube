@@ -158,6 +158,94 @@ def load_tui_settings():
         return defaults
 
 
+PROXY_DEFAULTS = {
+    "proxy_enabled": False,
+    "proxy_protocol": "http",
+    "proxy_host": "",
+    "proxy_port": "",
+    "proxy_username": "",
+    "proxy_password": "",
+    "proxy_pool_enabled": False,
+    "proxy_pool_url": "",
+    "proxy_pool_key": "",
+    "proxy_active_ip": "",
+    "proxy_active_port": "",
+    "proxy_active_proto": "http",
+    "proxy_active_latency": 0,
+    "proxy_picked_at": "",
+}
+
+
+def get_proxy_settings():
+    """Proxy config from the settings store (local settings.json or the
+    Supabase settings table). Identical behaviour in both modes."""
+    out = dict(PROXY_DEFAULTS)
+    for key in out:
+        val = supabase_db.get_setting(key, None)
+        if val is not None:
+            out[key] = val
+    return out
+
+
+def save_proxy_settings(**fields):
+    for key, val in fields.items():
+        supabase_db.set_setting(key, val)
+
+
+def get_proxy_url():
+    """Full proxy URL like http://user:pass@host:port, or '' when disabled."""
+    s = get_proxy_settings()
+    if not s.get("proxy_enabled"):
+        return ""
+    host = str(s.get("proxy_host", "") or "").strip()
+    if not host:
+        return ""
+    scheme = str(s.get("proxy_protocol", "") or "http").strip() or "http"
+    port = str(s.get("proxy_port", "") or "").strip()
+    user = str(s.get("proxy_username", "") or "").strip()
+    pwd = str(s.get("proxy_password", "") or "").strip()
+    netloc = host + (f":{port}" if port else "")
+    if user:
+        netloc = f"{user}" + (f":{pwd}" if pwd else "") + "@" + netloc
+    return f"{scheme}://{netloc}"
+
+
+def mask_proxy_url(url):
+    """Return a display-safe proxy URL with the password masked."""
+    if not url:
+        return ""
+    from urllib.parse import urlsplit, urlunsplit
+    try:
+        parts = urlsplit(url)
+        if parts.username is not None:
+            host = parts.hostname or ""
+            port = f":{parts.port}" if parts.port else ""
+            netloc = f"{parts.username}:***@{host}{port}"
+            return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+    except Exception:
+        pass
+    return url
+
+
+def apply_proxy_env():
+    """Set (or clear) HTTP(S)_PROXY / ALL_PROXY env vars so stdlib urllib,
+    requests and yt-dlp all route through the configured proxy. Returns the
+    proxy URL ('' when disabled)."""
+    url = get_proxy_url()
+    for key in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+        if url:
+            os.environ[key] = url
+        else:
+            os.environ.pop(key, None)
+    if url:
+        no_proxy = os.environ.get("no_proxy", os.environ.get("NO_PROXY", ""))
+        if "127.0.0.1" not in no_proxy and "localhost" not in no_proxy:
+            no_proxy = (no_proxy + "," if no_proxy else "") + "127.0.0.1,localhost"
+            os.environ["no_proxy"] = no_proxy
+            os.environ["NO_PROXY"] = no_proxy
+    return url
+
+
 def get_yt_credentials():
     env_client_id = os.environ.get("YT_CLIENT_ID", "")
     env_client_secret = os.environ.get("YT_CLIENT_SECRET", "")

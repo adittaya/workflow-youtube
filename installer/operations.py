@@ -15,7 +15,7 @@ from typing import Optional, Tuple
 from installer.core import config as cfgmod
 from installer.core import env, packages as pkgmod, shellprofile, state as statemod, utils
 from installer import rollback as rollmod, verification
-from installer.version import APP_NAME, INSTALLER_NAME, MIN_PYTHON, __version__
+from installer.version import APP_NAME, INSTALLER_NAME, MIN_PYTHON, TUI_NAME, __version__
 
 
 def default_dirs(app: str = APP_NAME):
@@ -158,8 +158,9 @@ def install_system_packages(pm, registry, names: list, log=None) -> Tuple[bool, 
 # Global commands
 # --------------------------------------------------------------------------
 
-def install_global_commands(src_dir: Path, log=None) -> Tuple[Path, Path]:
-    """Create the ``installer`` and ``yt-auto`` shims; return their paths."""
+def install_global_commands(src_dir: Path, log=None) -> Tuple[Path, Path, Path]:
+    """Create the ``installer``, ``yt-auto`` and ``YOUTUBE`` shims; return
+    their paths (installer, yt-auto, YOUTUBE)."""
     binpath = env.bin_dir()
     binpath.mkdir(parents=True, exist_ok=True)
     installer_main = src_dir / "installer" / "__main__.py"
@@ -173,6 +174,11 @@ def install_global_commands(src_dir: Path, log=None) -> Tuple[Path, Path]:
     utils.atomic_write(yt_auto_shim,
         "#!/usr/bin/env bash\n"
         f"exec python3 \"{src_dir}/yt_auto.py\" \"$@\"\n", mode=0o755)
+
+    tui_shim = binpath / TUI_NAME
+    utils.atomic_write(tui_shim,
+        "#!/usr/bin/env bash\n"
+        f"exec python3 \"{src_dir}/tui.py\" \"$@\"\n", mode=0o755)
     # Compatibility symlink used by older launchers.
     compat = binpath / "VPLINKYT"
     try:
@@ -182,8 +188,8 @@ def install_global_commands(src_dir: Path, log=None) -> Tuple[Path, Path]:
     except OSError:
         pass
     if log:
-        log.debug(f"installed shims: {installer_shim}, {yt_auto_shim}")
-    return installer_shim, yt_auto_shim
+        log.debug(f"installed shims: {installer_shim}, {yt_auto_shim}, {tui_shim}")
+    return installer_shim, yt_auto_shim, tui_shim
 
 
 # --------------------------------------------------------------------------
@@ -292,9 +298,10 @@ def run_install(ui, config: cfgmod.Config, *, non_interactive: bool = False,
 
     # Stage: global commands
     st.begin_stage("global_commands")
-    installer_bin, yt_auto_bin = install_global_commands(install_dir, log)
+    installer_bin, yt_auto_bin, tui_bin = install_global_commands(install_dir, log)
     journal.record_remove(installer_bin, "installer shim")
     journal.record_remove(yt_auto_bin, "yt-auto shim")
+    journal.record_remove(tui_bin, "YOUTUBE shim")
     st.end_stage("global_commands", "done")
     st.save()
 
@@ -316,7 +323,7 @@ def run_install(ui, config: cfgmod.Config, *, non_interactive: bool = False,
     ui.success_summary([
         ("Install dir", str(install_dir)),
         ("Config dir", str(cfg_dir)),
-        ("Commands", f"{INSTALLER_NAME}, {APP_NAME} in {env.bin_dir()}"),
+        ("Commands", f"{INSTALLER_NAME}, {APP_NAME}, {TUI_NAME} in {env.bin_dir()}"),
         ("Mirror data", config["mirror_home"]),
         ("Next", "run 'installer doctor' or 'installer verify'"),
     ])

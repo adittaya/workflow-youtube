@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import List
 
 from installer.core import env, shellprofile, utils
-from installer.version import APP_NAME, INSTALLER_NAME
+from installer.version import APP_NAME, INSTALLER_NAME, TUI_NAME
 
 
 @dataclass
@@ -30,7 +30,7 @@ def uninstall(base_dir: Path, config_dir: Path, *,
 
     # 1. Global command shims.
     binpath = env.bin_dir()
-    for name in (INSTALLER_NAME, APP_NAME, "VPLINKYT"):
+    for name in (INSTALLER_NAME, APP_NAME, TUI_NAME, "VPLINKYT"):
         p = binpath / name
         if p.exists() or p.is_symlink():
             utils.remove_path(p)

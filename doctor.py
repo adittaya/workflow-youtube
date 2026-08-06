@@ -102,6 +102,29 @@ def test_refresh_token(client_id, client_secret, refresh_token):
         return False, str(e)[:60], False
 
 
+def test_proxy(proxy_url, timeout=15):
+    """Returns (ok, latency_seconds, note). Live HTTPS request through the
+    proxy to prove it can route traffic. Any HTTP status < 500 counts as a
+    successful connection."""
+    import time
+    if not proxy_url:
+        return False, 0.0, "no proxy URL given"
+    try:
+        import httplib2
+        http = httplib2.Http(
+            timeout=timeout,
+            proxy_info=httplib2.proxy_info_from_url(proxy_url, "https"),
+        )
+        start = time.time()
+        resp, _body = http.request("https://oauth2.googleapis.com/token", method="GET")
+        latency = round(time.time() - start, 2)
+        if resp.status < 500:
+            return True, latency, f"reachable (HTTP {resp.status})"
+        return False, latency, f"HTTP {resp.status}"
+    except Exception as e:
+        return False, 0.0, str(e)[:80]
+
+
 def _fmt(ts):
     if not ts:
         return ""
@@ -200,6 +223,62 @@ def check_project(project):
     else:
         add("Comment mode", True, cm_canon or "default: published", section=CFG)
 
+    # ── Proxy (global Settings) ──
+    proxy = config.get_proxy_settings()
+    if _clean(proxy.get("proxy_enabled")) not in ("", "false", "False", False, "0", "off"):
+        host = _clean(proxy.get("proxy_host"))
+        if not host:
+            add("Proxy", False, "enabled but no host set — configure it in Settings",
+                section=CFG)
+        else:
+            url = config.get_proxy_url()
+            ok, lat, note = test_proxy(url)
+            if ok:
+                add("Proxy", True, f"{config.mask_proxy_url(url)} — {note} ({lat}s)",
+                    section=CFG)
+            else:
+                add("Proxy", False, f"{config.mask_proxy_url(url)} — {note}",
+                    fix=("setting", "proxy_enabled", "false",
+                         "proxy unreachable — disabled until fixed"),
+                    section=CFG)
+    else:
+        add("Proxy", True, "off — direct connection (enable in Settings if YouTube blocks your IP)",
+            section=CFG)
+
+    # ── Proxy pool (global Settings) ──
+    pool_on = _clean(proxy.get("proxy_pool_enabled")) not in ("", "false", "False", False, "0", "off")
+    if not pool_on:
+        add("Proxy pool", True, "off — fastest live proxy selection disabled",
+            section=CFG)
+    else:
+        import proxy_pool
+        if not proxy_pool.is_configured():
+            add("Proxy pool", False, "enabled but URL/key missing — set them in Settings",
+                section=CFG)
+        else:
+            try:
+                summary = proxy_pool.pool_summary()
+                if summary.get("configured"):
+                    alive = summary.get("alive", 0)
+                    active = summary.get("active")
+                    if alive and active:
+                        add("Proxy pool", True,
+                            f"{alive} alive, active {active['ip']}:{active.get('port')} ({active.get('latency_ms')}ms)",
+                            section=CFG)
+                    elif alive:
+                        add("Proxy pool", False,
+                            f"{alive} alive but none active — run Settings → [P] Refresh & test pool",
+                            section=CFG)
+                    else:
+                        add("Proxy pool", False,
+                            f"{summary.get('total', 0)} proxies in pool, 0 alive — refresh the pool",
+                            section=CFG)
+                else:
+                    add("Proxy pool", False, summary.get("message", "pool unreachable"),
+                        section=CFG)
+            except Exception as e:
+                add("Proxy pool", False, str(e)[:80], section=CFG)
+
     return checks
 
 
@@ -277,6 +356,8 @@ def apply_fixes(project_id, checks):
                 supabase_db.verify_account(key, status=value)
             elif kind == "project_account":
                 supabase_db.set_project_account(project_id, value)
+            elif kind == "setting":
+                supabase_db.set_setting(key, value)
             applied += 1
         except Exception as e:
             failures.append(f"{key}: {e}")

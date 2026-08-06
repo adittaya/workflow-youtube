@@ -35,15 +35,34 @@ def process_thumbnail(video_id, output_path=None):
     return output_path
 
 
-def download_video(url, output_dir=None):
-    if output_dir is None:
-        output_dir = tempfile.mkdtemp(prefix="yt_mirror_")
-    proxies_raw = os.environ.get("WORKING_PROXIES", "")
-    proxies = json.loads(proxies_raw) if proxies_raw else []
+def _proxy_list():
+    """Proxy candidates in priority order: configured proxy (Settings screen),
+    then WORKING_PROXIES JSON, then a single YT_PROXY."""
+    proxies = []
+    url = config.get_proxy_url()
+    if url:
+        proxies.append(url)
+    raw = os.environ.get("WORKING_PROXIES", "")
+    if raw:
+        for p in json.loads(raw):
+            if p not in proxies:
+                proxies.append(p)
     if not proxies:
         single = os.environ.get("YT_PROXY", "")
         if single:
             proxies = [single]
+    return proxies
+
+
+def download_video(url, output_dir=None):
+    if output_dir is None:
+        output_dir = tempfile.mkdtemp(prefix="yt_mirror_")
+    try:
+        import proxy_pool
+        proxy_pool.ensure_working()
+    except Exception:
+        pass
+    proxies = _proxy_list()
 
     for i, proxy in enumerate(proxies):
         config.log(f"yt-dlp attempt {i + 1}/{len(proxies)} with proxy: {proxy}")

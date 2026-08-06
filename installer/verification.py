@@ -78,12 +78,18 @@ def verify_installation(config_path: Path, base_dir, registry) -> List[Check]:
                         detail=str(config_path)))
 
     binpath = env.bin_dir()
-    from installer.version import INSTALLER_NAME
+    from installer.version import INSTALLER_NAME, TUI_NAME
 
     installer_bin = binpath / INSTALLER_NAME
     present = installer_bin.exists()
     checks.append(Check("installer CLI", str(installer_bin),
                         "" , present, present,
+                        detail="global command" if present else "not found on PATH"))
+
+    tui_bin = binpath / TUI_NAME
+    present = tui_bin.exists()
+    checks.append(Check("TUI command", str(tui_bin),
+                        "", present, present,
                         detail="global command" if present else "not found on PATH"))
 
     checks.extend(verify_tools(registry, registry.names()))

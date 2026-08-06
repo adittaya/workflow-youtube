@@ -122,6 +122,8 @@ class Doctor:
         ))
 
     def _check_global_command(self):
+        from installer.version import INSTALLER_NAME, TUI_NAME
+
         binpath = env.bin_dir()
         exe = binpath / INSTALLER_NAME
         on_path = utils.which(INSTALLER_NAME) is not None
@@ -136,6 +138,17 @@ class Doctor:
             fix_hint=f"Add {binpath} to PATH, or re-run installer install.",
             fix=_fix,
             severity="warn" if on_path else "broken",
+        ))
+
+        tui_exe = binpath / TUI_NAME
+        tui_on_path = utils.which(TUI_NAME) is not None
+        self.checks.append(Diagnosis(
+            title="Global TUI command",
+            ok=tui_on_path,
+            detail=f"{tui_exe} " + ("on PATH" if tui_on_path else "not on PATH"),
+            fix_hint=f"Add {binpath} to PATH, or re-run installer install.",
+            fix=_fix,
+            severity="warn" if tui_on_path else "broken",
         ))
 
     def _check_network(self):

@@ -329,6 +329,25 @@ def ensure_working(force=False):
     return best["ip"] if best else None
 
 
+def ensure_active(force=True):
+    """Public 'I need a working proxy right now'. Live-checks the active proxy
+    and auto-repools when it is down. Returns (best_or_None, message) — never
+    claims success unless a proxy is actually verified working."""
+    if not is_enabled():
+        return None, "proxy pool disabled — running direct"
+    if not is_configured():
+        return None, "proxy pool not configured (set URL and key in Settings)"
+    url = config.get_proxy_url()
+    if url:
+        _lat, _status = _probe(url, TEST_E2_URL, 6)
+        if _lat is not None:
+            return True, f"proxy verified live — {config.mask_proxy_url(url)}"
+    best, msg = refresh_and_activate()
+    if best:
+        return best["ip"], msg
+    return None, msg
+
+
 def pool_summary():
     """Human-readable pool overview: counts + best + active."""
     if not is_configured():

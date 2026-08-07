@@ -7,6 +7,14 @@ from pathlib import Path
 
 TEMP_DIR = Path(os.environ.get("YT_TEMP_DIR", "/tmp/yt-process"))
 
+TOOLS = ("ffmpeg", "ffprobe")
+
+
+def tools_ok():
+    """True when the required ffmpeg binaries are present on PATH."""
+    import shutil
+    return all(shutil.which(t) for t in TOOLS)
+
 
 def _run(cmd, desc=""):
     result = subprocess.run(cmd, capture_output=True, text=True)

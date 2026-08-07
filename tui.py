@@ -1801,6 +1801,25 @@ def _ask_processing_options():
         config.save_tui_setting("bgm_yt_url", yt_url)
 
 
+def _activate_proxy_live():
+    """Activate the proxy for this run: verify the active proxy LIVE and
+    auto-rotate to a fresh working proxy when it's down. Never reports success
+    unless something is actually verified working. Returns (ok, message)."""
+    import proxy_pool
+    if not proxy_pool.is_configured():
+        url = config.get_proxy_url()
+        if not url:
+            return False, "no proxy configured — running direct"
+        ok, lat, note = doctor.test_proxy(url)
+        if ok:
+            return True, f"Proxy active — {config.mask_proxy_url(url)} ({lat}s)"
+        return False, f"proxy down ({note}) — running direct"
+    best, msg = proxy_pool.ensure_active(force=True)
+    if best:
+        return True, msg
+    return False, msg
+
+
 def _upload_with_failover(processed, title, description, tags, source_url,
                           comment, source_channel):
     """Test the proxy, upload, and on any proxy-related failure re-rotate the
@@ -1936,21 +1955,16 @@ def _quick_deploy_flow(name, acct):
     description = _ask_copy_or_custom("Description", details.get("description", ""))
     comment = _ask_comment()
 
-    # 6) Proxy mode
+    # 6) Proxy mode — verify the proxy LIVE and auto-rotate when it's down
     pm = prompt("\nEnable proxy mode? (type -y to continue, Enter = direct)").strip().lower()
     if pm in ("-y", "y", "yes", "on"):
-        import proxy_pool
         config.save_proxy_settings(proxy_pool_enabled=True)
         info("Activating proxy pool...")
-        if config.get_proxy_url():
-            proxy_pool.ensure_working(force=True)
-            success("Proxy active — uploads/downloads routed through it")
+        ok, msg = _activate_proxy_live()
+        if ok:
+            success(msg)
         else:
-            best, msg = proxy_pool.refresh_and_activate()
-            if best:
-                success(msg)
-            else:
-                warn(msg)
+            warn(msg)
     else:
         info("Proxy mode skipped — direct connection")
 
@@ -1958,10 +1972,17 @@ def _quick_deploy_flow(name, acct):
     _ask_processing_options()
 
     # 7) Process: download → vocal separation → edits → BGM mix
+    missing_tools = [t for t in ("yt-dlp", "ffmpeg", "ffprobe")
+                     if not shutil.which(t)]
+    if missing_tools:
+        error(f"Missing tools on PATH: {', '.join(missing_tools)} — "
+              "run `installer doctor` to fix dependencies")
+        pause()
+        return
     info("Downloading video...")
     dl_result = download_helpers.download_video(source_url)
     if not dl_result:
-        error("Download failed")
+        error("Download failed — check the proxy/network and retry")
         pause()
         return
     video_path = dl_result["path"]
@@ -1988,6 +2009,10 @@ def _quick_deploy_flow(name, acct):
             _save_account(name, acct)
         else:
             error("Upload failed after retries — check proxy/account, then retry")
+    except FileNotFoundError as e:
+        error(f"Missing tool: {e.filename or e} — run `installer doctor`")
+    except Exception as e:
+        error(f"Processing failed: {str(e)[:200]}")
     finally:
         shutil.rmtree(download_dir, ignore_errors=True)
         info(f"cleaned up: {download_dir}")

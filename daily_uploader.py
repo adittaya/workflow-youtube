@@ -87,6 +87,13 @@ def process_video(input_path, output_dir=None):
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    if not video_processor.tools_ok():
+        raise RuntimeError(
+            "ffmpeg/ffprobe not installed — run `installer doctor` to fix dependencies")
+    if not download_helpers.tools_ok():
+        raise RuntimeError(
+            "yt-dlp not installed — run `installer doctor` to fix dependencies")
+
     video_hash = video_processor.get_video_hash(input_path)
     config.log(f"processing fresh copy: {input_path.name} (hash {video_hash})")
 

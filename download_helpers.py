@@ -75,6 +75,12 @@ def download_video(url, output_dir=None):
     return None
 
 
+def tools_ok():
+    """True when yt-dlp is present on PATH."""
+    import shutil
+    return shutil.which("yt-dlp") is not None
+
+
 def _cookies_arg():
     """Resolve a cookies file for yt-dlp: prefer YT_COOKIES_FILE if it exists,
     otherwise materialize the YT_COOKIES secret text into

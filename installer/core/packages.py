@@ -143,9 +143,11 @@ def check_package(registry: PackageRegistry, name: str) -> dict:
     pkg = registry.get(name)
     verify = pkg.verify if pkg else name
     if name == "python":
-        # The interpreter the tooling runs under *is* the installer's python.
+        # The interpreter the tooling runs under *is* the installer's python,
+        # and pip must be present so the app's dependencies can be installed.
+        # (Fresh images often ship python3 without python3-pip.)
         version = env.python_version()
-        installed = env.python_meets_minimum()
+        installed = env.python_meets_minimum() and env.pip_version() is not None
     else:
         version = env.version_of(verify) if verify else None
         installed = version is not None or (pkg and pkg.pip and utils.which(verify))

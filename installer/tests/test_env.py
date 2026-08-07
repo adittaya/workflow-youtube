@@ -84,6 +84,23 @@ class VersionTests(unittest.TestCase):
         for key in ("name", "verify", "installed", "version", "min_version", "min_ok", "optional"):
             self.assertIn(key, info)
 
+    def test_python_check_requires_pip(self):
+        # Fresh images ship python3 without pip; the python stage must then be
+        # considered missing so python3-pip gets installed.
+        reg = PackageRegistry.from_yaml(Path(__file__).resolve().parents[1] / "packages.yaml")
+        base = {
+            "python_version": "3.12.3",
+            "python_meets_minimum": True,
+        }
+        with mock.patch.object(env, "python_version", return_value=base["python_version"]), \
+             mock.patch.object(env, "python_meets_minimum", return_value=base["python_meets_minimum"]), \
+             mock.patch.object(env, "pip_version", return_value="pip 24.0"):
+            self.assertTrue(pkgmod.check_package(reg, "python")["installed"])
+        with mock.patch.object(env, "python_version", return_value=base["python_version"]), \
+             mock.patch.object(env, "python_meets_minimum", return_value=base["python_meets_minimum"]), \
+             mock.patch.object(env, "pip_version", return_value=None):
+            self.assertFalse(pkgmod.check_package(reg, "python")["installed"])
+
     def test_version_of_falls_back_to_single_dash(self):
         # ffmpeg only accepts '-version'; '--version' is an unknown option
         # (exit 8, stderr). version_of must fall back and still detect it.

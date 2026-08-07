@@ -158,6 +158,17 @@ def ensure_source(config: cfgmod.Config, log=None) -> Tuple[Path, str]:
 
 def install_pip_requirements(requirements: Path, log=None) -> bool:
     base = ["python3", "-m", "pip"]
+    if env.pip_version() is None:
+        # Minimal images ship python3 without pip; bootstrap one first.
+        boot = ["python3", "-m", "ensurepip", "--user", "--upgrade"]
+        if log:
+            log.debug("$ " + " ".join(boot))
+        res = utils.run(boot, capture=True, timeout=600)
+        if res.returncode != 0:
+            if log:
+                log.warn("ensurepip bootstrap failed: %s"
+                         % (res.stderr or res.stdout or "")[-500:])
+            return False
     attempts = [
         base + ["install", "--break-system-packages", "-r", str(requirements)],
         base + ["install", "-r", str(requirements)],
@@ -169,6 +180,9 @@ def install_pip_requirements(requirements: Path, log=None) -> bool:
         res = utils.run(argv, capture=True, timeout=1800)
         if res.returncode == 0:
             return True
+        if log:
+            log.warn("pip command failed (%s): %s"
+                     % (" ".join(argv), (res.stderr or res.stdout or "")[-500:]))
     return False
 
 

@@ -25,10 +25,27 @@ def _proxy_http():
     if not proxy_url:
         return None
     import httplib2
-    return httplib2.Http(
+    http = httplib2.Http(
         timeout=60,
         proxy_info=httplib2.proxy_info_from_url(proxy_url, "https"),
     )
+    http.follow_redirects = False
+    return http
+
+
+def _plain_http():
+    """Return a plain httplib2.Http with redirects disabled.
+
+    Redirects are disabled because httplib2 treats the resumable upload
+    protocol's 308 Resume Incomplete as a redirect code and raises
+    ``RedirectMissingLocation`` when the response has no Location header
+    (YouTube's 308 between chunks has none). googleapiclient's
+    ``_process_response`` handles 308 itself, so httplib2 must not.
+    """
+    import httplib2
+    http = httplib2.Http(timeout=60)
+    http.follow_redirects = False
+    return http
 
 
 def get_client(client_id=None, client_secret=None, refresh_token=None):
@@ -56,11 +73,9 @@ def get_client(client_id=None, client_secret=None, refresh_token=None):
         client_id=creds_data["client_id"],
         client_secret=creds_data["client_secret"],
     )
-    http = _proxy_http()
-    if http is not None:
-        from google_auth_httplib2 import AuthorizedHttp
-        return build("youtube", "v3", http=AuthorizedHttp(creds, http=http), cache_discovery=False)
-    return build("youtube", "v3", credentials=creds, cache_discovery=False)
+    http = _proxy_http() or _plain_http()
+    from google_auth_httplib2 import AuthorizedHttp
+    return build("youtube", "v3", http=AuthorizedHttp(creds, http=http), cache_discovery=False)
 
 
 def _parse_duration_iso8601(duration):

@@ -181,8 +181,18 @@ def docker_running() -> bool:
 # --------------------------------------------------------------------------
 
 def version_of(program: str, arg: str = "--version") -> Optional[str]:
-    """Return the first line of ``program <arg>`` output, or None."""
-    return utils.command_output([program, arg], "").strip() or None
+    """Return the first line of ``program <arg>`` output, or None.
+
+    Falls back to ``-version``: several common binaries (ffmpeg notably) treat
+    ``--version`` as an unknown option that exits non-zero and prints to
+    stderr, while ``-version`` succeeds on stdout.
+    """
+    for candidate in (arg, "-version"):
+        line = utils.probe_version([program, candidate])
+        if line:
+            line = line.splitlines()[0].strip()
+            return line or None
+    return None
 
 
 def existing_dependencies(names: Iterable[str]) -> dict:

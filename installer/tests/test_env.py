@@ -1,6 +1,7 @@
 """Tests for environment detection and package helpers."""
 
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -82,6 +83,26 @@ class VersionTests(unittest.TestCase):
         info = pkgmod.check_package(reg, "git")
         for key in ("name", "verify", "installed", "version", "min_version", "min_ok", "optional"):
             self.assertIn(key, info)
+
+    def test_version_of_falls_back_to_single_dash(self):
+        # ffmpeg only accepts '-version'; '--version' is an unknown option
+        # (exit 8, stderr). version_of must fall back and still detect it.
+        if env.version_of("ffmpeg") is None:
+            self.skipTest("ffmpeg not installed on this machine")
+        self.assertIsNotNone(env.version_of("ffmpeg"))
+        self.assertIsNotNone(env.version_of("ffmpeg", "-version"))
+
+    def test_probe_version_reads_stderr_on_zero_exit(self):
+        from installer.core import utils
+
+        script = "import sys; sys.stderr.write('probe 1.2.3\\n')"
+        line = utils.probe_version([sys.executable, "-c", script])
+        self.assertEqual(line, "probe 1.2.3")
+
+    def test_probe_version_empty_on_missing_program(self):
+        from installer.core import utils
+
+        self.assertEqual(utils.probe_version(["definitely-not-a-real-binary-xyz"]), "")
 
 
 if __name__ == "__main__":

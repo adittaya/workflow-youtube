@@ -72,6 +72,22 @@ def command_output(argv: Sequence[str], default: str = "", **kwargs) -> str:
     return default
 
 
+def probe_version(argv: Sequence[str], timeout: float = 30) -> str:
+    """Best-effort version probe: first line of output, or ``""``.
+
+    Unlike ``command_output`` this accepts output on stderr as well as stdout
+    (some builds print version info to stderr on a zero exit) and never leaks
+    to the console. A non-zero exit still means no usable version line.
+    """
+    try:
+        res = run(argv, capture=True, timeout=timeout)
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return ""
+    if res.returncode != 0:
+        return ""
+    return (res.stdout or "").strip() or (res.stderr or "").strip()
+
+
 def stdin_is_interactive() -> bool:
     return sys.stdin is not None and sys.stdin.isatty()
 

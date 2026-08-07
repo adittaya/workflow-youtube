@@ -163,6 +163,10 @@ def load_tui_settings():
         "bgm_source": "yt_link",
         "bgm_yt_url": "",
         "bgm_dir": "",
+        "bulk_fps_min": 20,
+        "bulk_fps_max": 25,
+        "bulk_trim_min": 10,
+        "bulk_trim_max": 20,
     }
     if supabase_db.is_enabled():
         if PROJECT_ID:

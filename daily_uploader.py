@@ -74,11 +74,13 @@ def save_daily_log(log):
     DAILY_LOG.write_text(json.dumps(log, indent=2), "utf-8")
 
 
-def process_video(input_path, output_dir=None):
+def process_video(input_path, output_dir=None, overrides=None):
     # Every video is processed from scratch in its own scratch dir so the
     # next video never reuses the previous one's artifacts. The caller is
     # responsible for dedup (processed_hashes holds source video IDs, added
     # only AFTER a successful upload) — never mark a video processed here.
+    # `overrides` may carry per-upload fps/trim_start/trim_end values (bulk
+    # upload randomises these per account so every copy differs).
     input_path = Path(input_path)
     if output_dir is None:
         output_dir = input_path.parent / ".yt-proc"
@@ -123,9 +125,17 @@ def process_video(input_path, output_dir=None):
         except (TypeError, ValueError):
             return default
 
-    fps = _int_setting("fps", 20)
-    trim_start = _int_setting("trim_start", 20)
-    trim_end = _int_setting("trim_end", 10)
+    def _override_int(key, default):
+        if overrides and overrides.get(key) is not None:
+            try:
+                return int(overrides[key])
+            except (TypeError, ValueError):
+                pass
+        return _int_setting(key, default)
+
+    fps = _override_int("fps", 20)
+    trim_start = _override_int("trim_start", 20)
+    trim_end = _override_int("trim_end", 10)
     config.log(f"  edits: fps={fps}, trim {trim_start}s from start, {trim_end}s from end")
     edited_path = output_dir / f"edited_{input_path.name}"
     video_processor.apply_edits(

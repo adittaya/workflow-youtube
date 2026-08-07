@@ -62,51 +62,83 @@ class YouTubeBotCheck(Exception):
     """
 
 
-def download_video(url, output_dir=None):
+def download_video(url, output_dir=None, pool_retries=None):
+    """Download a YouTube video, rotating through every available proxy.
+
+    With the proxy pool enabled there is no rotation cap: `candidate_urls()`
+    returns the whole pool and, when every proxy fails, the pool is refreshed
+    and the attempt rounds repeat (`pool_retries=None` = unlimited rounds).
+    `YouTubeBotCheck` is raised only when a round failed purely due to bot
+    checks (no pool refresh can fix that — cookies/residential proxies can)."""
     if output_dir is None:
         output_dir = tempfile.mkdtemp(prefix="yt_mirror_")
-    try:
-        import proxy_pool
-        proxy_pool.ensure_working()
-    except Exception:
-        pass
-    proxies = get_proxy_candidates()
-    try:
-        import proxy_pool
-        for p in proxy_pool.candidate_urls():
-            if p not in proxies:
-                proxies.append(p)
-    except Exception:
-        pass
     saw_bot_check = False
+    round_num = 0
+    while True:
+        round_num += 1
+        try:
+            import proxy_pool
+            proxy_pool.ensure_working()
+        except Exception:
+            pass
+        proxies = get_proxy_candidates()
+        try:
+            import proxy_pool
+            for p in proxy_pool.candidate_urls():
+                if p not in proxies:
+                    proxies.append(p)
+        except Exception:
+            pass
 
-    if not proxies:
-        config.log("no proxy configured — trying direct download")
-        result, kind = _try_download(url, output_dir, "")
-        if result:
-            return result
-        if kind == "bot_check":
-            saw_bot_check = True
-    for i, proxy in enumerate(proxies):
-        config.log(f"yt-dlp attempt {i + 1}/{len(proxies)} with proxy: {proxy}")
-        result, kind = _try_download(url, output_dir, proxy)
-        if result:
-            return result
-        if kind == "bot_check":
-            saw_bot_check = True
+        if not proxies:
+            config.log("no proxy configured — trying direct download")
+            result, kind = _try_download(url, output_dir, "")
+            if result:
+                return result
+            if kind == "bot_check":
+                saw_bot_check = True
+            break
+
+        for i, proxy in enumerate(proxies):
+            config.log(f"yt-dlp attempt {round_num}.{i + 1}/{len(proxies)}"
+                       f" with proxy: {proxy}")
+            result, kind = _try_download(url, output_dir, proxy)
+            if result:
+                return result
+            if kind == "bot_check":
+                saw_bot_check = True
+                try:
+                    import proxy_pool
+                    proxy_pool.mark_blocked(proxy)
+                    config.log(f"parking flagged proxy: {proxy}")
+                except Exception:
+                    pass
+            config.log(f"proxy {i + 1} failed — trying next")
+
+        # No proxy retry limit: with the pool enabled, refresh and try again
+        # instead of giving up (pool_retries=None = unlimited rounds).
+        try:
+            import proxy_pool
+            pool_enabled = proxy_pool.is_enabled()
+        except Exception:
+            pool_enabled = False
+        if pool_enabled and (pool_retries is None or round_num <= pool_retries):
+            config.log(f"all {len(proxies)} proxies failed — refreshing pool "
+                       f"and retrying (round {round_num})...")
             try:
                 import proxy_pool
-                proxy_pool.mark_blocked(proxy)
-                config.log(f"parking flagged proxy: {proxy}")
+                proxy_pool.refresh_and_activate()
             except Exception:
                 pass
-        config.log(f"proxy {i + 1} failed — trying next")
+            continue
+        break
+
     if saw_bot_check:
         raise YouTubeBotCheck(
-            f"YouTube blocked all {len(proxies) or 1} proxy attempt(s) with "
-            "'Sign in to confirm you're not a bot'. The proxy IPs are flagged "
-            "and requests are anonymous. Set YT_COOKIES_FILE / YT_COOKIES "
-            "(cookies.txt from a logged-in browser) or use residential proxies.")
+            "YouTube blocked all proxy attempts with 'Sign in to confirm "
+            "you're not a bot'. The proxy IPs are flagged and requests are "
+            "anonymous. Set YT_COOKIES_FILE / YT_COOKIES (cookies.txt from a "
+            "logged-in browser) or use residential proxies.")
     return None
 
 

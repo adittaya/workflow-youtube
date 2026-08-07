@@ -77,6 +77,13 @@ class CandidateUrlsTests(unittest.TestCase):
         with mock.patch.object(proxy_pool, "list_pool", return_value=rows):
             self.assertEqual(proxy_pool.candidate_urls(), ["http://alive:9999"])
 
+    def test_default_candidate_urls_has_no_cap(self):
+        rows = [_row(f"p{i}", latency=100 + i) for i in range(20)]
+        with mock.patch.object(proxy_pool, "is_enabled", return_value=True), \
+                mock.patch.object(proxy_pool, "is_configured", return_value=True), \
+                mock.patch.object(proxy_pool, "list_pool", return_value=rows):
+            self.assertEqual(len(proxy_pool.candidate_urls()), 20)
+
 
 class MarkBlockedTests(unittest.TestCase):
     def test_parses_url_and_parks(self):
@@ -149,6 +156,51 @@ class DownloadVideoRotationTests(unittest.TestCase):
                                   return_value=(None, "error")):
             self.assertIsNone(download_helpers.download_video(
                 "https://youtu.be/x", tempfile.mkdtemp()))
+
+    def test_pool_refresh_retry_loop_no_limit(self):
+        """Pool enabled: after every proxy fails, the pool is refreshed and a
+        new round is tried (no retry limit)."""
+        candidate_rounds = iter([["http://p1"], ["http://p2"]])
+        tried = []
+        refreshes = []
+
+        def fake_try(url, out, proxy):
+            tried.append(proxy)
+            if proxy == "http://p2":
+                return {"path": "/tmp/video.mp4", "info": {}}, "ok"
+            return None, "bot_check"
+
+        with mock.patch.object(proxy_pool, "is_enabled", return_value=True), \
+                mock.patch.object(proxy_pool, "candidate_urls",
+                                  side_effect=lambda: next(candidate_rounds)), \
+                mock.patch.object(proxy_pool, "ensure_working", return_value=None), \
+                mock.patch.object(proxy_pool, "mark_blocked"), \
+                mock.patch.object(proxy_pool, "refresh_and_activate",
+                                  side_effect=lambda: refreshes.append(1)), \
+                mock.patch.object(download_helpers, "_try_download", fake_try):
+            result = download_helpers.download_video("https://youtu.be/x")
+            self.assertEqual(result["path"], "/tmp/video.mp4")
+            self.assertEqual(tried, ["http://p1", "http://p2"])
+            self.assertEqual(len(refreshes), 1)
+
+    def test_pool_refresh_respects_pool_retries_cap(self):
+        candidate_rounds = iter([["http://p1"], ["http://p1"]])
+        refreshes = []
+
+        def fake_try(url, out, proxy):
+            return None, "bot_check"
+
+        with mock.patch.object(proxy_pool, "is_enabled", return_value=True), \
+                mock.patch.object(proxy_pool, "candidate_urls",
+                                  side_effect=lambda: next(candidate_rounds)), \
+                mock.patch.object(proxy_pool, "ensure_working", return_value=None), \
+                mock.patch.object(proxy_pool, "mark_blocked"), \
+                mock.patch.object(proxy_pool, "refresh_and_activate",
+                                  side_effect=lambda: refreshes.append(1)), \
+                mock.patch.object(download_helpers, "_try_download", fake_try):
+            with self.assertRaises(download_helpers.YouTubeBotCheck):
+                download_helpers.download_video("https://youtu.be/x", pool_retries=1)
+            self.assertEqual(len(refreshes), 1)
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ Systematic menu layout
     └─ Settings                proxy & network (route uploads/downloads)
 """
 
-import json, os, sys, time, http.server, urllib.request, urllib.error, urllib.parse, re, shutil
+import json, os, sys, time, http.server, urllib.request, urllib.error, urllib.parse, re, shutil, random
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -26,6 +26,7 @@ for _stream in (sys.stdout, sys.stderr):
 try:
     from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
+    from googleapiclient.errors import HttpError
     HAS_GAPI = True
 except ImportError:
     HAS_GAPI = False
@@ -1252,6 +1253,7 @@ def project_menu(project):
         print(f"  {C_BOLD}[3]{C_RESET} Doctor — check & auto-fix this project")
         print(f"  {C_BOLD}[4]{C_RESET} Status — live health check")
         print(f"  {C_BOLD}[5]{C_RESET} Instant upload — upload a video now")
+        print(f"  {C_BOLD}[6]{C_RESET} Bulk upload — one video → many accounts")
         print(f"  {C_BOLD}[0]{C_RESET} Back to main menu")
         summary = _project_summary(p)
         if summary:
@@ -1274,6 +1276,8 @@ def project_menu(project):
             screen_status(p)
         elif choice == "5":
             _do_instant_upload(p)
+        elif choice == "6":
+            _do_bulk_upload(p)
 
 
 # ─── Project account picker ─────────────────────────────────────────────────
@@ -1684,6 +1688,224 @@ def _do_instant_upload(project):
         config.PROJECT_ID = old_pid
 
 
+# ─── BULK ACCOUNT UPLOAD (one video → many accounts) ─────────────────────────
+
+def _pick_bulk_accounts(accounts):
+    """Multi-select accounts for a bulk upload, with an 'all accounts'
+    shortcut. Returns a list of account names (>= 1) or None to cancel."""
+    names = list(accounts.keys())
+    while True:
+        clear()
+        banner()
+        print(f"\n  {C_BOLDWHITE}BULK UPLOAD — SELECT ACCOUNTS{C_RESET}")
+        divider()
+        print(f"  {C_DIM}Pick one or more saved accounts; the project's pre-configured{C_RESET}")
+        print(f"  {C_DIM}title/description/comment fire into every selected account, and{C_RESET}")
+        print(f"  {C_DIM}fps + start/end trim are randomised per account so copies differ.{C_RESET}")
+        print()
+        for i, name in enumerate(names, 1):
+            acct = accounts[name]
+            ch = acct.get("channel_name", "") or acct.get("channel_id", "")
+            ch_str = f" — {ch}" if ch else ""
+            print(f"  {C_BOLD}{i:2d}.{C_RESET} {name}{ch_str}  "
+                  f"{C_DIM}({_account_status_str(acct)}){C_RESET}")
+        print()
+        print(f"  {C_BOLD}[A]{C_RESET} All accounts ({len(names)} available)")
+        print(f"  {C_BOLD}[0]{C_RESET} Back")
+        print()
+        raw = prompt("Account numbers (comma/space separated), A = all, or 0 = back").strip()
+        if not raw:
+            continue
+        if raw.upper() == "A":
+            return list(names)
+        if raw == "0":
+            return None
+        selected = []
+        for token in re.split(r"[,;\s]+", raw):
+            if token.isdigit():
+                idx = int(token) - 1
+                if 0 <= idx < len(names) and names[idx] not in selected:
+                    selected.append(names[idx])
+        if selected:
+            return selected
+        warn("No valid account numbers — try again")
+
+
+def _bulk_random_overrides(settings):
+    """Randomised per-upload editing params so every account's copy differs.
+    BGM is left as configured (not randomised)."""
+    def _irange(key_min, key_max, default_min, default_max):
+        try:
+            lo = int(float(settings.get(key_min) or default_min))
+            hi = int(float(settings.get(key_max) or default_max))
+        except (TypeError, ValueError):
+            lo, hi = default_min, default_max
+        if hi < lo:
+            lo, hi = hi, lo
+        return lo, hi
+
+    f_lo, f_hi = _irange("bulk_fps_min", "bulk_fps_max", 20, 25)
+    t_lo, t_hi = _irange("bulk_trim_min", "bulk_trim_max", 10, 20)
+    fps = random.randint(f_lo, f_hi)
+    trim_start = random.randint(t_lo, t_hi)
+    trim_end = random.randint(t_lo, t_hi)
+    return {"fps": fps, "trim_start": trim_start, "trim_end": trim_end}
+
+
+def _do_bulk_upload(project):
+    pid = str(project["id"])
+    if not HAS_GAPI:
+        error("google-api-python-client not installed")
+        return
+
+    accounts = _accounts_dict()
+    if not accounts:
+        warn("No YouTube accounts saved — add some in main menu [2] first")
+        pause()
+        return
+    selected = _pick_bulk_accounts(accounts)
+    if not selected:
+        return
+
+    # Verify every selected account with a live token test; skip failures.
+    ok_accounts = []
+    for name in selected:
+        if _verify_one_account(name, dict(accounts[name]), live=True):
+            ok_accounts.append(name)
+        else:
+            warn(f"skipping '{name}' — not verified (re-run OAuth in main menu [2])")
+    if not ok_accounts:
+        error("No verified accounts to upload to")
+        pause()
+        return
+
+    raw = prompt("\nEnter YouTube URL to upload")
+    if not raw:
+        error("No URL entered")
+        pause()
+        return
+    m = re.search(r'(?:v=|youtu\.be/|youtube\.com/embed/)([\w-]{11})', raw)
+    if not m:
+        error("Invalid YouTube URL")
+        pause()
+        return
+    video_id = m.group(1)
+    source_url = f"https://www.youtube.com/watch?v={video_id}"
+
+    old_pid = config.PROJECT_ID
+    config.PROJECT_ID = pid
+    try:
+        settings = config.load_tui_settings()
+        try:
+            youtube = youtube_api.get_client()
+            details = youtube_api.get_video_details(youtube, video_id)
+        except Exception as e:
+            error(f"Could not fetch video info: {str(e)[:120]}")
+            pause()
+            return
+        if not details:
+            error("Video not found")
+            pause()
+            return
+        if details.get("duration", 0) < 60:
+            warn(f"This is a short ({details['duration']}s) — only long-form videos recommended")
+            if not confirm("Upload anyway?", default_no=False):
+                return
+
+        # Pre-configured project fields fire into every account; fall back to
+        # the source values when a field is empty.
+        title = (settings.get("custom_title") or "").strip() or details.get("title", "")
+        description = (settings.get("custom_description") or "").strip() or details.get("description", "")
+        comment = (settings.get("custom_comment") or "").strip() or None
+        tags = details.get("tags", [])
+        info(f"Project fields → title: {title[:70]}{'…' if len(title) > 70 else ''}")
+        info(f"Uploading to {len(ok_accounts)} account(s): {', '.join(ok_accounts)}")
+
+        info("Downloading video (rotating through the whole proxy pool, no retry limit)...")
+        try:
+            dl_result = download_helpers.download_video(source_url)
+        except download_helpers.YouTubeBotCheck:
+            error("Download blocked by YouTube bot-check — the proxy IPs are flagged.")
+            error("Fix: set YT_COOKIES / YT_COOKIES_FILE (cookies.txt from a logged-in "
+                  "browser) or use residential proxies, then retry.")
+            pause()
+            return
+        if not dl_result:
+            error("Download failed after exhausting proxies")
+            pause()
+            return
+        video_path = dl_result["path"]
+        download_dir = os.path.dirname(video_path)
+
+        results = []
+        try:
+            for i, name in enumerate(ok_accounts, 1):
+                acct = accounts[name]
+                info(f"\n[{i}/{len(ok_accounts)}] Uploading to '{name}'...")
+                overrides = _bulk_random_overrides(settings)
+                info(f"  randomized edits → fps={overrides['fps']}, "
+                     f"trim {overrides['trim_start']}s start, "
+                     f"{overrides['trim_end']}s end")
+                proc_dir = os.path.join(download_dir, f".yt-proc-{name}")
+                try:
+                    processed = daily_uploader.process_video(
+                        video_path, output_dir=proc_dir, overrides=overrides)
+                except FileNotFoundError as e:
+                    error(f"  missing tool: {e.filename or e} — run `installer doctor`")
+                    results.append((name, False, f"missing tool: {e.filename or e}"))
+                    continue
+                except Exception as e:
+                    error(f"  processing failed: {str(e)[:200]}")
+                    results.append((name, False, f"processing: {str(e)[:120]}"))
+                    continue
+                if not processed:
+                    error("  processing returned nothing")
+                    results.append((name, False, "processing returned nothing"))
+                    continue
+
+                env_keys = ("YT_CLIENT_ID", "YT_CLIENT_SECRET", "YT_REFRESH_TOKEN")
+                old_env = {k: os.environ.get(k) for k in env_keys}
+                os.environ["YT_CLIENT_ID"] = acct.get("client_id", "")
+                os.environ["YT_CLIENT_SECRET"] = acct.get("client_secret", "")
+                os.environ["YT_REFRESH_TOKEN"] = acct.get("refresh_token", "")
+                try:
+                    vid = _upload_with_failover(
+                        processed, title=title, description=description,
+                        tags=tags, source_url=source_url,
+                        comment=comment, source_channel=details.get("channel_id", ""),
+                        retries=None)
+                    if vid:
+                        success(f"[{i}/{len(ok_accounts)}] '{name}' → "
+                                f"https://www.youtube.com/watch?v={vid}")
+                        results.append((name, True, vid))
+                        acct["uploads_count"] = int(acct.get("uploads_count", 0) or 0) + 1
+                        _save_account(name, acct)
+                    else:
+                        error(f"[{i}/{len(ok_accounts)}] upload failed for '{name}'")
+                        results.append((name, False, "upload failed"))
+                finally:
+                    for k in env_keys:
+                        if old_env[k] is None:
+                            os.environ.pop(k, None)
+                        else:
+                            os.environ[k] = old_env[k]
+        finally:
+            shutil.rmtree(download_dir, ignore_errors=True)
+            info(f"cleaned up: {download_dir}")
+
+        ok_count = sum(1 for _, ok, _ in results if ok)
+        print()
+        divider()
+        print(f"\n  {C_BOLDWHITE}BULK UPLOAD COMPLETE — {ok_count}/{len(ok_accounts)} succeeded{C_RESET}")
+        for name, ok, detail in results:
+            mark = f"{C_GREEN}OK{C_RESET}" if ok else f"{C_RED}FAIL{C_RESET}"
+            shown = f"https://www.youtube.com/watch?v={detail}" if ok else detail
+            print(f"  {mark}  {name}  {C_DIM}{shown}{C_RESET}")
+        pause()
+    finally:
+        config.PROJECT_ID = old_pid
+
+
 # ─── QUICK DEPLOY (guided question flow) ─────────────────────────────────────
 
 def _read_multiline(msg):
@@ -1828,9 +2050,14 @@ def _activate_proxy_live():
 
 
 def _upload_with_failover(processed, title, description, tags, source_url,
-                          comment, source_channel):
+                          comment, source_channel, retries=4):
     """Test the proxy, upload, and on any proxy-related failure re-rotate the
-    pool and retry. Returns the video ID or None."""
+    pool and retry. Returns the video ID or None.
+
+    retries=None = no retry limit: with the pool enabled the upload is retried
+    forever (re-rotating the pool each time) until it succeeds or the user
+    cancels. When the pool is disabled, retries falls back to 4 (a broken
+    manual proxy must not hang forever)."""
     import proxy_pool
     s = config.get_proxy_settings()
     pool_on = _is_true(s.get("proxy_pool_enabled"))
@@ -1847,26 +2074,40 @@ def _upload_with_failover(processed, title, description, tags, source_url,
         else:
             error(f"proxy down ({note}) — uploading anyway")
 
-    retries = 4
-    for attempt in range(1, retries + 1):
-        info(f"uploading (attempt {attempt}/{retries})...")
+    cap = retries
+    if cap is None:
+        cap = 0 if pool_on else 4
+    attempt = 0
+    while True:
+        attempt += 1
+        if cap and attempt > cap:
+            return None
+        info(f"uploading (attempt {attempt}{'/' + str(cap) if cap else ''})...")
         try:
             vid = daily_uploader.upload_daily(
                 processed, title=title, description=description,
                 tags=tags, source_url=source_url, force=True,
                 source_channel=source_channel, comment=comment, raw=True,
             )
+        except HttpError as e:
+            status = getattr(getattr(e, "resp", None), "status", 0)
+            error(f"upload failed (HTTP {status}): {str(e)[:160]}")
+            if pool_on and status in (500, 502, 503, 504):
+                info("retriable HTTP error — re-rotating proxy and retrying...")
+                proxy_pool.refresh_and_activate()
+                continue
+            return None
         except Exception as e:
             error(f"upload failed: {str(e)[:200]}")
-            if pool_on and attempt < retries:
-                info("upload blocked by proxy — re-rotating and retrying...")
+            if pool_on:
+                info("upload blocked by proxy/network — re-rotating and retrying...")
                 proxy_pool.refresh_and_activate()
                 continue
             return None
         if vid:
             return vid
         error("upload returned no video ID")
-        if pool_on and attempt < retries:
+        if pool_on:
             info("re-rotating proxy and retrying...")
             proxy_pool.refresh_and_activate()
             continue

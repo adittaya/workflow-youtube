@@ -36,7 +36,6 @@ HTTP_TIMEOUT = 7
 REFRESH_CONCURRENCY = 20
 STALE_AFTER_MIN = 5
 USED_TTL_HOURS = 24
-ROTATION_LIMIT = 4
 
 
 # ─── Pool credentials ────────────────────────────────────────────────────────
@@ -240,12 +239,12 @@ def pick_best(rows):
 
 def candidate_urls(limit=None):
     """Ordered working pool proxy URLs (fastest first, skipping proxies already
-    marked used) so the download path can rotate through several proxies when
-    one is blocked by YouTube. Returns [] when the pool is disabled, not
-    configured, or has no working proxies. `limit` caps how many URLs to
-    return (default ROTATION_LIMIT)."""
+    marked used) so the download path can rotate through proxies when one is
+    blocked by YouTube. Returns [] when the pool is disabled, not configured,
+    or has no working proxies. `limit` caps how many URLs to return; None (the
+    default) returns every working proxy — no rotation cap."""
     if limit is None:
-        limit = ROTATION_LIMIT
+        limit = 10 ** 9
     if not is_enabled() or not is_configured():
         return []
     try:

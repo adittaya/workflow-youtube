@@ -18,7 +18,12 @@
   local/cloud) with a `[Q] Quick Deploy` guided upload (pick a saved account →
   live token check → video link → copy-or-custom title/description/comment →
   proxy-mode prompt (`-y`) → download/process → test proxy → upload with
-  proxy-pool re-rotation on failure).
+  proxy-pool re-rotation on failure) and `[6] Bulk upload` per project (pick
+  multiple saved accounts or "all", one video is downloaded once, then fired
+  into every selected account with the project's pre-configured
+  title/description/comment; fps + start/end trim are randomised per account
+  via `bulk_fps_min/max` (default 20/25) and `bulk_trim_min/max` (default
+  10/20) so each copy differs; BGM is left as configured).
 
 ## Manual Run Model
 
@@ -54,27 +59,33 @@
   proxy (TCP + HTTPS) writing results back, picks the fastest working one and
   activates it in the shared proxy settings; `ensure_working()` re-tests the
   active proxy and auto-repools on failure. `candidate_urls()` returns an
-  ordered rotation list (fastest first, skipping proxies marked used) so the
-  download path tries several proxies in a loop; `mark_blocked()` parks a
+  ordered rotation list (fastest first, skipping proxies marked used) with
+  **no cap by default** (`limit=None` = whole pool); `mark_blocked()` parks a
   bot-checked proxy for `USED_TTL_HOURS`. Credentials from settings
   (`proxy_pool_url`/`proxy_pool_key`) or `PROXY_POOL_URL`/`PROXY_POOL_KEY` env.
   Wired into `youtube_api.get_client()` and `download_helpers.download_video()`.
 - `daily_uploader.py` — `process_video()` pipeline hook + `upload_daily()`
-  (force=True); upload audit via `upload_logs`/`daily_log.json`
+  (force=True); upload audit via `upload_logs`/`daily_log.json`;
+  `process_video(input_path, output_dir=None, overrides=None)` accepts
+  per-upload `fps`/`trim_start`/`trim_end` overrides (bulk upload randomises
+  these per account)
 - `download_helpers.py` — yt-dlp download (`android` client,
   `formats=duplicate,missing_pot`). Shared `run_yt_dlp()` builds every yt-dlp
   invocation (cookies + proxy); `get_proxy_candidates()` orders proxies
   (configured Settings proxy first, then `WORKING_PROXIES` JSON, then
-  `YT_PROXY`) and is merged with `proxy_pool.candidate_urls()` so downloads
-  rotate through several pool proxies in a loop. `--cookies` from
+  `YT_PROXY`) and is merged with the whole `proxy_pool.candidate_urls()` list
+  so downloads rotate through every pool proxy. `--cookies` from
   `YT_COOKIES`/`YT_COOKIES_FILE`/a `cookies_file` setting;
   `--cookies-from-browser` fallback from `YT_COOKIES_BROWSER`/`cookies_browser`.
   Detects YouTube bot-checks ("Sign in to confirm you're not a bot"), parks the
   flagged proxy via `mark_blocked()` and moves to the next one; raises
   `YouTubeBotCheck` only after every proxy was blocked — the TUI/CLI print an
   actionable message (add cookies or use residential proxies) instead of a
-  generic network error. Calls `proxy_pool.ensure_working()` before downloading
-  when the pool is enabled
+  generic network error. `download_video(url, output_dir=None, pool_retries=None)`
+  has **no rotation/retry cap** with the pool enabled: when every proxy fails it
+  refreshes the pool (`refresh_and_activate()`) and tries again; `pool_retries`
+  caps the refresh rounds explicitly, `None` (default) = unlimited. Calls
+  `proxy_pool.ensure_working()` before downloading when the pool is enabled
 - `bgm_manager.py` — `download_bgm_from_youtube()` reuses
   `download_helpers.run_yt_dlp()` (same extractor args, cookies, and proxy
   iteration as the main video path) so BGM downloads stop hitting bot-checks

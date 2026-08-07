@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, List, Optional
 
+from installer.core import config as cfgmod
 from installer.core import env, packages as pkgmod, utils
 from installer.version import MIN_PYTHON
 
@@ -27,12 +28,14 @@ class Diagnosis:
 
 class Doctor:
     def __init__(self, store, base_dir: Path, registry: pkgmod.PackageRegistry,
-                 log=None, auto_fix: bool = False):
+                 log=None, auto_fix: bool = False, ui=None, config=None):
         self.store = store
         self.base_dir = base_dir
         self.registry = registry
         self.log = log
         self.auto_fix = auto_fix
+        self.ui = ui
+        self.config = config
         self.checks: List[Diagnosis] = []
 
     # -- checks ------------------------------------------------------------
@@ -41,6 +44,8 @@ class Doctor:
         self._check_privileges()
         self._check_package_manager()
         self._check_tools()
+        self._check_pip_dependencies()
+        self._check_path_profile()
         self._check_config()
         self._check_state()
         self._check_global_command()
@@ -89,14 +94,10 @@ class Doctor:
             fix = None
             if not info["installed"] and manager is not None:
                 def _fix(name=name, manager=manager):
-                    concrete, _ = self.registry.system_install_names(manager.name, [name])
-                    if not concrete:
-                        return False
-                    manager.install(concrete)
-                    if not pkgmod.check_package(self.registry, name)["installed"]:
-                        if hasattr(manager, "reinstall"):
-                            manager.reinstall(concrete)
-                    return bool(pkgmod.check_package(self.registry, name)["installed"])
+                    from installer.operations import repair_system_packages
+
+                    still = repair_system_packages(manager, self.registry, [name], self.log)
+                    return not still
                 fix = _fix
             self.checks.append(Diagnosis(
                 title=f"Tool: {name}",
@@ -108,6 +109,55 @@ class Doctor:
                 severity="warn" if optional else "broken",
             ))
 
+    def _check_pip_dependencies(self):
+        install_dir = (Path(self.config["install_dir"])
+                       if self.config and self.config.get("install_dir") else None)
+        req = install_dir / "requirements.txt" if install_dir else None
+        if not req or not req.exists():
+            self.checks.append(Diagnosis(
+                title="Python dependencies",
+                ok=True,
+                detail="not installed yet",
+            ))
+            return
+        missing = [p.name for p in self.registry.pip_packages()
+                   if p.verify and env.version_of(p.verify) is None]
+
+        def _fix() -> bool:
+            from installer.operations import install_pip_requirements
+
+            return bool(req.exists() and install_pip_requirements(req, self.log))
+
+        self.checks.append(Diagnosis(
+            title="Python dependencies",
+            ok=not missing,
+            detail=", ".join(missing) if missing else "installed",
+            fix_hint="Run: installer doctor --fix",
+            fix=_fix if missing else None,
+            severity="warn" if missing else "ok",
+        ))
+
+    def _check_path_profile(self):
+        from installer.core import shellprofile
+
+        binpath = env.bin_dir()
+        prof = shellprofile.ShellProfile()
+        present = any(
+            prof._line_refs_path(line, binpath)
+            for p in prof.files() for line in prof._existing_lines(p))
+
+        def _fix() -> bool:
+            return bool(prof.add_path(binpath)) or present
+
+        self.checks.append(Diagnosis(
+            title="Shell profile PATH",
+            ok=present,
+            detail="configured" if present else f"{binpath} not in profile",
+            fix_hint="Run: installer doctor --fix",
+            fix=_fix,
+            severity="warn",
+        ))
+
     def _check_config(self):
         ok = True
         detail = "not created yet"
@@ -118,11 +168,22 @@ class Doctor:
             except Exception as exc:
                 ok = False
                 detail = f"unreadable: {exc}"
+
+        def _fix() -> bool:
+            from installer.operations import defaults
+
+            try:
+                self.store.save(cfgmod.Config(defaults()))
+                return True
+            except Exception:
+                return False
+
         self.checks.append(Diagnosis(
             title="Config file",
             ok=ok,
             detail=detail,
-            fix_hint="Re-run installer install to regenerate the config.",
+            fix_hint="Run: installer doctor --fix",
+            fix=_fix if not ok else None,
             severity="warn" if ok else "broken",
         ))
 
@@ -130,12 +191,24 @@ class Doctor:
         from installer.core import state as statemod
 
         st = statemod.InstallState.load(self.base_dir)
+        broken = st.needs_repair()
+
+        def _fix() -> bool:
+            from installer.interactive import UI
+            from installer.operations import load_config, run_install
+
+            code = run_install(UI(non_interactive=True), load_config(),
+                               non_interactive=True)
+            return code == 0
+
         self.checks.append(Diagnosis(
             title="Install state",
-            ok=st.is_installed(),
-            detail="complete" if st.is_installed() else "not installed",
-            fix_hint="Run: installer install",
-            severity="warn" if st.is_installed() else "broken",
+            ok=st.is_installed() and not broken,
+            detail=("complete" if st.is_installed() and not broken else
+                    (f"failed stages: {', '.join(broken)}" if broken else "not installed")),
+            fix_hint="Run: installer doctor --fix",
+            fix=_fix if (not st.is_installed() or broken) else None,
+            severity="warn" if st.is_installed() and not broken else "broken",
         ))
 
     def _check_global_command(self):
@@ -146,13 +219,19 @@ class Doctor:
         on_path = utils.which(INSTALLER_NAME) is not None
 
         def _fix() -> bool:
-            return utils.run_ok([str(exe), "version"], capture=True) or exe.exists()
+            if utils.run_ok([str(exe), "version"], capture=True):
+                return True
+            from installer.interactive import UI
+            from installer.operations import load_config, run_install
+
+            return run_install(UI(non_interactive=True), load_config(),
+                               non_interactive=True) == 0
 
         self.checks.append(Diagnosis(
             title="Global installer command",
             ok=on_path,
             detail=f"{exe} " + ("on PATH" if on_path else "not on PATH"),
-            fix_hint=f"Add {binpath} to PATH, or re-run installer install.",
+            fix_hint=f"Add {binpath} to PATH, or run: installer doctor --fix.",
             fix=_fix,
             severity="warn" if on_path else "broken",
         ))
@@ -163,7 +242,7 @@ class Doctor:
             title="Global TUI command",
             ok=tui_on_path,
             detail=f"{tui_exe} " + ("on PATH" if tui_on_path else "not on PATH"),
-            fix_hint=f"Add {binpath} to PATH, or re-run installer install.",
+            fix_hint=f"Add {binpath} to PATH, or run: installer doctor --fix.",
             fix=_fix,
             severity="warn" if tui_on_path else "broken",
         ))

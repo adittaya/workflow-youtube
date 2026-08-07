@@ -1,7 +1,10 @@
 """Tests for environment detection and package helpers."""
 
+import os
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from installer.core import env, packages as pkgmod
 from installer.core.config import _load_yaml
@@ -23,6 +26,23 @@ class EnvDetectionTests(unittest.TestCase):
 
     def test_home_dir_resolved(self):
         self.assertTrue(str(env.home_dir()))
+
+
+class CloudShellDetectionTests(unittest.TestCase):
+    def test_env_var_detects(self):
+        with mock.patch.dict(os.environ, {"GOOGLE_CLOUD_SHELL": "true"}):
+            self.assertTrue(env.is_cloud_shell())
+
+    def test_marker_dir_detects(self):
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / ".cloudshell").mkdir()
+            with mock.patch.dict(os.environ, {"HOME": td, "GOOGLE_CLOUD_SHELL": ""}):
+                self.assertTrue(env.is_cloud_shell())
+
+    def test_absent_not_detected(self):
+        with tempfile.TemporaryDirectory() as td:
+            with mock.patch.dict(os.environ, {"HOME": td, "GOOGLE_CLOUD_SHELL": ""}):
+                self.assertFalse(env.is_cloud_shell())
 
 
 class VersionTests(unittest.TestCase):

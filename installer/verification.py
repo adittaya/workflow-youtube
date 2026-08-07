@@ -12,6 +12,7 @@ The same checks power ``installer verify`` and the post-install summary.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
 from installer.core import env, packages as pkgmod

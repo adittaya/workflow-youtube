@@ -40,6 +40,7 @@ Termux users: the same `installer install` runs against `pkg` with no root.
 
 ```
 installer install     bootstrap the full environment (default; --dry-run plans only)
+installer fix         all-in-one self-heal: doctor --fix + repair install + verify
 installer update      self-update from GitHub Releases (version compare + changelog)
 installer repair      re-run failed/incomplete install stages
 installer doctor      diagnose environment + install (--fix auto-applies safe fixes)
@@ -73,6 +74,19 @@ All commands support `--non-interactive` (safe for CI) and `-v` (verbose logs).
 8. **Verify** — table of Installed/Version/Status/Missing.
 9. **Log & roll back** — every step is logged; a failed critical step undoes
    completed actions via the rollback journal.
+
+## Self-healing
+
+- `installer install` never claims success from a package manager's exit code
+  alone — every required tool is re-checked on PATH afterwards, and a missing
+  binary (e.g. apt exiting 0 on a stale dpkg entry in ephemeral Cloud Shell
+  images) triggers an escalating repair ladder: `dpkg --configure -a` →
+  `apt-get -f install` → `--reinstall` → purge + fresh install.
+- `installer doctor --fix` fixes everything it safely can: missing required
+  tools (same repair ladder), Python deps, a corrupt config file, a broken
+  install state, PATH shell-profile entries and the global commands.
+- `installer fix` is the single "make it healthy again" command: run doctor
+  with auto-fixes, re-run any failed install stages, then verify.
 
 ## Package abstraction
 

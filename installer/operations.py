@@ -188,6 +188,39 @@ def install_system_packages(pm, registry, names: list, log=None) -> Tuple[bool, 
     return True, []
 
 
+def repair_system_packages(manager, registry, names: list, log=None) -> list:
+    """Escalate repairs until every missing tool binary is back on PATH.
+
+    apt exits 0 on a stale dpkg entry (e.g. Cloud Shell images) without
+    restoring the files, so each step re-verifies the actual executable via
+    the registry before escalating: configure+fix-broken+reinstall → purge +
+    fresh install → final fresh install. Returns the names still missing.
+    """
+    missing = [n for n in names
+               if not pkgmod.check_package(registry, n)["installed"]]
+    if not missing:
+        return []
+    if not hasattr(manager, "heal"):
+        # No repair ladder on this platform — best effort is a plain install.
+        concrete, _ = registry.system_install_names(manager.name, missing)
+        if concrete:
+            manager.install(concrete)
+        return [n for n in missing
+                if not pkgmod.check_package(registry, n)["installed"]]
+    steps = ["heal", "purge_and_reinstall", "install"]
+    for step in steps:
+        missing = [n for n in missing
+                   if not pkgmod.check_package(registry, n)["installed"]]
+        if not missing:
+            break
+        concrete, _ = registry.system_install_names(manager.name, missing)
+        if not concrete:
+            break
+        if not getattr(manager, step)(concrete):
+            break
+    return [n for n in names if not pkgmod.check_package(registry, n)["installed"]]
+
+
 # --------------------------------------------------------------------------
 # Global commands
 # --------------------------------------------------------------------------
@@ -276,17 +309,18 @@ def run_install(ui, config: cfgmod.Config, *, non_interactive: bool = False,
                 still_missing = [n for n in missing
                                  if not pkgmod.check_package(registry, n)["installed"]]
                 if still_missing:
-                    # apt exits 0 on a stale dpkg entry without restoring the
-                    # binary — force --reinstall and only claim success when the
-                    # executable is actually back on PATH.
-                    ui.warn(f"{', '.join(still_missing)} still missing after install — forcing reinstall")
-                    forced, _ = registry.system_install_names(pm, still_missing)
-                    if forced and hasattr(manager, "reinstall") and manager.reinstall(forced):
-                        still_missing = [n for n in still_missing
-                                         if not pkgmod.check_package(registry, n)["installed"]]
+                    # apt can exit 0 on a stale dpkg entry without restoring
+                    # the binary — run the escalating repair ladder and only
+                    # claim success when the executable is actually on PATH.
+                    ui.warn(f"{', '.join(still_missing)} still missing after install — running repair ladder")
+                    still_missing = repair_system_packages(manager, registry, still_missing, log)
                 if still_missing:
                     ui.error(f"Install reported success but {' '.join(still_missing)} "
                              "is still not on PATH.")
+                    if env.is_cloud_shell():
+                        ui.warn("Cloud Shell's root filesystem is ephemeral — apt/dpkg state can "
+                                "outlive the binaries. Try: sudo apt-get purge -y ffmpeg && "
+                                "sudo apt-get install -y ffmpeg, then 'installer fix'.")
                     ui.warn(f"Try manually: {manager.error_hint(concrete)}")
                     st.end_stage("system_packages", "failed", ", ".join(still_missing))
                     st.save()
@@ -458,8 +492,26 @@ def run_verify(ui, config) -> int:
     if ok == total:
         ui.ok(f"All {total} checks passed.")
         return 0
-    ui.warn(f"{ok}/{total} checks passed. Run 'installer doctor' for details.")
+    ui.warn(f"{ok}/{total} checks passed. Run 'installer fix' to auto-repair.")
     return 1 if ok < total else 0
+
+
+def run_fix(ui, config) -> int:
+    """All-in-one self-heal: diagnose with auto-fixes, re-run any failed
+    install stages, then verify. ``installer fix`` is the single command that
+    repairs whatever is wrong with the environment."""
+    ui.title("Self-healing (installer fix)")
+    code = run_doctor(ui, config, auto_fix=True)
+    cfg_dir, _, _ = default_dirs()
+    st = statemod.InstallState.load(cfg_dir)
+    if st.needs_repair() or code != 0:
+        ui.info("Re-running the install pipeline to repair broken stages...")
+        code = run_install(ui, config, non_interactive=True)
+    ui.line()
+    verify_code = run_verify(ui, config)
+    if verify_code == 0:
+        ui.ok("Environment is healthy.")
+    return verify_code
 
 
 def run_status(ui, config) -> int:
@@ -505,7 +557,7 @@ def run_doctor(ui, config, auto_fix: bool) -> int:
     cfg_dir, _, _ = default_dirs()
     store = cfgmod.ConfigStore(INSTALLER_NAME, "config.json", "json", cfg_dir)
     registry = pkgmod.PackageRegistry.from_yaml(_packages_path())
-    doc = Doctor(store, cfg_dir, registry, auto_fix=auto_fix)
+    doc = Doctor(store, cfg_dir, registry, auto_fix=auto_fix, ui=ui, config=config)
     doc.run_all()
     ui.title("Doctor report")
     n = doc.render(ui)

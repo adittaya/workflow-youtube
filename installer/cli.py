@@ -2,6 +2,7 @@
 
 Commands:
   install   bootstrap the full environment (default)
+  fix       all-in-one self-heal: diagnose+fix, repair install, verify
   update    self-update from GitHub Releases
   repair    re-run failed/incomplete install stages
   doctor    diagnose the environment (with --fix)
@@ -37,6 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     install = sub.add_parser("install", help="bootstrap the full environment (default)")
     install.add_argument("--dry-run", action="store_true",
                          help="plan the install without changing the system")
+    sub.add_parser("fix", help="all-in-one self-heal (doctor --fix + repair + verify)")
     sub.add_parser("update", help="self-update from GitHub Releases")
     sub.add_parser("repair", help="re-run failed/incomplete install stages")
 
@@ -81,6 +83,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                                       dry_run=getattr(args, "dry_run", False))
     if args.command == "update":
         return operations.run_update(ui, operations.load_config())
+    if args.command == "fix":
+        return operations.run_fix(ui, operations.load_config())
     if args.command == "repair":
         return operations.run_repair(ui, operations.load_config())
     if args.command == "doctor":

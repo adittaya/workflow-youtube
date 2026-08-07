@@ -12,6 +12,7 @@ import platform
 import re
 import sys
 from pathlib import Path
+from typing import Iterable, Optional
 
 from installer.core import utils
 
@@ -156,6 +157,18 @@ def has_docker() -> Optional[str]:
     """Docker version string, or None when unavailable."""
     ver = utils.command_output(["docker", "--version"], "").strip()
     return ver or None
+
+
+def is_cloud_shell() -> bool:
+    """Google Cloud Shell runs in an ephemeral sandbox: the root filesystem
+    resets every session, so apt/dpkg state (from the base image) can exist
+    without the matching binaries. Detectable via env var or marker dir."""
+    if os.environ.get("GOOGLE_CLOUD_SHELL"):
+        return True
+    try:
+        return (home_dir() / ".cloudshell").exists()
+    except OSError:
+        return False
 
 
 def docker_running() -> bool:

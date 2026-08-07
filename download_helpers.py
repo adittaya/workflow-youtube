@@ -34,7 +34,7 @@ def process_thumbnail(video_id, output_path=None):
     return output_path
 
 
-def _proxy_list():
+def get_proxy_candidates():
     """Proxy candidates in priority order: configured proxy (Settings screen),
     then WORKING_PROXIES JSON, then a single YT_PROXY."""
     proxies = []
@@ -53,6 +53,15 @@ def _proxy_list():
     return proxies
 
 
+class YouTubeBotCheck(Exception):
+    """YouTube returned a bot check ("Sign in to confirm you're not a bot").
+
+    Raised by download_video() when every proxy attempt (including a direct
+    connection) was blocked this way. It means the IP is flagged and requests
+    are anonymous — fix by providing cookies or using a residential proxy.
+    """
+
+
 def download_video(url, output_dir=None):
     if output_dir is None:
         output_dir = tempfile.mkdtemp(prefix="yt_mirror_")
@@ -61,17 +70,30 @@ def download_video(url, output_dir=None):
         proxy_pool.ensure_working()
     except Exception:
         pass
-    proxies = _proxy_list()
+    proxies = get_proxy_candidates()
+    saw_bot_check = False
 
-    for i, proxy in enumerate(proxies):
-        config.log(f"yt-dlp attempt {i + 1}/{len(proxies)} with proxy: {proxy}")
-        result = _try_download(url, output_dir, proxy)
-        if result:
-            return result
-        config.log(f"proxy {i + 1} failed — trying next")
     if not proxies:
         config.log("no proxy configured — trying direct download")
-        return _try_download(url, output_dir, "")
+        result, kind = _try_download(url, output_dir, "")
+        if result:
+            return result
+        if kind == "bot_check":
+            saw_bot_check = True
+    for i, proxy in enumerate(proxies):
+        config.log(f"yt-dlp attempt {i + 1}/{len(proxies)} with proxy: {proxy}")
+        result, kind = _try_download(url, output_dir, proxy)
+        if result:
+            return result
+        if kind == "bot_check":
+            saw_bot_check = True
+        config.log(f"proxy {i + 1} failed — trying next")
+    if saw_bot_check:
+        raise YouTubeBotCheck(
+            "YouTube blocked every attempt with 'Sign in to confirm you're not "
+            "a bot'. The proxy IPs are flagged and requests are anonymous. Set "
+            "YT_COOKIES_FILE / YT_COOKIES (cookies.txt from a logged-in browser) "
+            "or use a residential proxy.")
     return None
 
 
@@ -83,9 +105,11 @@ def tools_ok():
 
 def _cookies_arg():
     """Resolve a cookies file for yt-dlp: prefer YT_COOKIES_FILE if it exists,
-    otherwise materialize the YT_COOKIES secret text into
-    ~/.yt-mirror/cookies.txt."""
+    then a configured `cookies_file` setting, otherwise materialize the
+    YT_COOKIES secret text into ~/.yt-mirror/cookies.txt."""
     path = os.environ.get("YT_COOKIES_FILE", "")
+    if not path:
+        path = str(config.get_setting("cookies_file", "") or "")
     if path and os.path.exists(path):
         return path
     raw = os.environ.get("YT_COOKIES", "")
@@ -104,44 +128,75 @@ def _cookies_arg():
         return None
 
 
+def _cookies_browser_arg():
+    """Browser name for --cookies-from-browser (YT_COOKIES_BROWSER env or a
+    `cookies_browser` setting). Only used when no cookies file is available."""
+    return (os.environ.get("YT_COOKIES_BROWSER", "")
+            or str(config.get_setting("cookies_browser", "") or "")).strip() or None
+
+
+def run_yt_dlp(args, proxy="", timeout=300):
+    """Run yt-dlp with the shared flags every download path needs
+    (no-playlist, force-ipv4, cookies when configured, optional proxy).
+
+    ``args`` are extra CLI arguments (format, extractor-args, output, URL...).
+    Returns the CompletedProcess, or None on timeout."""
+    cmd = ["yt-dlp", "--no-playlist", "--no-warnings", "--force-ipv4"]
+    cmd.extend(args)
+    if proxy:
+        cmd.extend(["--proxy", proxy])
+    cookies = _cookies_arg()
+    if cookies:
+        cmd.extend(["--cookies", cookies])
+    else:
+        browser = _cookies_browser_arg()
+        if browser:
+            cmd.extend(["--cookies-from-browser", browser])
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None
+
+
+def is_bot_check(text):
+    """True when yt-dlp output looks like a YouTube bot check / sign-in wall."""
+    return any(p in text for p in (
+        "Sign in to confirm", "you're not a bot", "you are not a bot",
+        "unusual traffic", "sign in to confirm", "Confirm you",
+    ))
+
+
 def _try_download(url, output_dir, proxy):
+    """One yt-dlp attempt. Returns (result_dict_or_None, kind) where kind is
+    'ok', 'bot_check' or 'error' so the caller can classify failures."""
     output_template = os.path.join(output_dir, "video.%(ext)s")
-    cmd = [
-        "yt-dlp",
-        "--no-playlist",
-        "--no-warnings",
-        "--force-ipv4",
+    args = [
         "--extractor-args", "youtube:player_client=android;formats=duplicate,missing_pot",
         "-f", "best",
         "-o", output_template,
         "--print-json",
         url,
     ]
-    if proxy:
-        cmd.extend(["--proxy", proxy])
-    cookies = _cookies_arg()
-    if cookies:
-        cmd.extend(["--cookies", cookies])
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        if result.returncode != 0:
-            config.log(f"yt-dlp failed: {result.stderr[:200]}")
-            return None
-        info = json.loads(result.stdout) if result.stdout.strip() else {}
-        filepath = info.get("filename") or info.get("_filename")
-        if filepath and os.path.exists(filepath):
-            config.log(f"video downloaded: {filepath}")
-            return {"path": filepath, "info": info}
-        for f in os.listdir(output_dir):
-            if f.startswith("video."):
-                full = os.path.join(output_dir, f)
-                config.log(f"video downloaded: {full}")
-                return {"path": full, "info": info}
-        config.log("yt-dlp finished but no video file found")
-        return None
-    except subprocess.TimeoutExpired:
+    result = run_yt_dlp(args, proxy)
+    if result is None:
         config.log("yt-dlp download timed out (300s)")
-        return None
-    except Exception as e:
-        config.log(f"download error: {e}")
-        return None
+        return None, "error"
+    if result.returncode != 0:
+        err = (result.stderr or "")[:2000]
+        config.log(f"yt-dlp failed: {err[:200]}")
+        if is_bot_check(err):
+            config.log("bot-check: YouTube flagged the request (IP + no cookies)")
+            return None, "bot_check"
+        return None, "error"
+    info = json.loads(result.stdout) if result.stdout.strip() else {}
+    filepath = info.get("filename") or info.get("_filename")
+    if filepath and os.path.exists(filepath):
+        config.log(f"video downloaded: {filepath}")
+        return {"path": filepath, "info": info}, "ok"
+    for f in os.listdir(output_dir):
+        if f.startswith("video."):
+            full = os.path.join(output_dir, f)
+            config.log(f"video downloaded: {full}")
+            return {"path": full, "info": info}, "ok"
+    config.log("yt-dlp finished but no video file found")
+    return None, "error"

@@ -201,6 +201,11 @@ def save_tui_settings(**fields):
         save_tui_setting(key, value)
 
 
+def get_setting(key, default=None):
+    """Generic setting read (local settings.json or Supabase settings table)."""
+    return supabase_db.get_setting(key, default)
+
+
 PROXY_DEFAULTS = {
     "proxy_enabled": False,
     "proxy_protocol": "http",

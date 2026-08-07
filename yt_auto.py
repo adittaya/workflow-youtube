@@ -270,7 +270,13 @@ def cmd_upload(args):
     print(f"\nsource: {source_title}\n")
 
     print("downloading...")
-    result = download_helpers.download_video(source_url)
+    try:
+        result = download_helpers.download_video(source_url)
+    except download_helpers.YouTubeBotCheck:
+        print("download blocked by YouTube bot-check — the proxy IP is flagged.")
+        print("fix: set YT_COOKIES / YT_COOKIES_FILE (cookies.txt from a logged-in "
+              "browser) or use a residential proxy, then retry.")
+        return 1
     if not result:
         print("download failed")
         return 1

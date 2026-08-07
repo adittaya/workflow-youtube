@@ -58,10 +58,22 @@
   Wired into `youtube_api.get_client()` and `download_helpers.download_video()`.
 - `daily_uploader.py` — `process_video()` pipeline hook + `upload_daily()`
   (force=True); upload audit via `upload_logs`/`daily_log.json`
-- `download_helpers.py` — yt-dlp download (`android` client), iterates proxy
-  list (configured Settings proxy first, then `WORKING_PROXIES` JSON, then
-  `YT_PROXY`); `--cookies` from `YT_COOKIES`/`YT_COOKIES_FILE`; calls
-  `proxy_pool.ensure_working()` before downloading when the pool is enabled
+- `download_helpers.py` — yt-dlp download (`android` client,
+  `formats=duplicate,missing_pot`). Shared `run_yt_dlp()` builds every yt-dlp
+  invocation (cookies + proxy); `get_proxy_candidates()` orders proxies
+  (configured Settings proxy first, then `WORKING_PROXIES` JSON, then
+  `YT_PROXY`). `--cookies` from `YT_COOKIES`/`YT_COOKIES_FILE`/a
+  `cookies_file` setting; `--cookies-from-browser` fallback from
+  `YT_COOKIES_BROWSER`/`cookies_browser`. Detects YouTube bot-checks
+  ("Sign in to confirm you're not a bot") and raises `YouTubeBotCheck` when
+  every proxy was blocked — the TUI/CLI print an actionable message (add
+  cookies or use a residential proxy) instead of a generic network error.
+  Calls `proxy_pool.ensure_working()` before downloading when the pool is
+  enabled
+- `bgm_manager.py` — `download_bgm_from_youtube()` reuses
+  `download_helpers.run_yt_dlp()` (same extractor args, cookies, and proxy
+  iteration as the main video path) so BGM downloads stop hitting bot-checks
+  the video path already fixed
 - `verify_state.py` — self-verification/healing; checks credentials, dedup and
   alerts only (24/7 checks were removed)
 - `doctor.py` — project/account checks with auto-fixes (OAuth token live test,
@@ -105,6 +117,7 @@
 
 ## Known Gaps / Next Steps
 
-- `YT_COOKIES` secret was dead (no `--cookies` passed) — now wired; verify on a
-  live download
+- Cookies (`YT_COOKIES`/`YT_COOKIES_FILE`) are wired through every yt-dlp call
+  (video + BGM) and bot-check failures surface actionable guidance; still to be
+  verified on a live download with real cookies from a datacenter proxy
 - No tests/lint CI on the code itself

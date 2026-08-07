@@ -1648,7 +1648,14 @@ def _do_instant_upload(project):
         tags = details.get("tags", [])
 
         info(f"Downloading: {title}")
-        dl_result = download_helpers.download_video(source_url)
+        try:
+            dl_result = download_helpers.download_video(source_url)
+        except download_helpers.YouTubeBotCheck:
+            error("Download blocked by YouTube bot-check — the proxy IP is flagged.")
+            error("Fix: set YT_COOKIES / YT_COOKIES_FILE (cookies.txt exported from a "
+                  "logged-in browser) or use a residential proxy, then retry.")
+            pause()
+            return
         if not dl_result:
             error("Download failed")
             pause()
@@ -1980,7 +1987,14 @@ def _quick_deploy_flow(name, acct):
         pause()
         return
     info("Downloading video...")
-    dl_result = download_helpers.download_video(source_url)
+    try:
+        dl_result = download_helpers.download_video(source_url)
+    except download_helpers.YouTubeBotCheck:
+        error("Download blocked by YouTube bot-check — the proxy IP is flagged.")
+        error("Fix: set YT_COOKIES / YT_COOKIES_FILE (cookies.txt exported from a "
+              "logged-in browser) or use a residential proxy, then retry.")
+        pause()
+        return
     if not dl_result:
         error("Download failed — check the proxy/network and retry")
         pause()

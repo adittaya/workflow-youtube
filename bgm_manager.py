@@ -130,6 +130,7 @@ def download_bgm_from_youtube(url, filename=None):
     None on failure."""
     if not url:
         return None
+    import download_helpers
     ensure_bgm_dir()
     YT_BGM_SUBDIR.mkdir(parents=True, exist_ok=True)
     if filename is None:
@@ -142,28 +143,27 @@ def download_bgm_from_youtube(url, filename=None):
         pass
 
     out_template = str(YT_BGM_SUBDIR / f"{filename}.%(ext)s")
-    cmd = [
-        "yt-dlp", "--no-playlist", "--no-warnings", "--force-ipv4",
-        "--extractor-args", "youtube:player_client=android",
+    args = [
+        "--extractor-args", "youtube:player_client=android;formats=duplicate,missing_pot",
         "-f", "bestaudio/best",
         "-x", "--audio-format", "m4a", "--audio-quality", "0",
         "-o", out_template, url,
     ]
-    proxy = config.get_proxy_url()
-    if proxy:
-        cmd.extend(["--proxy", proxy])
-
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-    except Exception:
-        return None
-    if result.returncode != 0:
-        return None
-
-    candidates = list(YT_BGM_SUBDIR.glob(f"{filename}.*"))
-    for c in candidates:
-        if c.suffix.lower() in (".mp3", ".wav", ".ogg", ".m4a", ".flac") and c.stat().st_size > 0:
-            return str(c)
+    proxies = download_helpers.get_proxy_candidates() or [""]
+    for i, proxy in enumerate(proxies):
+        config.log(f"bgm yt-dlp attempt {i + 1}/{len(proxies)}"
+                   + (f" with proxy: {proxy}" if proxy else " (direct)"))
+        result = download_helpers.run_yt_dlp(args, proxy)
+        if result is not None and result.returncode == 0:
+            candidates = list(YT_BGM_SUBDIR.glob(f"{filename}.*"))
+            for c in candidates:
+                if c.suffix.lower() in (".mp3", ".wav", ".ogg", ".m4a", ".flac") \
+                        and c.stat().st_size > 0:
+                    config.log(f"bgm downloaded: {c}")
+                    return str(c)
+        else:
+            err = (result.stderr or "")[:200] if result is not None else "timeout"
+            config.log(f"bgm download failed: {err}")
     return None
 
 

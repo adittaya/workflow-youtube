@@ -44,7 +44,7 @@ def defaults() -> dict:
         "source_url": "",
         "shell_profile": "ask",           # ask | yes | no
         "upgrade": False,
-        "packages": ["git", "python", "ffmpeg", "yt-dlp"],
+        "packages": ["git", "python", "ffmpeg"],
         "optional_packages": ["nodejs", "docker", "chromium", "vscode"],
         "env": {},
     }
@@ -202,6 +202,19 @@ def install_system_packages(pm, registry, names: list, log=None) -> Tuple[bool, 
     return True, []
 
 
+def system_packages_to_install(registry, manager, requested: list) -> list:
+    """Names in ``requested`` that are missing AND installable by ``manager``.
+
+    Pip-only tools (e.g. yt-dlp) have no system mapping and are excluded —
+    the pip stage installs those. Older configs may list them under
+    ``packages``; treat them as pip packages regardless.
+    """
+    missing = [n for n in requested
+               if not pkgmod.check_package(registry, n)["installed"]]
+    return [n for n in missing
+            if registry.system_install_names(manager, [n])[0]]
+
+
 def repair_system_packages(manager, registry, names: list, log=None) -> list:
     """Escalate repairs until every missing tool binary is back on PATH.
 
@@ -306,10 +319,10 @@ def run_install(ui, config: cfgmod.Config, *, non_interactive: bool = False,
 
     # Stage: system packages (critical — a failure aborts the install)
     st.begin_stage("system_packages")
-    requested = list(config.get("packages", []))
-    missing = [n for n in requested if not pkgmod.check_package(registry, n)["installed"]]
-    if missing:
-        concrete, _ = registry.system_install_names(pm, missing)
+    system_missing = system_packages_to_install(
+        registry, pm, list(config.get("packages", [])))
+    if system_missing:
+        concrete, _ = registry.system_install_names(pm, system_missing)
         if dry_run:
             ui.dim(f"would install via {pm}: {', '.join(concrete)}")
         else:
@@ -317,10 +330,10 @@ def run_install(ui, config: cfgmod.Config, *, non_interactive: bool = False,
                 with ui.spinner(f"Refreshing package index via {pm}"):
                     if not manager.update():
                         ui.warn("package index refresh failed — continuing anyway")
-            with ui.spinner(f"Installing {' '.join(missing)} via {pm}"):
-                ok, _ = install_system_packages(manager, registry, missing, log)
+            with ui.spinner(f"Installing {' '.join(system_missing)} via {pm}"):
+                ok, _ = install_system_packages(manager, registry, system_missing, log)
             if ok:
-                still_missing = [n for n in missing
+                still_missing = [n for n in system_missing
                                  if not pkgmod.check_package(registry, n)["installed"]]
                 if still_missing:
                     # apt can exit 0 on a stale dpkg entry without restoring
@@ -333,18 +346,19 @@ def run_install(ui, config: cfgmod.Config, *, non_interactive: bool = False,
                              "is still not on PATH.")
                     if env.is_cloud_shell():
                         ui.warn("Cloud Shell's root filesystem is ephemeral — apt/dpkg state can "
-                                "outlive the binaries. Try: sudo apt-get purge -y ffmpeg && "
-                                "sudo apt-get install -y ffmpeg, then 'installer fix'.")
+                                "outlive the binaries. Try: sudo apt-get purge -y "
+                                f"{' '.join(still_missing)} && sudo apt-get install -y "
+                                f"{' '.join(still_missing)}, then 'installer fix'.")
                     ui.warn(f"Try manually: {manager.error_hint(concrete)}")
                     st.end_stage("system_packages", "failed", ", ".join(still_missing))
                     st.save()
                     journal.rollback(log)
                     return 1
-                ui.ok(f"Installed: {', '.join(missing)}")
+                ui.ok(f"Installed: {', '.join(system_missing)}")
             else:
-                ui.error(f"Could not install required packages: {', '.join(missing)}")
+                ui.error(f"Could not install required packages: {', '.join(system_missing)}")
                 ui.warn(f"Try manually: {manager.error_hint(concrete)}")
-                st.end_stage("system_packages", "failed", ", ".join(missing))
+                st.end_stage("system_packages", "failed", ", ".join(system_missing))
                 st.save()
                 journal.rollback(log)
                 return 1

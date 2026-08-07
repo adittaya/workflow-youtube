@@ -112,6 +112,55 @@ class RepairLadderTests(unittest.TestCase):
         self.assertEqual(still, [])
         self.assertFalse(getattr(m, "called", False))
 
+    def test_pip_only_tool_is_not_system_installed(self):
+        # yt-dlp lives under pip_packages; an old config listing it under
+        # packages must not route it into apt (or the repair ladder).
+        registry = PackageRegistry.from_dict({
+            "packages": {
+                "ghosttool": {"verify": GHOST, "systems": {"apt": ["ghosttool"]}},
+            },
+            "pip_packages": {
+                "yt-dlp": {"verify": "yt-dlp"},
+            },
+        })
+
+        class FakeManager:
+            name = "apt"
+
+            def install(self, packages, dry_run=False):
+                self.installed = list(packages)
+                return True
+
+        # yt-dlp is missing, but it has no apt mapping -> excluded.
+        to_install = operations.system_packages_to_install(
+            registry, "apt", ["ghosttool", "yt-dlp"])
+        self.assertEqual(to_install, ["ghosttool"])
+
+    def test_repair_never_ladder_pip_only_tool(self):
+        # A missing pip-only name has no apt mapping; the ladder must give up
+        # gracefully without invoking apt at all.
+        registry = PackageRegistry.from_dict({
+            "pip_packages": {"ghostpip": {"verify": GHOST}},
+        })
+
+        class NoOp:
+            name = "apt"
+
+            def heal(self, packages, dry_run=False):
+                self.healed = list(packages)
+                return True
+
+            def purge_and_reinstall(self, packages, dry_run=False):
+                return True
+
+            def install(self, packages, dry_run=False):
+                return True
+
+        m = NoOp()
+        still = operations.repair_system_packages(m, registry, ["ghostpip"])
+        self.assertEqual(still, ["ghostpip"])
+        self.assertFalse(getattr(m, "healed", False))
+
 
 class DoctorFixDetectionTests(unittest.TestCase):
     def test_corrupt_config_gets_regeneration_fix(self):

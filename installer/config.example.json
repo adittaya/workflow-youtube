@@ -7,8 +7,7 @@
   "packages": [
     "git",
     "python",
-    "ffmpeg",
-    "yt-dlp"
+    "ffmpeg"
   ],
   "optional_packages": [
     "nodejs",

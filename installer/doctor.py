@@ -78,16 +78,33 @@ class Doctor:
         ))
 
     def _check_tools(self):
+        from installer.platforms import get_installer
+
+        manager = get_installer(self.log)
         for name in self.registry.names():
             info = pkgmod.check_package(self.registry, name)
             optional = info["optional"]
             if optional and not info["installed"]:
                 continue
+            fix = None
+            if not info["installed"] and manager is not None:
+                def _fix(name=name, manager=manager):
+                    concrete, _ = self.registry.system_install_names(manager.name, [name])
+                    if not concrete:
+                        return False
+                    manager.install(concrete)
+                    if not pkgmod.check_package(self.registry, name)["installed"]:
+                        if hasattr(manager, "reinstall"):
+                            manager.reinstall(concrete)
+                    return bool(pkgmod.check_package(self.registry, name)["installed"])
+                fix = _fix
             self.checks.append(Diagnosis(
                 title=f"Tool: {name}",
                 ok=bool(info["installed"] and info["min_ok"]),
                 detail=info["version"] or "not installed",
-                fix_hint="Run: installer install",
+                fix_hint=("Run: installer doctor --fix" if fix else
+                          ("Update via: installer install" if not info["min_ok"] else "")),
+                fix=fix,
                 severity="warn" if optional else "broken",
             ))
 

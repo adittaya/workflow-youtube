@@ -266,12 +266,36 @@ def run_install(ui, config: cfgmod.Config, *, non_interactive: bool = False,
         if dry_run:
             ui.dim(f"would install via {pm}: {', '.join(concrete)}")
         else:
+            if hasattr(manager, "update"):
+                with ui.spinner(f"Refreshing package index via {pm}"):
+                    if not manager.update():
+                        ui.warn("package index refresh failed — continuing anyway")
             with ui.spinner(f"Installing {' '.join(missing)} via {pm}"):
                 ok, _ = install_system_packages(manager, registry, missing, log)
             if ok:
+                still_missing = [n for n in missing
+                                 if not pkgmod.check_package(registry, n)["installed"]]
+                if still_missing:
+                    # apt exits 0 on a stale dpkg entry without restoring the
+                    # binary — force --reinstall and only claim success when the
+                    # executable is actually back on PATH.
+                    ui.warn(f"{', '.join(still_missing)} still missing after install — forcing reinstall")
+                    forced, _ = registry.system_install_names(pm, still_missing)
+                    if forced and hasattr(manager, "reinstall") and manager.reinstall(forced):
+                        still_missing = [n for n in still_missing
+                                         if not pkgmod.check_package(registry, n)["installed"]]
+                if still_missing:
+                    ui.error(f"Install reported success but {' '.join(still_missing)} "
+                             "is still not on PATH.")
+                    ui.warn(f"Try manually: {manager.error_hint(concrete)}")
+                    st.end_stage("system_packages", "failed", ", ".join(still_missing))
+                    st.save()
+                    journal.rollback(log)
+                    return 1
                 ui.ok(f"Installed: {', '.join(missing)}")
             else:
                 ui.error(f"Could not install required packages: {', '.join(missing)}")
+                ui.warn(f"Try manually: {manager.error_hint(concrete)}")
                 st.end_stage("system_packages", "failed", ", ".join(missing))
                 st.save()
                 journal.rollback(log)

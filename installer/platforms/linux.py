@@ -18,6 +18,16 @@ class AptInstaller(PlatformInstaller):
         res = self._run(argv, capture=True)
         return res.returncode == 0
 
+    def reinstall(self, packages: List[str], dry_run: bool = False) -> bool:
+        """Force a reinstall. Some images ship a stale dpkg entry: plain
+        ``apt-get install`` exits 0 ("already newest") without restoring the
+        binary, leaving the tool missing. ``--reinstall`` forces it."""
+        argv = ["apt-get", "install", "-y", "--reinstall"] + packages
+        if dry_run:
+            return True
+        res = self._run(argv, capture=True)
+        return res.returncode == 0
+
     def remove(self, packages: List[str], dry_run: bool = False) -> bool:
         return self._run(["apt-get", "remove", "-y"] + packages, capture=True).returncode == 0
 

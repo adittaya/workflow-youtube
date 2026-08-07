@@ -71,6 +71,13 @@ def download_video(url, output_dir=None):
     except Exception:
         pass
     proxies = get_proxy_candidates()
+    try:
+        import proxy_pool
+        for p in proxy_pool.candidate_urls():
+            if p not in proxies:
+                proxies.append(p)
+    except Exception:
+        pass
     saw_bot_check = False
 
     if not proxies:
@@ -87,13 +94,19 @@ def download_video(url, output_dir=None):
             return result
         if kind == "bot_check":
             saw_bot_check = True
+            try:
+                import proxy_pool
+                proxy_pool.mark_blocked(proxy)
+                config.log(f"parking flagged proxy: {proxy}")
+            except Exception:
+                pass
         config.log(f"proxy {i + 1} failed — trying next")
     if saw_bot_check:
         raise YouTubeBotCheck(
-            "YouTube blocked every attempt with 'Sign in to confirm you're not "
-            "a bot'. The proxy IPs are flagged and requests are anonymous. Set "
-            "YT_COOKIES_FILE / YT_COOKIES (cookies.txt from a logged-in browser) "
-            "or use a residential proxy.")
+            f"YouTube blocked all {len(proxies) or 1} proxy attempt(s) with "
+            "'Sign in to confirm you're not a bot'. The proxy IPs are flagged "
+            "and requests are anonymous. Set YT_COOKIES_FILE / YT_COOKIES "
+            "(cookies.txt from a logged-in browser) or use residential proxies.")
     return None
 
 

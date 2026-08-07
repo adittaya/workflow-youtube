@@ -53,7 +53,10 @@
   (`proxy_results` inventory in a separate Supabase project), live-tests every
   proxy (TCP + HTTPS) writing results back, picks the fastest working one and
   activates it in the shared proxy settings; `ensure_working()` re-tests the
-  active proxy and auto-repools on failure. Credentials from settings
+  active proxy and auto-repools on failure. `candidate_urls()` returns an
+  ordered rotation list (fastest first, skipping proxies marked used) so the
+  download path tries several proxies in a loop; `mark_blocked()` parks a
+  bot-checked proxy for `USED_TTL_HOURS`. Credentials from settings
   (`proxy_pool_url`/`proxy_pool_key`) or `PROXY_POOL_URL`/`PROXY_POOL_KEY` env.
   Wired into `youtube_api.get_client()` and `download_helpers.download_video()`.
 - `daily_uploader.py` — `process_video()` pipeline hook + `upload_daily()`
@@ -62,14 +65,16 @@
   `formats=duplicate,missing_pot`). Shared `run_yt_dlp()` builds every yt-dlp
   invocation (cookies + proxy); `get_proxy_candidates()` orders proxies
   (configured Settings proxy first, then `WORKING_PROXIES` JSON, then
-  `YT_PROXY`). `--cookies` from `YT_COOKIES`/`YT_COOKIES_FILE`/a
-  `cookies_file` setting; `--cookies-from-browser` fallback from
-  `YT_COOKIES_BROWSER`/`cookies_browser`. Detects YouTube bot-checks
-  ("Sign in to confirm you're not a bot") and raises `YouTubeBotCheck` when
-  every proxy was blocked — the TUI/CLI print an actionable message (add
-  cookies or use a residential proxy) instead of a generic network error.
-  Calls `proxy_pool.ensure_working()` before downloading when the pool is
-  enabled
+  `YT_PROXY`) and is merged with `proxy_pool.candidate_urls()` so downloads
+  rotate through several pool proxies in a loop. `--cookies` from
+  `YT_COOKIES`/`YT_COOKIES_FILE`/a `cookies_file` setting;
+  `--cookies-from-browser` fallback from `YT_COOKIES_BROWSER`/`cookies_browser`.
+  Detects YouTube bot-checks ("Sign in to confirm you're not a bot"), parks the
+  flagged proxy via `mark_blocked()` and moves to the next one; raises
+  `YouTubeBotCheck` only after every proxy was blocked — the TUI/CLI print an
+  actionable message (add cookies or use residential proxies) instead of a
+  generic network error. Calls `proxy_pool.ensure_working()` before downloading
+  when the pool is enabled
 - `bgm_manager.py` — `download_bgm_from_youtube()` reuses
   `download_helpers.run_yt_dlp()` (same extractor args, cookies, and proxy
   iteration as the main video path) so BGM downloads stop hitting bot-checks

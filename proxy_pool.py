@@ -36,6 +36,7 @@ HTTP_TIMEOUT = 7
 REFRESH_CONCURRENCY = 20
 STALE_AFTER_MIN = 5
 USED_TTL_HOURS = 24
+ROTATION_LIMIT = 4
 
 
 # ─── Pool credentials ────────────────────────────────────────────────────────
@@ -235,6 +236,56 @@ def pick_best(rows):
     tested_rows = [r for r in candidates if tested(r)]
     candidates = tested_rows or candidates
     return sorted(candidates, key=key)[0]
+
+
+def candidate_urls(limit=None):
+    """Ordered working pool proxy URLs (fastest first, skipping proxies already
+    marked used) so the download path can rotate through several proxies when
+    one is blocked by YouTube. Returns [] when the pool is disabled, not
+    configured, or has no working proxies. `limit` caps how many URLs to
+    return (default ROTATION_LIMIT)."""
+    if limit is None:
+        limit = ROTATION_LIMIT
+    if not is_enabled() or not is_configured():
+        return []
+    try:
+        rows = list_pool()
+    except Exception:
+        return []
+    alive = [r for r in rows if r.get("e2_ok") and r.get("ip")]
+    if not alive:
+        return []
+    used = _used_unexpired()
+    candidates = [r for r in alive if (str(r["ip"]), int(r.get("port") or 0)) not in used]
+    candidates = candidates or alive
+
+    def tested(r):
+        return isinstance(r.get("latency_ms"), int) and r["latency_ms"] > 0
+
+    def key(r):
+        return r["latency_ms"] if tested(r) else 10 ** 9
+
+    ordered = sorted(candidates, key=key)
+    urls = []
+    for r in ordered:
+        url = f"{str(r.get('proto') or 'http')}://{r['ip']}:{r.get('port')}"
+        if url not in urls:
+            urls.append(url)
+        if len(urls) >= limit:
+            break
+    return urls
+
+
+def mark_blocked(url):
+    """Park a proxy that failed (e.g. YouTube bot-check) so future rotation
+    skips it. The IP:port is marked 'used' for USED_TTL_HOURS."""
+    try:
+        from urllib.parse import urlsplit
+        parts = urlsplit(str(url))
+        if parts.hostname:
+            _mark_used(parts.hostname, parts.port or 0)
+    except Exception:
+        pass
 
 
 # ─── Activation / failover ───────────────────────────────────────────────────

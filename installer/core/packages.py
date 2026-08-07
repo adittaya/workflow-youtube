@@ -147,7 +147,7 @@ def check_package(registry: PackageRegistry, name: str) -> dict:
         # and pip must be present so the app's dependencies can be installed.
         # (Fresh images often ship python3 without python3-pip.)
         version = env.python_version()
-        installed = env.python_meets_minimum() and env.pip_version() is not None
+        installed = env.python_meets_minimum() and env.python_has_pip()
     else:
         version = env.version_of(verify) if verify else None
         installed = version is not None or (pkg and pkg.pip and utils.which(verify))

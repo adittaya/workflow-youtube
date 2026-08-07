@@ -218,6 +218,16 @@ def python_meets_minimum() -> bool:
     return sys.version_info[:2] >= MIN_PYTHON
 
 
+def python_has_pip() -> bool:
+    """True if ``python3 -m pip`` actually runs under this interpreter.
+
+    Probes the exact command the installer will run, not ``pip3`` on PATH —
+    a ``pip3`` from another interpreter can exist while this python3 has no
+    pip at all.
+    """
+    return bool(utils.probe_version(["python3", "-m", "pip", "--version"]))
+
+
 def pip_version() -> Optional[str]:
     return version_of("pip3", "--version") or version_of("pip", "--version")
 

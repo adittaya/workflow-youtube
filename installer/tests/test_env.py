@@ -94,11 +94,11 @@ class VersionTests(unittest.TestCase):
         }
         with mock.patch.object(env, "python_version", return_value=base["python_version"]), \
              mock.patch.object(env, "python_meets_minimum", return_value=base["python_meets_minimum"]), \
-             mock.patch.object(env, "pip_version", return_value="pip 24.0"):
+             mock.patch.object(env, "python_has_pip", return_value=True):
             self.assertTrue(pkgmod.check_package(reg, "python")["installed"])
         with mock.patch.object(env, "python_version", return_value=base["python_version"]), \
              mock.patch.object(env, "python_meets_minimum", return_value=base["python_meets_minimum"]), \
-             mock.patch.object(env, "pip_version", return_value=None):
+             mock.patch.object(env, "python_has_pip", return_value=False):
             self.assertFalse(pkgmod.check_package(reg, "python")["installed"])
 
     def test_version_of_falls_back_to_single_dash(self):

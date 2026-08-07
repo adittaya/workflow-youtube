@@ -158,7 +158,7 @@ def ensure_source(config: cfgmod.Config, log=None) -> Tuple[Path, str]:
 
 def install_pip_requirements(requirements: Path, log=None) -> bool:
     base = ["python3", "-m", "pip"]
-    if env.pip_version() is None:
+    if not env.python_has_pip():
         # Minimal images ship python3 without pip; bootstrap one first.
         boot = ["python3", "-m", "ensurepip", "--user", "--upgrade"]
         if log:

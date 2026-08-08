@@ -15,15 +15,26 @@
   set (`[4]` in the main menu).
 - **Entry points:** `yt_auto.py` = main local CLI (`upload`/`setup`/`oauth`/
   `status`/`logs`/`verify`/`version`/`proxy`); `tui.py` = management TUI (hybrid
-  local/cloud) with a `[Q] Quick Deploy` guided upload (pick a saved account →
-  live token check → video link → copy-or-custom title/description/comment →
-  proxy-mode prompt (`-y`) → download/process → test proxy → upload with
-  proxy-pool re-rotation on failure) and `[6] Bulk upload` per project (pick
-  multiple saved accounts or "all", one video is downloaded once, then fired
-  into every selected account with the project's pre-configured
-  title/description/comment; fps + start/end trim are randomised per account
-  via `bulk_fps_min/max` (default 20/25) and `bulk_trim_min/max` (default
-  10/20) so each copy differs; BGM is left as configured).
+  local/cloud). Main menu is grouped into **Upload** (`[Q]` Quick Deploy guided
+  upload — pick a saved account → live token check → video link → copy-or-custom
+  title/description/comment → proxy-mode prompt (`-y`) → download/process → test
+  proxy → upload with proxy-pool re-rotation on failure; `[1]` Projects;
+  `[6]` Batch run), **Accounts** (`[2]`), **Tools** (`[3]` Doctor, `[4]`
+  Database, `[5]` Settings). Project menu is grouped into **Upload** (`[5]`
+  Instant upload; `[6]` Bulk upload — one video → many accounts), **Setup**
+  (`[1]` Configure, `[2]` YouTube account), **Tools** (`[3]` Doctor, `[4]`
+  Status).
+- **Bulk upload** (`[6]` per project): pick multiple saved accounts or "all",
+  one video is downloaded once, then fired into every selected account with the
+  project's pre-configured title/description/comment; fps + start/end trim are
+  randomised per account via `bulk_fps_min/max` (default 20/25) and
+  `bulk_trim_min/max` (default 10/20) so each copy differs; BGM is left as
+  configured.
+- **Batch run** (`[6]` in main menu or `[B]` in the Projects screen): select
+  multiple projects (or "all"), tap done, and each project uploads its own
+  stored `source_url` (field 1 in Configure) using its own linked account
+  (from `account_id` or embedded creds) and its own custom fields; downloads
+  rotate through the whole proxy pool with no retry cap (`retries=None`).
 
 ## Manual Run Model
 

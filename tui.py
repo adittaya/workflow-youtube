@@ -410,9 +410,13 @@ def main_menu():
         _print_quick_status()
         print(f"\n  {C_BOLDWHITE}MAIN MENU{C_RESET}")
         divider()
+        print(f"  {C_DIM}── UPLOAD ────────────────────────────────────────{C_RESET}")
         print(f"  {C_BOLD}[Q]{C_RESET} Quick Deploy — guided questions → process → upload")
         print(f"  {C_BOLD}[1]{C_RESET} Projects — pick a project & upload a video")
+        print(f"  {C_BOLD}[6]{C_RESET} Batch run — pick projects → auto upload each")
+        print(f"  {C_DIM}── ACCOUNTS ───────────────────────────────────────{C_RESET}")
         print(f"  {C_BOLD}[2]{C_RESET} YouTube Accounts — saved channel logins")
+        print(f"  {C_DIM}── TOOLS ──────────────────────────────────────────{C_RESET}")
         print(f"  {C_BOLD}[3]{C_RESET} Doctor — full system check & auto-fix")
         print(f"  {C_BOLD}[4]{C_RESET} Database — local JSON ⇄ Supabase cloud")
         print(f"  {C_BOLD}[5]{C_RESET} Settings — proxy, network & defaults")
@@ -441,6 +445,8 @@ def main_menu():
             _database_screen()
         elif choice == "5":
             settings_screen()
+        elif choice == "6":
+            _batch_run_projects()
 
 
 def _database_screen():
@@ -1182,6 +1188,7 @@ def project_list_screen():
 
         print(f"  {C_BOLD}[A]{C_RESET} Add project")
         if projects:
+            print(f"  {C_BOLD}[B]{C_RESET} Batch run — upload multiple projects")
             print(f"  {C_BOLD}[D]{C_RESET} Delete project")
             print(f"  {C_BOLD}[1-{len(projects)}]{C_RESET} Select project")
         print(f"  {C_BOLD}[0]{C_RESET} Back\n")
@@ -1189,6 +1196,8 @@ def project_list_screen():
         choice = prompt("Choice").strip().upper()
         if choice == "0":
             return
+        elif choice == "B" and projects:
+            _batch_run_projects(projects)
         elif choice == "A":
             name = prompt("Project name")
             if name:
@@ -1248,12 +1257,15 @@ def project_menu(project):
         banner()
         print(f"\n  {C_BOLDWHITE}PROJECT: {p['name']}{C_RESET}")
         divider()
-        print(f"  {C_BOLD}[1]{C_RESET} Configure — fields & credentials")
-        print(f"  {C_BOLD}[2]{C_RESET} YouTube account — who uploads (selection)")
-        print(f"  {C_BOLD}[3]{C_RESET} Doctor — check & auto-fix this project")
-        print(f"  {C_BOLD}[4]{C_RESET} Status — live health check")
+        print(f"  {C_DIM}── UPLOAD ────────────────────────────────────────{C_RESET}")
         print(f"  {C_BOLD}[5]{C_RESET} Instant upload — upload a video now")
         print(f"  {C_BOLD}[6]{C_RESET} Bulk upload — one video → many accounts")
+        print(f"  {C_DIM}── SETUP ──────────────────────────────────────────{C_RESET}")
+        print(f"  {C_BOLD}[1]{C_RESET} Configure — fields & credentials")
+        print(f"  {C_BOLD}[2]{C_RESET} YouTube account — who uploads")
+        print(f"  {C_DIM}── TOOLS ──────────────────────────────────────────{C_RESET}")
+        print(f"  {C_BOLD}[3]{C_RESET} Doctor — check & auto-fix this project")
+        print(f"  {C_BOLD}[4]{C_RESET} Status — live health check")
         print(f"  {C_BOLD}[0]{C_RESET} Back to main menu")
         summary = _project_summary(p)
         if summary:
@@ -1358,6 +1370,7 @@ def _link_account_to_project(pid, name):
 # ─── Setup screen ─────────────────────────────────────────────────────────────
 
 FIELD_SPEC = [
+    ("source_url", "Video source URL (used by batch runs)", "str"),
     ("yt_client_id", "YouTube Client ID", "str"),
     ("yt_client_secret", "YouTube Client Secret", "str"),
     ("yt_refresh_token", "YouTube Refresh Token", "str"),
@@ -1904,6 +1917,188 @@ def _do_bulk_upload(project):
         pause()
     finally:
         config.PROJECT_ID = old_pid
+
+
+# ─── BATCH RUN (many projects → each per its own config) ─────────────────────
+
+def _pick_batch_projects(projects):
+    """Multi-select projects for a batch run, with an 'all projects' shortcut.
+    Returns a list of project rows (>= 1) or None to cancel."""
+    while True:
+        clear()
+        banner()
+        print(f"\n  {C_BOLDWHITE}BATCH RUN — SELECT PROJECTS{C_RESET}")
+        divider()
+        print(f"  {C_DIM}Each selected project uploads its own configured video{C_RESET}")
+        print(f"  {C_DIM}source with its own account and fields, in one go.{C_RESET}")
+        print()
+        for i, p in enumerate(projects, 1):
+            src = (p.get("source_url") or "").strip()
+            acct = p.get("account_id") or ""
+            ok_src = f"{C_GREEN}✓ source{C_RESET}" if src else f"{C_RED}✗ no source{C_RESET}"
+            ok_acct = f"{C_GREEN}✓ account{C_RESET}" if acct else f"{C_YELLOW}~ no account{C_RESET}"
+            print(f"  {C_BOLD}{i:2d}.{C_RESET} {p['name']}  {ok_src}  {ok_acct}")
+        print()
+        print(f"  {C_BOLD}[A]{C_RESET} All projects ({len(projects)} available)")
+        print(f"  {C_BOLD}[0]{C_RESET} Back")
+        print()
+        raw = prompt("Project numbers (comma/space separated), A = all, or 0 = back").strip()
+        if not raw:
+            continue
+        if raw.upper() == "A":
+            return list(projects)
+        if raw == "0":
+            return None
+        selected = []
+        for token in re.split(r"[,;\s]+", raw):
+            if token.isdigit():
+                idx = int(token) - 1
+                if 0 <= idx < len(projects) and projects[idx] not in selected:
+                    selected.append(projects[idx])
+        if selected:
+            return selected
+        warn("No valid project numbers — try again")
+
+
+def _batch_run_projects(projects=None):
+    """Upload every selected project in sequence, each using its own stored
+    video source URL, account and pre-configured fields."""
+    if not HAS_GAPI:
+        error("google-api-python-client not installed")
+        return
+    if projects is None:
+        try:
+            projects = supabase_db.list_projects()
+        except Exception as e:
+            error(f"Database unreachable: {str(e)[:60]}")
+            pause()
+            return
+    if not projects:
+        warn("No projects yet — create one in main menu [1] first")
+        pause()
+        return
+
+    selected = _pick_batch_projects(projects)
+    if not selected:
+        return
+
+    results = []
+    accounts = _accounts_dict()
+    env_keys = ("YT_CLIENT_ID", "YT_CLIENT_SECRET", "YT_REFRESH_TOKEN")
+    for i, p in enumerate(selected, 1):
+        name = p["name"]
+        print()
+        divider()
+        print(f"\n  {C_BOLDWHITE}[{i}/{len(selected)}] PROJECT: {name}{C_RESET}")
+        divider()
+
+        source_url = (p.get("source_url") or "").strip()
+        if not source_url:
+            warn(f"'{name}': no video source URL — set it under Configure → field 1. Skipping.")
+            results.append((name, False, "no video source URL"))
+            continue
+        m = re.search(r'(?:v=|youtu\.be/|youtube\.com/embed/)([\w-]{11})', source_url)
+        if not m:
+            warn(f"'{name}': invalid video source URL. Skipping.")
+            results.append((name, False, "invalid video source URL"))
+            continue
+        video_id = m.group(1)
+        source_url = f"https://www.youtube.com/watch?v={video_id}"
+
+        acct = None
+        acct_name = p.get("account_id") or ""
+        if acct_name and acct_name in accounts:
+            acct = accounts[acct_name]
+        elif p.get("yt_client_id") and p.get("yt_client_secret") and p.get("yt_refresh_token"):
+            acct = {"client_id": p["yt_client_id"],
+                    "client_secret": p["yt_client_secret"],
+                    "refresh_token": p["yt_refresh_token"]}
+        if not acct:
+            warn(f"'{name}': no upload account — link one under Project → [2]. Skipping.")
+            results.append((name, False, "no upload account"))
+            continue
+
+        old_pid = config.PROJECT_ID
+        config.PROJECT_ID = str(p["id"])
+        old_env = {k: os.environ.get(k) for k in env_keys}
+        for k, v in zip(env_keys, (acct.get("client_id", ""), acct.get("client_secret", ""),
+                                   acct.get("refresh_token", ""))):
+            os.environ[k] = v
+        try:
+            settings = config.load_tui_settings()
+            try:
+                youtube = youtube_api.get_client()
+                details = youtube_api.get_video_details(youtube, video_id)
+            except Exception as e:
+                error(f"  could not fetch video info: {str(e)[:120]}")
+                results.append((name, False, "video info fetch failed"))
+                continue
+            if not details:
+                error("  video not found")
+                results.append((name, False, "video not found"))
+                continue
+
+            def _custom(key):
+                v = (p.get(key) or settings.get(key) or "").strip()
+                return v
+
+            title = _custom("custom_title") or details.get("title", "")
+            description = _custom("custom_description") or details.get("description", "")
+            comment = _custom("custom_comment") or None
+            tags = details.get("tags", [])
+
+            info("  downloading (full proxy rotation, no retry cap)...")
+            try:
+                dl_result = download_helpers.download_video(source_url)
+            except download_helpers.YouTubeBotCheck:
+                error("  download blocked by bot-check — add cookies / residential "
+                      "proxies, then rerun the batch.")
+                results.append((name, False, "bot-check blocked"))
+                continue
+            if not dl_result:
+                error("  download failed")
+                results.append((name, False, "download failed"))
+                continue
+            video_path = dl_result["path"]
+            download_dir = os.path.dirname(video_path)
+            try:
+                info("  processing (edit + BGM)...")
+                processed = daily_uploader.process_video(video_path)
+                if not processed:
+                    error("  processing failed or duplicate")
+                    results.append((name, False, "processing failed"))
+                    continue
+                info("  uploading...")
+                vid = _upload_with_failover(
+                    processed, title=title, description=description,
+                    tags=tags, source_url=source_url, comment=comment,
+                    source_channel=details.get("channel_id", ""), retries=None)
+                if vid:
+                    success(f"  '{name}' → https://www.youtube.com/watch?v={vid}")
+                    results.append((name, True, vid))
+                else:
+                    error(f"  upload failed for '{name}'")
+                    results.append((name, False, "upload failed"))
+            finally:
+                shutil.rmtree(download_dir, ignore_errors=True)
+                info(f"  cleaned up: {download_dir}")
+        finally:
+            for k in env_keys:
+                if old_env[k] is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = old_env[k]
+            config.PROJECT_ID = old_pid
+
+    ok_count = sum(1 for _, ok, _ in results if ok)
+    print()
+    divider()
+    print(f"\n  {C_BOLDWHITE}BATCH RUN COMPLETE — {ok_count}/{len(selected)} succeeded{C_RESET}")
+    for name, ok, detail in results:
+        mark = f"{C_GREEN}OK{C_RESET}" if ok else f"{C_RED}FAIL{C_RESET}"
+        shown = f"https://www.youtube.com/watch?v={detail}" if ok else detail
+        print(f"  {mark}  {name}  {C_DIM}{shown}{C_RESET}")
+    pause()
 
 
 # ─── QUICK DEPLOY (guided question flow) ─────────────────────────────────────

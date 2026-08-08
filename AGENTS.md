@@ -23,7 +23,9 @@
   Database, `[5]` Settings). Project menu is grouped into **Upload** (`[5]`
   Instant upload; `[6]` Bulk upload — one video → many accounts), **Setup**
   (`[1]` Configure, `[2]` YouTube account), **Tools** (`[3]` Doctor, `[4]`
-  Status).
+  Status, `[H]` Upload history). Long lists (accounts/projects) paginate at 15
+  rows with `[N]`/`[P]`; projects support `[R]` rename. Secret prompts show only
+  a masked `********abcd` default — Enter keeps the value, never echoing the key.
 - **Bulk upload** (`[6]` per project): pick multiple saved accounts or "all",
   one video is downloaded once, then fired into every selected account with the
   project's pre-configured title/description/comment; fps + start/end trim are

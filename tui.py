@@ -157,6 +157,30 @@ def _auto(v):
     return f" {C_GREEN}(auto-corrected){C_RESET}" if v else ""
 
 
+def _secret_prompt(label, current):
+    """Prompt for a secret, never echoing it in plaintext. Enter keeps the
+    current value (returns it unchanged)."""
+    if current:
+        placeholder = "*" * 8 + str(current)[-4:]
+        val = input(f"  {C_CYAN}▸{C_RESET} {label} (Enter = keep {placeholder}): ").strip()
+    else:
+        val = input(f"  {C_CYAN}▸{C_RESET} {label}: ").strip()
+    return val if val else current
+
+
+def _elapsed(start):
+    t = time.time() - start
+    if t < 60:
+        return f"{int(t)}s"
+    return f"{int(t // 60)}m{int(t % 60):02d}s"
+
+
+def _page_info(total, page, per_page=15):
+    pages = max(1, -(-total // per_page))
+    page = min(max(1, page), pages)
+    return page, pages
+
+
 # ─── YouTube helpers ──────────────────────────────────────────────────────────
 
 def _fetch_youtube_channel_info(refresh_token, client_id, client_secret):
@@ -844,19 +868,28 @@ def settings_screen():
 # ─── YOUTUBE ACCOUNTS ─────────────────────────────────────────────────────────
 
 def accounts_screen():
+    page = 1
     while True:
         clear()
         banner()
         accounts = _accounts_dict()
-        print(f"\n  {C_BOLDWHITE}YOUTUBE ACCOUNTS — {len(accounts)} saved{C_RESET}")
+        names = list(accounts.keys())
+        page, pages = _page_info(len(names), page)
+        start = (page - 1) * 15
+        visible = names[start:start + 15]
+        title = f"YOUTUBE ACCOUNTS — {len(names)} saved"
+        if pages > 1:
+            title += f"  (page {page}/{pages} — [N]ext, [P]rev)"
+        print(f"\n  {C_BOLDWHITE}{title}{C_RESET}")
         divider()
         if not accounts:
             print(f"\n  {C_DIM}No accounts saved yet. Add your first one with [A].{C_RESET}")
         else:
-            for i, (name, acct) in enumerate(accounts.items(), 1):
+            for idx, name in enumerate(visible, start + 1):
+                acct = accounts[name]
                 ch = acct.get("channel_name", "") or acct.get("channel_id", "")
                 ch_str = f" — {C_BOLD}{ch}{C_RESET}" if ch else ""
-                print(f"  {C_BOLD}{i:2d}.{C_RESET} {name}{ch_str}")
+                print(f"  {C_BOLD}{idx:2d}.{C_RESET} {name}{ch_str}")
                 print(f"       {C_DIM}{_account_status_str(acct)}{C_RESET}")
         print()
         print(f"  {C_BOLD}[A]{C_RESET} Add account — OAuth login")
@@ -871,6 +904,12 @@ def accounts_screen():
         choice = prompt("Choice").strip().upper()
         if choice == "0":
             return
+        elif choice == "N":
+            if page < pages:
+                page += 1
+        elif choice == "P":
+            if page > 1:
+                page -= 1
         elif choice == "A":
             _add_account_oauth()
         elif choice == "M":
@@ -892,6 +931,10 @@ def _add_account_oauth():
     name = prompt("Account name (e.g. 'My Main Channel')")
     if not name:
         error("Name required")
+        pause()
+        return
+    if name in _accounts_dict():
+        error(f"Account '{name}' already exists — pick a different name")
         pause()
         return
 
@@ -952,6 +995,10 @@ def _add_account_manual():
         error("Name required")
         pause()
         return
+    if name in _accounts_dict():
+        error(f"Account '{name}' already exists — pick a different name")
+        pause()
+        return
     cid = doctor.sanitize_client_id(prompt("YouTube Client ID"))
     csec = prompt("YouTube Client Secret")
     rt = prompt("YouTube Refresh Token")
@@ -991,12 +1038,15 @@ def _pick_account(accounts, verb="Select"):
         ch_str = f" — {ch}" if ch else ""
         print(f"  {C_BOLD}{i:2d}.{C_RESET} {name}{ch_str}  {C_DIM}({_account_status_str(acct)}){C_RESET}")
     print()
-    num = prompt(f"{verb} account number")
-    if num and num.isdigit():
+    print(f"  {C_DIM}0 = cancel{C_RESET}")
+    num = prompt(f"{verb} account number").strip()
+    if not num or num == "0":
+        return None
+    if num.isdigit():
         idx = int(num) - 1
         if 0 <= idx < len(accounts):
             return list(accounts.keys())[idx]
-    error("Invalid choice")
+    error(f"Invalid choice — enter 1–{len(accounts)}")
     return None
 
 
@@ -1052,12 +1102,12 @@ def _edit_account(accounts):
             _save_account(name, acct)
             success("Client ID saved")
         elif choice == "3":
-            val = prompt("Client Secret", acct.get("client_secret", ""))
+            val = _secret_prompt("Client Secret", acct.get("client_secret", ""))
             acct["client_secret"] = val
             _save_account(name, acct)
             success("Client Secret saved")
         elif choice == "4":
-            val = prompt("Refresh Token", acct.get("refresh_token", ""))
+            val = _secret_prompt("Refresh Token", acct.get("refresh_token", ""))
             acct["refresh_token"] = val
             acct["status"] = "active"
             acct["last_verified"] = ""
@@ -1104,7 +1154,7 @@ def _verify_one_account(name, acct, live=False):
     csec = acct.get("client_secret", "")
     rt = acct.get("refresh_token", "")
     ok, note, expired = doctor.test_refresh_token(cid, csec, rt)
-    status = "active" if ok else ("expired" if expired else "expired")
+    status = "active" if ok else ("expired" if expired else "error")
     acct["status"] = status
     acct["last_verified"] = datetime.now(timezone.utc).isoformat() if ok else acct.get("last_verified", "")
     if ok:
@@ -1156,12 +1206,10 @@ def _delete_account_menu(accounts):
 # ─── PROJECTS ────────────────────────────────────────────────────────────────
 
 def project_list_screen():
+    page = 1
     while True:
         clear()
         banner()
-        print(f"\n  {C_BOLDWHITE}PROJECTS{C_RESET}")
-        divider()
-
         try:
             projects = supabase_db.list_projects()
         except Exception as e:
@@ -1170,11 +1218,20 @@ def project_list_screen():
                 warn("Supabase connection failed — press [4] in main menu to fix")
             projects = None
 
+        title = "PROJECTS"
+        if projects:
+            page, pages = _page_info(len(projects), page)
+            if pages > 1:
+                title += f"  (page {page}/{pages} — [N]ext, [P]rev)"
+        print(f"\n  {C_BOLDWHITE}{title}{C_RESET}")
+        divider()
+
         if not projects:
             print(f"\n  {C_DIM}No projects yet. Create one to get started.{C_RESET}")
         else:
-            for i, p in enumerate(projects, 1):
-                print(f"  {C_BOLD}{i:2d}.{C_RESET} {C_BOLD}{p['name']}{C_RESET}")
+            start = (page - 1) * 15
+            for idx, p in enumerate(projects[start:start + 15], start + 1):
+                print(f"  {C_BOLD}{idx:2d}.{C_RESET} {C_BOLD}{p['name']}{C_RESET}")
                 parts = []
                 for key, label in [("yt_client_id", "YT"), ("yt_client_secret", "YTS"),
                                     ("yt_refresh_token", "RT")]:
@@ -1189,6 +1246,7 @@ def project_list_screen():
         print(f"  {C_BOLD}[A]{C_RESET} Add project")
         if projects:
             print(f"  {C_BOLD}[B]{C_RESET} Batch run — upload multiple projects")
+            print(f"  {C_BOLD}[R]{C_RESET} Rename project")
             print(f"  {C_BOLD}[D]{C_RESET} Delete project")
             print(f"  {C_BOLD}[1-{len(projects)}]{C_RESET} Select project")
         print(f"  {C_BOLD}[0]{C_RESET} Back\n")
@@ -1196,6 +1254,12 @@ def project_list_screen():
         choice = prompt("Choice").strip().upper()
         if choice == "0":
             return
+        elif choice == "N":
+            if projects and page < max(1, -(-len(projects) // 15)):
+                page += 1
+        elif choice == "P":
+            if page > 1:
+                page -= 1
         elif choice == "B" and projects:
             _batch_run_projects(projects)
         elif choice == "A":
@@ -1215,6 +1279,23 @@ def project_list_screen():
                         error("Project name already exists — choose a different name")
                     else:
                         error(f"Failed to create project: {e}")
+        elif choice == "R" and projects:
+            for i, p in enumerate(projects, 1):
+                print(f"  {C_BOLD}{i}.{C_RESET} {p['name']}")
+            num = prompt("Number to rename")
+            if num and num.isdigit():
+                idx = int(num) - 1
+                if 0 <= idx < len(projects):
+                    p = projects[idx]
+                    new = prompt("New project name", p["name"])
+                    if new and new != p["name"]:
+                        try:
+                            supabase_db.update_project(p["id"], name=new)
+                            if not supabase_db.is_enabled():
+                                _sync_local_project(supabase_db.get_project(p["id"]) or p)
+                            success(f"Renamed to '{new}'")
+                        except Exception as e:
+                            error(f"Failed to rename: {e}")
         elif choice == "D" and projects:
             for i, p in enumerate(projects, 1):
                 print(f"  {C_BOLD}{i}.{C_RESET} {p['name']}")
@@ -1233,6 +1314,8 @@ def project_list_screen():
             idx = int(choice) - 1
             if 0 <= idx < len(projects):
                 project_menu(projects[idx])
+            else:
+                error(f"Invalid choice — enter 1–{len(projects)}")
 
 
 def _project_summary(p):
@@ -1248,7 +1331,12 @@ def _project_summary(p):
 
 def project_menu(project):
     while True:
-        p = supabase_db.get_project(project["id"])
+        try:
+            p = supabase_db.get_project(project["id"])
+        except Exception as e:
+            error(f"Database error: {str(e)[:80]}")
+            pause()
+            return
         if not p:
             error("Project not found")
             return
@@ -1266,7 +1354,8 @@ def project_menu(project):
         print(f"  {C_DIM}── TOOLS ──────────────────────────────────────────{C_RESET}")
         print(f"  {C_BOLD}[3]{C_RESET} Doctor — check & auto-fix this project")
         print(f"  {C_BOLD}[4]{C_RESET} Status — live health check")
-        print(f"  {C_BOLD}[0]{C_RESET} Back to main menu")
+        print(f"  {C_BOLD}[H]{C_RESET} Upload history — recent uploads")
+        print(f"  {C_BOLD}[0]{C_RESET} Back to projects")
         summary = _project_summary(p)
         if summary:
             print(f"\n  {summary}")
@@ -1290,6 +1379,8 @@ def project_menu(project):
             _do_instant_upload(p)
         elif choice == "6":
             _do_bulk_upload(p)
+        elif choice == "H":
+            _show_upload_history(p)
 
 
 # ─── Project account picker ─────────────────────────────────────────────────
@@ -1346,6 +1437,7 @@ def _project_account_picker(project):
                 name = list(accounts.keys())[idx]
                 _link_account_to_project(pid, name)
                 return
+            error(f"Invalid choice — enter 1–{len(accounts)}")
 
 
 def _link_account_to_project(pid, name):
@@ -1427,12 +1519,12 @@ def screen_setup(project):
         print()
         print(f"  {C_BOLD}[A]{C_RESET} Pick a saved YouTube account (fills ID/secret/token)")
         print(f"  {C_BOLD}[O]{C_RESET} Run YouTube OAuth login")
-        print(f"  {C_BOLD}[B]{C_RESET} Back")
+        print(f"  {C_BOLD}[0]{C_RESET} Back")
         print()
 
         choice = prompt("Choice").strip().upper()
 
-        if choice == "B":
+        if choice == "0":
             return
         elif choice == "A":
             accounts = _accounts_dict()
@@ -1444,6 +1536,9 @@ def screen_setup(project):
             _do_oauth(p)
         elif choice.isdigit():
             idx = int(choice) - 1
+            if 0 > idx or idx >= len(FIELD_SPEC):
+                error(f"Invalid choice — enter 1–{len(FIELD_SPEC)}")
+                continue
             if 0 <= idx < len(FIELD_SPEC):
                 key, label, kind = FIELD_SPEC[idx]
                 old = p.get(key, "")
@@ -1457,7 +1552,10 @@ def screen_setup(project):
                     except Exception as e:
                         error(f"Failed: {e}")
                     continue
-                new_val = prompt(f"{label}", old if old != "" else None)
+                if "secret" in key or "token" in key or "key" in key or "refresh" in key:
+                    new_val = _secret_prompt(label, old)
+                else:
+                    new_val = prompt(f"{label}", old if old != "" else None)
                 if new_val is None:
                     continue
                 new_val = new_val.strip()
@@ -1592,7 +1690,7 @@ def _do_oauth(project):
     cid = project.get("yt_client_id")
     csec = project.get("yt_client_secret")
     if not cid or not csec:
-        error("Set YouTube Client ID and Client Secret first (fields 1 & 2)")
+        error("Set YouTube Client ID and Client Secret first (Configure → fields 2 & 3)")
         pause()
         return
     rt = _run_oauth_flow(doctor.sanitize_client_id(cid), csec)
@@ -1606,6 +1704,38 @@ def _do_oauth(project):
 
 
 # ─── Work Queue Viewer ─────────────────────────────────────────────────────
+
+def _show_upload_history(project, limit=15):
+    pid = str(project["id"])
+    clear()
+    banner()
+    print(f"\n  {C_BOLDWHITE}UPLOAD HISTORY — {project['name']}{C_RESET}")
+    divider()
+    try:
+        logs = supabase_db.get_upload_logs(limit=limit, project_id=pid)
+    except Exception as e:
+        error(f"Could not read upload history: {str(e)[:80]}")
+        pause()
+        return
+    if not logs:
+        print(f"\n  {C_DIM}No uploads recorded for this project yet.{C_RESET}")
+        print(f"  {C_DIM}Completed uploads appear here automatically.{C_RESET}")
+        print()
+        pause()
+        return
+    for i, entry in enumerate(logs, 1):
+        vid = entry.get("video_id") or entry.get("source_video_id") or ""
+        when = entry.get("upload_time") or entry.get("created_at") or ""
+        title = entry.get("title") or entry.get("video_title") or ""
+        account = entry.get("account_name") or entry.get("account") or ""
+        status = str(entry.get("status", "uploaded"))
+        url = f"https://www.youtube.com/watch?v={vid}" if vid else "?"
+        mark = f"{C_GREEN}✓{C_RESET}" if "ok" in status.lower() or "upload" in status.lower() else f"{C_RED}✗{C_RESET}"
+        print(f"  {mark} [{i}] {C_BOLD}{title or vid or '(untitled)'}{C_RESET}")
+        print(f"       {C_DIM}{when}  {account or ''}  {url}  ({status}){C_RESET}")
+        print()
+    pause()
+
 
 def _show_verify(project):
     pid = str(project["id"])
@@ -1647,10 +1777,16 @@ def _do_instant_upload(project):
 
     old_pid = config.PROJECT_ID
     config.PROJECT_ID = pid
+    start = time.time()
     try:
         source_url = f"https://www.youtube.com/watch?v={video_id}"
-        youtube = youtube_api.get_client()
-        details = youtube_api.get_video_details(youtube, video_id)
+        try:
+            youtube = youtube_api.get_client()
+            details = youtube_api.get_video_details(youtube, video_id)
+        except Exception as e:
+            error(f"Could not fetch video info: {str(e)[:120]}")
+            pause()
+            return
         if not details:
             error(f"Could not fetch details for {video_id}")
             pause()
@@ -1680,7 +1816,16 @@ def _do_instant_upload(project):
         video_path = dl_result["path"]
 
         info("Processing video (edit + BGM)...")
-        processed = daily_uploader.process_video(video_path)
+        try:
+            processed = daily_uploader.process_video(video_path)
+        except FileNotFoundError as e:
+            error(f"Missing tool: {e.filename or e} — run `installer doctor`")
+            pause()
+            return
+        except Exception as e:
+            error(f"Processing failed: {str(e)[:200]}")
+            pause()
+            return
         if not processed:
             error("Processing failed or duplicate")
             pause()
@@ -1693,7 +1838,7 @@ def _do_instant_upload(project):
             source_channel=details.get("channel_id", ""),
         )
         if vid:
-            success(f"Uploaded: https://www.youtube.com/watch?v={vid}")
+            success(f"Uploaded: https://www.youtube.com/watch?v={vid}  ({_elapsed(start)})")
         else:
             error("Upload failed")
         pause()
@@ -1807,6 +1952,7 @@ def _do_bulk_upload(project):
 
     old_pid = config.PROJECT_ID
     config.PROJECT_ID = pid
+    start = time.time()
     try:
         settings = config.load_tui_settings()
         try:
@@ -1909,7 +2055,8 @@ def _do_bulk_upload(project):
         ok_count = sum(1 for _, ok, _ in results if ok)
         print()
         divider()
-        print(f"\n  {C_BOLDWHITE}BULK UPLOAD COMPLETE — {ok_count}/{len(ok_accounts)} succeeded{C_RESET}")
+        print(f"\n  {C_BOLDWHITE}BULK UPLOAD COMPLETE — {ok_count}/{len(ok_accounts)} succeeded"
+              f"  ({C_DIM}{_elapsed(start)}{C_RESET}){C_RESET}")
         for name, ok, detail in results:
             mark = f"{C_GREEN}OK{C_RESET}" if ok else f"{C_RED}FAIL{C_RESET}"
             shown = f"https://www.youtube.com/watch?v={detail}" if ok else detail
@@ -1985,6 +2132,7 @@ def _batch_run_projects(projects=None):
     results = []
     accounts = _accounts_dict()
     env_keys = ("YT_CLIENT_ID", "YT_CLIENT_SECRET", "YT_REFRESH_TOKEN")
+    start = time.time()
     for i, p in enumerate(selected, 1):
         name = p["name"]
         print()
@@ -2093,7 +2241,8 @@ def _batch_run_projects(projects=None):
     ok_count = sum(1 for _, ok, _ in results if ok)
     print()
     divider()
-    print(f"\n  {C_BOLDWHITE}BATCH RUN COMPLETE — {ok_count}/{len(selected)} succeeded{C_RESET}")
+    print(f"\n  {C_BOLDWHITE}BATCH RUN COMPLETE — {ok_count}/{len(selected)} succeeded"
+          f"  ({C_DIM}{_elapsed(start)}{C_RESET}){C_RESET}")
     for name, ok, detail in results:
         mark = f"{C_GREEN}OK{C_RESET}" if ok else f"{C_RED}FAIL{C_RESET}"
         shown = f"https://www.youtube.com/watch?v={detail}" if ok else detail
@@ -2200,7 +2349,8 @@ def _ask_processing_options():
     print(f"  {C_DIM}copyright-free music video — its audio is downloaded and{C_RESET}")
     print(f"  {C_DIM}mixed under the vocals. builtin = royalty-free library.{C_RESET}")
     cur_src = str(s.get("bgm_source") or "yt_link").strip().lower()
-    bgm_choice = prompt("BGM: y=your YT music link / b=builtin / n=none", cur_src).strip().lower()
+    bgm_choice = prompt("BGM: y=your YT music link / b=builtin / l=local folder / n=none",
+                        cur_src).strip().lower()
     source = "none"
     yt_url = ""
     if bgm_choice in ("y", "yes", "yt_link"):
@@ -2215,6 +2365,10 @@ def _ask_processing_options():
     elif bgm_choice in ("b", "builtin"):
         source = "builtin"
         info("BGM: builtin royalty-free library")
+    elif bgm_choice in ("l", "local"):
+        source = "local"
+        folder = (s.get("bgm_dir") or "").strip() or "~/.yt-mirror/bgm"
+        info(f"BGM: local folder — {folder}")
     else:
         info("BGM: none — vocals-only audio (most copyright-safe)")
 
@@ -2361,6 +2515,7 @@ def quick_deploy_screen():
 
 
 def _quick_deploy_flow(name, acct):
+    start = time.time()
     # 2) Video link
     raw = prompt("1) Video link (paste the YouTube URL)")
     if not raw:
@@ -2399,8 +2554,7 @@ def _quick_deploy_flow(name, acct):
     comment = _ask_comment()
 
     # 6) Proxy mode — verify the proxy LIVE and auto-rotate when it's down
-    pm = prompt("\nEnable proxy mode? (type -y to continue, Enter = direct)").strip().lower()
-    if pm in ("-y", "y", "yes", "on"):
+    if confirm("\nEnable proxy mode (route traffic through the proxy pool)?", default_no=True):
         config.save_proxy_settings(proxy_pool_enabled=True)
         info("Activating proxy pool...")
         ok, msg = _activate_proxy_live()
@@ -2454,7 +2608,7 @@ def _quick_deploy_flow(name, acct):
             comment=comment, source_channel=details.get("channel_id", ""),
         )
         if vid:
-            success(f"Uploaded: https://www.youtube.com/watch?v={vid}")
+            success(f"Uploaded: https://www.youtube.com/watch?v={vid}  ({_elapsed(start)})")
             acct["uploads_count"] = int(acct.get("uploads_count", 0) or 0) + 1
             _save_account(name, acct)
         else:

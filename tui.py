@@ -337,7 +337,7 @@ def _run_oauth_flow(client_id, client_secret):
     server.server_close()
 
     if not result["code"]:
-        error("OAuth timed out or no code received")
+        error("Google sign-in timed out or returned no code")
         return None
 
     token_data = urllib.parse.urlencode({
@@ -892,8 +892,8 @@ def accounts_screen():
                 print(f"  {C_BOLD}{idx:2d}.{C_RESET} {name}{ch_str}")
                 print(f"       {C_DIM}{_account_status_str(acct)}{C_RESET}")
         print()
-        print(f"  {C_BOLD}[A]{C_RESET} Add account — OAuth login")
-        print(f"  {C_BOLD}[M]{C_RESET} Add account — manually (paste credentials)")
+        print(f"  {C_BOLD}[A]{C_RESET} Add account — sign in with Google")
+        print(f"  {C_BOLD}[M]{C_RESET} Add account — manually (paste login keys)")
         print(f"  {C_BOLD}[E]{C_RESET} Edit account")
         print(f"  {C_BOLD}[V]{C_RESET} Verify all accounts (live token test)")
         if accounts:
@@ -941,11 +941,11 @@ def _add_account_oauth():
     cid, csec = _resolve_client_creds()
     cid = config.sanitize_client_id(cid)
     if not cid:
-        cid = config.sanitize_client_id(prompt("YouTube Client ID"))
+        cid = config.sanitize_client_id(prompt("YouTube Client ID (ends in .apps.googleusercontent.com)"))
     if not csec:
         csec = prompt("YouTube Client Secret")
     if not cid or not csec:
-        error("Client ID and Secret are required for OAuth")
+        error("Client ID and Secret are required to sign in")
         pause()
         return
 
@@ -973,7 +973,7 @@ def _add_account_oauth():
         "added_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
     })
     success(f"Account '{name}' saved" + (f" — {channel_name}" if channel_name else ""))
-    warn("Refresh tokens expire ~7 days — re-verify from the Accounts menu before then")
+    warn("YouTube logins expire after ~7 days — re-verify from Accounts before then")
 
     if not supabase_db.is_enabled() and confirm("Set this as the active local account?"):
         settings = config.load_tui_settings()
@@ -999,7 +999,7 @@ def _add_account_manual():
         error(f"Account '{name}' already exists — pick a different name")
         pause()
         return
-    cid = doctor.sanitize_client_id(prompt("YouTube Client ID"))
+    cid = doctor.sanitize_client_id(prompt("YouTube Client ID (ends in .apps.googleusercontent.com)"))
     csec = prompt("YouTube Client Secret")
     rt = prompt("YouTube Refresh Token")
     if not (cid and csec and rt):
@@ -1078,7 +1078,7 @@ def _edit_account(accounts):
         print(f"  {C_BOLD}[5]{C_RESET} Channel name / ID")
         print(f"  {C_BOLD}[6]{C_RESET} Notes")
         print(f"  {C_BOLD}[7]{C_RESET} Re-verify token (live test)")
-        print(f"  {C_BOLD}[8]{C_RESET} OAuth re-login for this account")
+        print(f"  {C_BOLD}[8]{C_RESET} Re-login via Google (renew login)")
         print(f"  {C_BOLD}[0]{C_RESET} Back")
         print()
 
@@ -1263,7 +1263,7 @@ def project_list_screen():
         elif choice == "B" and projects:
             _batch_run_projects(projects)
         elif choice == "A":
-            name = prompt("Project name")
+            name = prompt("Project name (e.g. 'Music Channel')")
             if name:
                 try:
                     p = supabase_db.create_project(name)
@@ -1282,7 +1282,7 @@ def project_list_screen():
         elif choice == "R" and projects:
             for i, p in enumerate(projects, 1):
                 print(f"  {C_BOLD}{i}.{C_RESET} {p['name']}")
-            num = prompt("Number to rename")
+            num = prompt("Number to rename (0 = cancel)")
             if num and num.isdigit():
                 idx = int(num) - 1
                 if 0 <= idx < len(projects):
@@ -1299,7 +1299,7 @@ def project_list_screen():
         elif choice == "D" and projects:
             for i, p in enumerate(projects, 1):
                 print(f"  {C_BOLD}{i}.{C_RESET} {p['name']}")
-            num = prompt("Number to delete")
+            num = prompt("Number to delete (0 = cancel)")
             if num and num.isdigit():
                 idx = int(num) - 1
                 if 0 <= idx < len(projects):
@@ -1413,7 +1413,7 @@ def _project_account_picker(project):
                 mark = f" {C_GREEN}← selected{C_RESET}" if name == current else ""
                 print(f"  {C_BOLD}{i:2d}.{C_RESET} {name}{ch_str}{mark}")
         print()
-        print(f"  {C_BOLD}[O]{C_RESET} Create a new account via OAuth")
+        print(f"  {C_BOLD}[O]{C_RESET} Create a new account (sign in with Google)")
         print(f"  {C_BOLD}[N]{C_RESET} None — unlink (keep inline credentials)")
         print(f"  {C_BOLD}[0]{C_RESET} Back")
         print()
@@ -1462,13 +1462,13 @@ def _link_account_to_project(pid, name):
 # ─── Setup screen ─────────────────────────────────────────────────────────────
 
 FIELD_SPEC = [
-    ("source_url", "Video source URL (used by batch runs)", "str"),
+    ("source_url", "Video source link (batch runs upload this)", "str"),
     ("yt_client_id", "YouTube Client ID", "str"),
     ("yt_client_secret", "YouTube Client Secret", "str"),
     ("yt_refresh_token", "YouTube Refresh Token", "str"),
-    ("shortlink_provider", "Shortlink provider (vplink/cleanuri/tinyurl)", "str"),
-    ("shortlink_api_key", "Shortlink API key", "str"),
-    ("comment_moderation", "Comment mode (heldForReview/published)", "str"),
+    ("shortlink_provider", "Short link service (vplink/cleanuri/tinyurl)", "str"),
+    ("shortlink_api_key", "Short link service key", "str"),
+    ("comment_moderation", "Comment approval (hold-for-review/publish)", "str"),
     ("mirror_title_prefix", "Title prefix (optional)", "str"),
     ("custom_title", "Custom title (optional, {title} {url})", "str"),
     ("custom_description", "Custom description (optional, {title} {url})", "str"),
@@ -1518,8 +1518,11 @@ def screen_setup(project):
 
         print()
         print(f"  {C_BOLD}[A]{C_RESET} Pick a saved YouTube account (fills ID/secret/token)")
-        print(f"  {C_BOLD}[O]{C_RESET} Run YouTube OAuth login")
+        print(f"  {C_BOLD}[O]{C_RESET} Sign in with Google (OAuth)")
         print(f"  {C_BOLD}[0]{C_RESET} Back")
+        print()
+        print(f"  {C_DIM}Tip: Client ID / Secret / Refresh Token are Google login keys —{C_RESET}")
+        print(f"  {C_DIM}pick a saved account with [A] instead of typing them by hand.{C_RESET}")
         print()
 
         choice = prompt("Choice").strip().upper()
@@ -1606,7 +1609,7 @@ def screen_setup(project):
 
                 # ── Auto-actions ──────────────────────────────────────────
                 if key in ("yt_client_id", "yt_client_secret") and p.get("yt_client_id") and p.get("yt_client_secret"):
-                    if confirm("Run YouTube OAuth login now to get refresh token?"):
+                    if confirm("Sign in with Google now to get the login token?"):
                         p = supabase_db.get_project(pid) or p
                         _do_oauth(p)
 
@@ -1699,7 +1702,7 @@ def _do_oauth(project):
         if not supabase_db.is_enabled():
             _sync_local_project(supabase_db.get_project(project["id"]) or project)
         success("Refresh token obtained and saved to project!")
-        warn("Refresh token expires in 7 days — re-run OAuth before expiry")
+        warn("Your YouTube login expires after ~7 days — re-sign-in before then")
     pause()
 
 
@@ -1759,10 +1762,10 @@ def _show_verify(project):
 def _do_instant_upload(project):
     pid = str(project["id"])
     if not HAS_GAPI:
-        error("google-api-python-client not installed")
+        error("The YouTube API library is not installed — run `installer doctor` to fix")
         return
 
-    raw = prompt("Enter YouTube URL to upload")
+    raw = prompt("Enter YouTube URL to upload (paste the link)")
     if not raw:
         error("No URL entered")
         pause()
@@ -1804,7 +1807,7 @@ def _do_instant_upload(project):
         try:
             dl_result = download_helpers.download_video(source_url)
         except download_helpers.YouTubeBotCheck:
-            error("Download blocked by YouTube bot-check — the proxy IP is flagged.")
+            error("Download blocked — YouTube flagged the proxy IP as suspicious.")
             error("Fix: set YT_COOKIES / YT_COOKIES_FILE (cookies.txt exported from a "
                   "logged-in browser) or use a residential proxy, then retry.")
             pause()
@@ -1815,7 +1818,7 @@ def _do_instant_upload(project):
             return
         video_path = dl_result["path"]
 
-        info("Processing video (edit + BGM)...")
+        info("Processing video (remove original music, mix in BGM)...")
         try:
             processed = daily_uploader.process_video(video_path)
         except FileNotFoundError as e:
@@ -1913,7 +1916,7 @@ def _bulk_random_overrides(settings):
 def _do_bulk_upload(project):
     pid = str(project["id"])
     if not HAS_GAPI:
-        error("google-api-python-client not installed")
+        error("The YouTube API library is not installed — run `installer doctor` to fix")
         return
 
     accounts = _accounts_dict()
@@ -1931,7 +1934,7 @@ def _do_bulk_upload(project):
         if _verify_one_account(name, dict(accounts[name]), live=True):
             ok_accounts.append(name)
         else:
-            warn(f"skipping '{name}' — not verified (re-run OAuth in main menu [2])")
+            warn(f"skipping '{name}' — not verified (re-sign-in in main menu [2])")
     if not ok_accounts:
         error("No verified accounts to upload to")
         pause()
@@ -1980,11 +1983,11 @@ def _do_bulk_upload(project):
         info(f"Project fields → title: {title[:70]}{'…' if len(title) > 70 else ''}")
         info(f"Uploading to {len(ok_accounts)} account(s): {', '.join(ok_accounts)}")
 
-        info("Downloading video (rotating through the whole proxy pool, no retry limit)...")
+        info("Downloading video (trying every proxy in the pool, no retry limit)...")
         try:
             dl_result = download_helpers.download_video(source_url)
         except download_helpers.YouTubeBotCheck:
-            error("Download blocked by YouTube bot-check — the proxy IPs are flagged.")
+            error("Download blocked — YouTube flagged the proxy IPs as suspicious.")
             error("Fix: set YT_COOKIES / YT_COOKIES_FILE (cookies.txt from a logged-in "
                   "browser) or use residential proxies, then retry.")
             pause()
@@ -2111,7 +2114,7 @@ def _batch_run_projects(projects=None):
     """Upload every selected project in sequence, each using its own stored
     video source URL, account and pre-configured fields."""
     if not HAS_GAPI:
-        error("google-api-python-client not installed")
+        error("The YouTube API library is not installed — run `installer doctor` to fix")
         return
     if projects is None:
         try:
@@ -2199,9 +2202,9 @@ def _batch_run_projects(projects=None):
             try:
                 dl_result = download_helpers.download_video(source_url)
             except download_helpers.YouTubeBotCheck:
-                error("  download blocked by bot-check — add cookies / residential "
-                      "proxies, then rerun the batch.")
-                results.append((name, False, "bot-check blocked"))
+                error("  download blocked — YouTube flagged the proxy. Add browser "
+                      "cookies or residential proxies, then rerun the batch.")
+                results.append((name, False, "blocked by YouTube"))
                 continue
             if not dl_result:
                 error("  download failed")
@@ -2210,7 +2213,7 @@ def _batch_run_projects(projects=None):
             video_path = dl_result["path"]
             download_dir = os.path.dirname(video_path)
             try:
-                info("  processing (edit + BGM)...")
+                info("  processing (remove music, mix BGM)...")
                 processed = daily_uploader.process_video(video_path)
                 if not processed:
                     error("  processing failed or duplicate")
@@ -2466,7 +2469,7 @@ def _upload_with_failover(processed, title, description, tags, source_url,
 
 def quick_deploy_screen():
     if not HAS_GAPI:
-        error("google-api-python-client not installed")
+        error("The YouTube API library is not installed — run `installer doctor` to fix")
         pause()
         return
 
@@ -2493,7 +2496,7 @@ def quick_deploy_screen():
     divider()
     info("Checking account status (live token test)...")
     if not _verify_one_account(name, acct, live=True):
-        error(f"Account '{name}' not verified — re-run OAuth in main menu [2]")
+        error(f"Account '{name}' not verified — re-sign-in in main menu [2]")
         pause()
         return
     success(f"Account '{name}' verified — ready to upload")
@@ -2580,7 +2583,7 @@ def _quick_deploy_flow(name, acct):
     try:
         dl_result = download_helpers.download_video(source_url)
     except download_helpers.YouTubeBotCheck:
-        error("Download blocked by YouTube bot-check — the proxy IP is flagged.")
+        error("Download blocked — YouTube flagged the proxy IP as suspicious.")
         error("Fix: set YT_COOKIES / YT_COOKIES_FILE (cookies.txt exported from a "
               "logged-in browser) or use a residential proxy, then retry.")
         pause()
@@ -2592,7 +2595,7 @@ def _quick_deploy_flow(name, acct):
     video_path = dl_result["path"]
     download_dir = os.path.dirname(video_path)
     try:
-        info("Processing (vocal separation → FFmpeg edits → BGM mix)...")
+        info("Processing (separate vocals → edit video → mix background music)...")
         processed = daily_uploader.process_video(video_path)
         if not processed:
             error("Processing failed or already uploaded")
@@ -2710,16 +2713,16 @@ def screen_status(project):
                     if exp < 3600:
                         _warn(f"Access token expires in {exp//60} min")
                 else:
-                    _fail("YouTube token exchange failed", fix="Re-run [O] OAuth login")
+                    _fail("YouTube token exchange failed", fix="Re-run [O] Google sign-in")
         except urllib.error.HTTPError as e:
             if e.code == 400:
-                _fail("YouTube refresh token expired", fix="Re-run [O] OAuth login (7-day lifespan)")
+                _fail("YouTube login expired", fix="Re-run [O] Google sign-in (lasts ~7 days)")
             else:
                 _fail(f"YouTube API error: {e.code}", fix="Check client_id/secret")
         except Exception as e:
             _fail(f"YouTube unreachable: {e}")
     else:
-        _fail("YouTube OAuth incomplete", fix="Set client_id, secret, and run [O] OAuth login")
+        _fail("Google sign-in incomplete", fix="Set client_id, secret, then run [O] Google sign-in")
 
     divider()
     total = ok_count + warn_count + fail_count

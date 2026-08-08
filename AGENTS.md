@@ -17,7 +17,7 @@
   `status`/`logs`/`verify`/`version`/`proxy`); `tui.py` = management TUI (hybrid
   local/cloud). Main menu is grouped into **Upload** (`[Q]` Quick Deploy guided
   upload — pick a saved account → live token check → video link → copy-or-custom
-  title/description/comment → proxy-mode prompt (`-y`) → download/process → test
+  title/description/comment → proxy-mode prompt (`y/N`) → download/process → test
   proxy → upload with proxy-pool re-rotation on failure; `[1]` Projects;
   `[6]` Batch run), **Accounts** (`[2]`), **Tools** (`[3]` Doctor, `[4]`
   Database, `[5]` Settings). Project menu is grouped into **Upload** (`[5]`
@@ -26,6 +26,8 @@
   Status, `[H]` Upload history). Long lists (accounts/projects) paginate at 15
   rows with `[N]`/`[P]`; projects support `[R]` rename. Secret prompts show only
   a masked `********abcd` default — Enter keeps the value, never echoing the key.
+  UI strings prefer plain language over jargon (Google sign-in, "flagged by
+  YouTube", short link service) with placeholder hints on inputs.
 - **Bulk upload** (`[6]` per project): pick multiple saved accounts or "all",
   one video is downloaded once, then fired into every selected account with the
   project's pre-configured title/description/comment; fps + start/end trim are

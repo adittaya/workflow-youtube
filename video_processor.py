@@ -5,6 +5,8 @@ import hashlib
 import json
 from pathlib import Path
 
+import config
+
 TEMP_DIR = Path(os.environ.get("YT_TEMP_DIR", "/tmp/yt-process"))
 
 TOOLS = ("ffmpeg", "ffprobe")
@@ -32,6 +34,25 @@ def get_video_info(path):
     return json.loads(result.stdout)
 
 
+def get_duration(info):
+    """Return the video duration in seconds, preferring the video stream's own
+    duration over the container-level format duration (more reliable for
+    fragmented/faststart MP4s). Falls back to the format duration, then 0."""
+    for s in info.get("streams", []):
+        if s.get("codec_type") == "video" and s.get("duration"):
+            try:
+                return float(s["duration"])
+            except (TypeError, ValueError):
+                pass
+    fmt = info.get("format") or {}
+    if fmt.get("duration"):
+        try:
+            return float(fmt["duration"])
+        except (TypeError, ValueError):
+            return 0.0
+    return 0.0
+
+
 def get_video_hash(path):
     h = hashlib.md5()
     with open(path, "rb") as f:
@@ -45,12 +66,32 @@ def apply_edits(input_path, output_path, edits=None):
         edits = _random_edit_preset()
 
     info = get_video_info(input_path)
-    duration = float(info.get("format", {}).get("duration", 60))
+    duration = get_duration(info)
     width, height = _get_resolution(info)
 
     trim_start = float(edits.get("trim_start", 0) or 0)
     trim_end = float(edits.get("trim_end", 0) or 0)
-    out_duration = max(1.0, duration - trim_start - trim_end)
+
+    # Never let start/end trims swallow the whole video: a 30s Short with
+    # 15s+15s of trim used to silently collapse to exactly 1 second. Scale
+    # the trims down proportionally so at least ~40% (or 3s) survives.
+    if duration > 0 and (trim_start > 0 or trim_end > 0):
+        keep_at_least = max(3.0, duration * 0.4)
+        max_trim = max(0.0, duration - keep_at_least)
+        total_trim = trim_start + trim_end
+        if total_trim > max_trim:
+            if max_trim <= 0:
+                trim_start = trim_end = 0.0
+            else:
+                ratio = max_trim / total_trim
+                trim_start = round(trim_start * ratio, 2)
+                trim_end = round(trim_end * ratio, 2)
+            config.log(
+                f"  trim clamped: source is only {duration:.1f}s — "
+                f"start/end trims reduced to {trim_start:g}s/{trim_end:g}s "
+                f"so the edit stays at least {keep_at_least:.0f}s long")
+
+    out_duration = max(0.0, duration - trim_start - trim_end)
 
     filters = []
     audio_filters = []

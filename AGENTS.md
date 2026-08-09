@@ -83,7 +83,11 @@
   (force=True); upload audit via `upload_logs`/`daily_log.json`;
   `process_video(input_path, output_dir=None, overrides=None)` accepts
   per-upload `fps`/`trim_start`/`trim_end` overrides (bulk upload randomises
-  these per account)
+  these per account). `video_processor.apply_edits` clamps start/end trims
+  so a short source (Shorts) never collapses to a 1s upload: trims are scaled
+  down proportionally to keep ≥ max(3s, 40% of the source), logged via
+  `config.log`. `video_processor.get_duration()` reads the video stream's own
+  duration first (more reliable on fragmented MP4s) instead of `format` only
 - `download_helpers.py` — yt-dlp download (`android` client,
   `formats=duplicate,missing_pot`). Shared `run_yt_dlp()` builds every yt-dlp
   invocation (cookies + proxy); `get_proxy_candidates()` orders proxies

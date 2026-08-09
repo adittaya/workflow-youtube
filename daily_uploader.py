@@ -150,7 +150,7 @@ def process_video(input_path, output_dir=None, overrides=None):
     # Step 3: get video duration
     config.log("  step 3: getting video duration...")
     info = video_processor.get_video_info(edited_path)
-    duration = float(info.get("format", {}).get("duration", 60))
+    duration = video_processor.get_duration(info)
 
     # Step 4: mix non-copyright BGM under the vocals
     final_path = edited_path

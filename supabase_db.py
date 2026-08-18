@@ -138,27 +138,30 @@ def set_pending_hashes(hashes, project_id="1"):
 
 # ─── Settings ────────────────────────────────────────────────────────────
 
+def _decode_setting(val, default):
+    """Decode a stored setting value. Values are stored natively (JSON), so a
+    string "3128" must come back as "3128". Two legacy encodings are healed:
+    objects/arrays stored as json.dumps'd strings, and strings that were
+    double-encoded (json.dumps'd once more, e.g. a URL stored as
+    '"https://…"' — breaking urlsplit's scheme parsing)."""
+    if isinstance(val, str):
+        if val[:1] in ("{", "[") or (len(val) >= 2 and val[0] == '"' and val[-1] == '"'):
+            try:
+                return json.loads(val)
+            except (json.JSONDecodeError, TypeError):
+                return val
+    return val
+
+
 def get_setting(key, default=None):
     """Settings round-trip: values are stored natively (JSON), so a string
-    "3128" must come back as "3128", never as int 3128. Only legacy rows
-    written as json.dumps'd strings (objects/arrays) are decoded."""
+    "3128" must come back as "3128", never as int 3128. Legacy rows written
+    as json.dumps'd strings (objects/arrays/quoted strings) are decoded."""
     if not _DB_ENABLED:
-        val = _read_json(_settings_path(), {}).get(key, default)
-        if isinstance(val, str) and val[:1] in ("{", "["):
-            try:
-                return json.loads(val)
-            except (json.JSONDecodeError, TypeError):
-                return val
-        return val
+        return _decode_setting(_read_json(_settings_path(), {}).get(key, default), default)
     row = _request("GET", f"settings?key=eq.{_enc(key)}&select=value")
     if row:
-        val = row[0]["value"]
-        if isinstance(val, str) and val[:1] in ("{", "["):
-            try:
-                return json.loads(val)
-            except (json.JSONDecodeError, TypeError):
-                return val
-        return val
+        return _decode_setting(row[0]["value"], default)
     return default
 
 

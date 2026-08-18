@@ -110,7 +110,7 @@ def main():
             print(f"  settings.{k}          — already present (kept)")
             continue
         _request(url, key, "POST", "settings?on_conflict=key",
-                 data={"key": k, "value": json.dumps(v)})
+                 data={"key": k, "value": v})
         print(f"  settings.{k}          — seeded")
 
     # 3) account row (Google OAuth client; refresh token is added the first

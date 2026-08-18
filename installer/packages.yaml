@@ -109,3 +109,11 @@ pip_packages:
     description: YouTube Data API v3 client
   google-auth-oauthlib:
     description: OAuth flow support
+  google-auth-httplib2:
+    description: Proxy-routed AuthorizedHttp for the API client
+  Pillow:
+    description: Thumbnail processing
+  cryptography:
+    description: TLS / credential helpers
+  pynacl:
+    description: Ed25519 signature helpers

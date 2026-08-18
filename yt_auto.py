@@ -49,6 +49,14 @@ def cmd_status(args):
     import daily_uploader
     pid = _pid(args)
 
+    # Any CLI touchpoint drains queued comments for scheduled uploads whose
+    # publish time has passed (also runs on TUI startup and `comments`).
+    posted, dropped = 0, 0
+    try:
+        posted, dropped = daily_uploader.drain_pending_comments()
+    except Exception:
+        pass
+
     status = daily_uploader.get_status()
     try:
         alerts = supabase_db.get_open_alerts(project_id=pid, limit=10)
@@ -69,6 +77,8 @@ def cmd_status(args):
     print(f"project: {pid or '(default)'}")
     print(f"total uploaded: {status['total_uploaded']}  (last: {status['last_upload'] or 'never'})")
     print(f"processed: {status['processed_count']}")
+    if posted or dropped:
+        print(f"queued comments: {posted} posted, {dropped} dropped")
     if alerts:
         print(f"open alerts ({len(alerts)}):")
         for a in alerts[:5]:
@@ -95,6 +105,13 @@ def cmd_logs(args):
 
 def cmd_verify(args):
     import verify_state
+    import daily_uploader
+    # Any CLI touchpoint drains the queued comments for scheduled uploads
+    # whose publish time has passed (also runs on TUI startup and `comments`).
+    try:
+        daily_uploader.drain_pending_comments()
+    except Exception:
+        pass
     pid = _pid(args)
     res = verify_state.run_for(pid, owner=f"cli-{time.time():.0f}", fix=not args.no_fix)
     return 1 if res["fails"] else 0

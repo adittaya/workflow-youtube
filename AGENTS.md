@@ -51,6 +51,13 @@
   posts it once the video is public — runs on TUI startup and
   `yt-auto comments`; attempts cap at 5, `commentsDisabled` drops
   immediately, deleted projects drop the entry with a log line.
+  Cloud-only extra drain: `supabase/functions/post-pending-comments` (Edge
+  Function, Deno TS) mirrors the Python drain so Supabase itself can post
+  within ~1 min of publish — schedule it every minute via Dashboard →
+  Integrations → Cron → Edge Function (or pg_cron + pg_net; pg_net alone
+  can't refresh OAuth tokens, JSON-body-only). Deploy via
+  `supabase functions deploy post-pending-comments`; validated live against
+  the cloud (token refresh + 403-retry path exercised).
   Two optional questions before the run (Enter skips both): **videos per
   project** (1–5) — each extra copy is freshly processed with randomised
   fps/trim via `_bulk_random_overrides` so every upload is a distinct edit

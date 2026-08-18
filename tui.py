@@ -2301,9 +2301,12 @@ def _batch_run_projects(projects=None):
     # Optional: randomised edit range for every copy — each copy gets a fresh
     # random FPS / cut inside the chosen bounds, so no two uploads are ever an
     # exact duplicate (that is what keeps every copy copyright-safe).
-    # Enter on both = keep the configured defaults (20–25 fps / 10–20s cut).
+    # Enter on both = keep the configured defaults (20–25 fps / 10–20s cut);
+    # "0" or "none" on the cut question = NO cut, every copy keeps the FULL
+    # video (only FPS is randomised).
     fps_range = None
     trim_range = None
+    no_cut = False
     try:
         raw = prompt("Randomise FPS per copy — range e.g. '22 28' (Enter = default 20 25)").strip()
         if raw:
@@ -2317,18 +2320,22 @@ def _batch_run_projects(projects=None):
                     warn("FPS range outside 1–60 — keeping the default")
             else:
                 warn("Could not read the FPS range — keeping the default")
-        raw = prompt("Randomise cut per copy — range in seconds e.g. '8 15' (Enter = default 10 20)").strip()
+        raw = prompt("Randomise cut per copy — range in seconds e.g. '8 15', 0/none = NO cut (Enter = default 10 20)").strip()
         if raw:
-            nums = [int(x) for x in re.findall(r"\d+", raw)]
-            if len(nums) >= 2:
-                lo, hi = min(nums[0], nums[1]), max(nums[0], nums[1])
-                if 0 <= lo <= 300 and hi <= 300:
-                    trim_range = (lo, hi)
-                    info(f"Each copy gets a random cut between {lo}s and {hi}s")
-                else:
-                    warn("Cut range outside 0–300s — keeping the default")
+            if raw.lower() in ("0", "no", "none", "off", "n"):
+                no_cut = True
+                info("No cut — every copy keeps the FULL video (only FPS is randomised)")
             else:
-                warn("Could not read the cut range — keeping the default")
+                nums = [int(x) for x in re.findall(r"\d+", raw)]
+                if len(nums) >= 2:
+                    lo, hi = min(nums[0], nums[1]), max(nums[0], nums[1])
+                    if 0 <= lo <= 300 and hi <= 300:
+                        trim_range = (lo, hi)
+                        info(f"Each copy gets a random cut between {lo}s and {hi}s")
+                    else:
+                        warn("Cut range outside 0–300s — keeping the default")
+                else:
+                    warn("Could not read the cut range — keeping the default")
     except (TypeError, ValueError):
         warn("Skipping the randomise questions (option skipped)")
 
@@ -2449,17 +2456,21 @@ def _batch_run_projects(projects=None):
                 for n in range(1, videos_per + 1):
                     label = name if videos_per == 1 else f"{name} #{n}"
                     overrides = None
-                    if videos_per > 1 or fps_range or trim_range:
+                    if videos_per > 1 or fps_range or trim_range or no_cut:
                         overrides = _bulk_random_overrides(settings)
                         if fps_range:
                             overrides["fps"] = random.randint(fps_range[0], fps_range[1])
-                        if trim_range:
+                        if no_cut:
+                            overrides["trim_start"] = 0
+                            overrides["trim_end"] = 0
+                        elif trim_range:
                             overrides["trim_start"] = random.randint(trim_range[0], trim_range[1])
                             overrides["trim_end"] = random.randint(trim_range[0], trim_range[1])
                     if overrides:
+                        cut_desc = "no cut" if no_cut else (
+                            f"cut {overrides['trim_start']}–{overrides['trim_end']}s")
                         info(f"  processing copy {n}/{videos_per} — randomised edits "
-                             f"(fps {overrides['fps']}, cut {overrides['trim_start']}–"
-                             f"{overrides['trim_end']}s, every copy differs)...")
+                             f"(fps {overrides['fps']}, {cut_desc}, every copy differs)...")
                     elif videos_per > 1:
                         info(f"  processing copy {n}/{videos_per} ...")
                     processed = daily_uploader.process_video(video_path, overrides=overrides)

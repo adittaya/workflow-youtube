@@ -49,9 +49,10 @@
   fps/trim via `_bulk_random_overrides` so every upload is a distinct edit
   (copyright-safe); two more optional range questions let the user pick the
   randomise bounds per copy — **FPS range** (e.g. `22 28`) and **cut range**
-  (e.g. `8 15`) — each copy draws fresh values inside those bounds (defaults
-  20–25 fps / 10–20s from settings) and the per-copy line shows the actual
-  values; and **schedule publish** — uploads go up private with a
+  (e.g. `8 15`; answer `0`/`none` for **NO cut** — every copy keeps the full
+  video, only FPS is randomised) — each copy draws fresh values inside those
+  bounds (defaults 20–25 fps / 10–20s from settings) and the per-copy line
+  shows the actual values; and **schedule publish** — uploads go up private with a
   `publishAt` RFC-3339 timestamp and YouTube auto-publishes them (threaded
   through `youtube_api.upload_video(publish_at=...)`; scheduling requires
   `privacyStatus=private`). Two schedule modes: **auto-spread (default)** —

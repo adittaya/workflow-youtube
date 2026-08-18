@@ -513,7 +513,7 @@ def run_verify(ui, config) -> int:
     cfg_path = cfg_dir / "config.json"
     # Install state lives in the config home — verify against that, not the
     # data dir (passing the wrong base_dir made the check always 'incomplete').
-    checks = verification.verify_installation(cfg_path, cfg_dir, registry)
+    checks = verification.verify_installation(cfg_path, cfg_dir, registry, install_dir)
     verification.render_report(checks, ui)
     ok, total = verification.summary_report(checks)
     ui.line()

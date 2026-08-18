@@ -11,6 +11,7 @@ The same checks power ``installer verify`` and the post-install summary.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
@@ -64,7 +65,8 @@ def verify_tools(registry: pkgmod.PackageRegistry, names: Optional[List[str]] = 
     return checks
 
 
-def verify_installation(config_path: Path, base_dir, registry) -> List[Check]:
+def verify_installation(config_path: Path, base_dir, registry,
+                        install_dir: Optional[Path] = None) -> List[Check]:
     """High-level integrity checks of the installed environment."""
     checks: List[Check] = []
     from installer.core import state as statemod
@@ -79,7 +81,7 @@ def verify_installation(config_path: Path, base_dir, registry) -> List[Check]:
                         detail=str(config_path)))
 
     binpath = env.bin_dir()
-    from installer.version import INSTALLER_NAME, TUI_NAME
+    from installer.version import INSTALLER_NAME, TUI_NAME, __version__
 
     installer_bin = binpath / INSTALLER_NAME
     present = installer_bin.exists()
@@ -93,8 +95,39 @@ def verify_installation(config_path: Path, base_dir, registry) -> List[Check]:
                         "", present, present,
                         detail="global command" if present else "not found on PATH"))
 
+    if install_dir is not None:
+        installed_ver = _installed_version(install_dir)
+        if installed_ver is None:
+            checks.append(Check("app copy", str(install_dir), "", False, False,
+                                detail="not installed — run the installer"))
+        else:
+            stale = _version_tuple(installed_ver) < _version_tuple(__version__)
+            checks.append(Check("app copy", str(install_dir), installed_ver,
+                                True, not stale,
+                                detail=f"re-install to update to {__version__}"
+                                       if stale else "up to date"))
+
     checks.extend(verify_tools(registry, registry.names()))
     return checks
+
+
+def _installed_version(install_dir: Path) -> Optional[str]:
+    """Read the version of the installed app copy (its own version.py), or
+    None when there is no installed copy. Never imports the installed code —
+    just parses the version constant."""
+    try:
+        src = (install_dir / "installer" / "version.py").read_text()
+        m = re.search(r'__version__\s*=\s*"([^"]+)"', src)
+        return m.group(1) if m else None
+    except OSError:
+        return None
+
+
+def _version_tuple(v: str) -> Tuple[int, ...]:
+    try:
+        return tuple(int(p) for p in v.split(".") if p.isdigit())
+    except (TypeError, ValueError):
+        return (0,)
 
 
 def render_report(checks: Sequence[Check], ui) -> None:

@@ -1,6 +1,6 @@
 """Version and application identity for the installer."""
 
-__version__ = "1.1.5"
+__version__ = "1.1.6"
 
 #: The tool this installer bootstraps.
 APP_NAME = "yt-auto"

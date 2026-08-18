@@ -17,7 +17,11 @@
   clear message — then prints a data summary of projects/accounts/uploads/
   alerts; missing schema tables are listed with a "run schema.sql" warning; a
   fresh/empty database still connects and shows an empty state; `[D]` shows
-  the summary anytime; local mode hints at `[4]` on the main menu).
+  the summary anytime; local mode hints at `[4]` on the main menu; after a
+  successful connect it asks **Auto-setup?** (y/N) — seeds every missing
+  default setting via `config.seed_default_settings()` (all `tui_*` defaults
+  from `TUI_SETTINGS_DEFAULTS` + proxy config from `PROXY_DEFAULTS`, never
+  overwriting existing values, runtime proxy state excluded)).
 - **Entry points:** `yt_auto.py` = main local CLI (`upload`/`setup`/`oauth`/
   `status`/`logs`/`verify`/`version`/`proxy`); `tui.py` = management TUI (hybrid
   local/cloud). Main menu is grouped into **Upload** (`[Q]` Quick Deploy guided

@@ -636,6 +636,18 @@ def _database_screen():
                 if missing:
                     warn(f"table(s) missing: {', '.join(missing)} — "
                          "run schema.sql in the Supabase SQL editor first")
+                if confirm("Auto-setup now? Applies every default setting "
+                           "(never overwrites existing values)"):
+                    loading("Seeding default settings...")
+                    seeded, kept = config.seed_default_settings()
+                    if seeded:
+                        success(f"Auto-setup done — {len(seeded)} setting(s) "
+                                "seeded (FPS, trims, BGM, bulk ranges, proxy defaults)")
+                    if kept:
+                        info(f"{len(kept)} existing setting(s) left untouched")
+                    if not seeded and not kept:
+                        info("Everything already configured — nothing to seed")
+                    pause()
                 _show_db_summary()
                 pause()
 

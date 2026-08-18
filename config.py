@@ -142,32 +142,64 @@ PROJECT_FIELD_MAP = {
 }
 
 
+#: Defaults for the TUI settings (saved under `tui_<key>` in the Supabase
+#: settings table, plain keys in local settings.json).
+TUI_SETTINGS_DEFAULTS = {
+    "active_account": "",
+    "comment_text": "Download: {url}",
+    "mirror_title_prefix": "",
+    "mirror_description_suffix": "",
+    "custom_title": "",
+    "custom_description": "",
+    "custom_comment": "",
+    "privacy_status": "public",
+    "category_id": "22",
+    "shortener_api_key": "",
+    "shortener_api_url": "",
+    "shortener_provider": "vplink",
+    "comment_moderation": "heldForReview",
+    "fps": 20,
+    "trim_start": 20,
+    "trim_end": 10,
+    "bgm_source": "yt_link",
+    "bgm_yt_url": "",
+    "bgm_dir": "",
+    "bulk_fps_min": 20,
+    "bulk_fps_max": 25,
+    "bulk_trim_min": 10,
+    "bulk_trim_max": 20,
+}
+
+#: Runtime proxy state — never seeded, it is written by the proxy pool itself.
+_PROXY_RUNTIME_KEYS = {"proxy_active_ip", "proxy_active_port",
+                       "proxy_active_proto", "proxy_active_latency",
+                       "proxy_picked_at"}
+
+
+def seed_default_settings():
+    """Seed every missing default setting (TUI + proxy config) in the current
+    store. Existing values are NEVER overwritten — only missing keys are
+    created. Returns (seeded_keys, kept_keys)."""
+    if not supabase_db.is_enabled():
+        return [], []
+    want = {}
+    for key in TUI_SETTINGS_DEFAULTS:
+        want[f"tui_{key}"] = TUI_SETTINGS_DEFAULTS[key]
+    for key in PROXY_DEFAULTS:
+        if key not in _PROXY_RUNTIME_KEYS:
+            want[key] = PROXY_DEFAULTS[key]
+    seeded, kept = [], []
+    for key, value in want.items():
+        if supabase_db.get_setting(key, None) is not None:
+            kept.append(key)
+            continue
+        supabase_db.set_setting(key, value)
+        seeded.append(key)
+    return seeded, kept
+
+
 def load_tui_settings():
-    defaults = {
-        "active_account": "",
-        "comment_text": "Download: {url}",
-        "mirror_title_prefix": "",
-        "mirror_description_suffix": "",
-        "custom_title": "",
-        "custom_description": "",
-        "custom_comment": "",
-        "privacy_status": "public",
-        "category_id": "22",
-        "shortener_api_key": "",
-        "shortener_api_url": "",
-        "shortener_provider": "vplink",
-        "comment_moderation": "heldForReview",
-        "fps": 20,
-        "trim_start": 20,
-        "trim_end": 10,
-        "bgm_source": "yt_link",
-        "bgm_yt_url": "",
-        "bgm_dir": "",
-        "bulk_fps_min": 20,
-        "bulk_fps_max": 25,
-        "bulk_trim_min": 10,
-        "bulk_trim_max": 20,
-    }
+    defaults = dict(TUI_SETTINGS_DEFAULTS)
     if supabase_db.is_enabled():
         if PROJECT_ID:
             project = supabase_db.get_project(PROJECT_ID)

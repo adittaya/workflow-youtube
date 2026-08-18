@@ -58,6 +58,16 @@ def is_enabled():
     return _truthy(config.get_proxy_settings().get("proxy_pool_enabled"))
 
 
+def enable():
+    """Turn the pool on in the shared settings (does not activate a proxy)."""
+    config.save_proxy_settings(proxy_pool_enabled=True)
+
+
+def disable():
+    """Turn the pool off in the shared settings."""
+    config.save_proxy_settings(proxy_pool_enabled=False)
+
+
 def _truthy(v):
     return str(v).strip().lower() in ("1", "true", "yes", "on")
 
@@ -198,7 +208,7 @@ def refresh_pool(progress=None):
             updated.append(row)
             done += 1
             if progress:
-                progress(done, total, row.get("ip", ""))
+                progress(done, total, f"{row.get('ip', '')}:{row.get('port', '')}")
 
     # Persist results (PATCH each row by its uuid id)
     now = datetime.now(timezone.utc).isoformat()
@@ -328,9 +338,30 @@ def active_proxy():
     }
 
 
+def activate_saved_best():
+    """Activate the fastest live proxy from the pool's last test results
+    (no re-testing — instant). Returns (proxy_or_None, message)."""
+    if not is_configured():
+        return None, "proxy pool not configured (set URL and key in Settings)"
+    try:
+        rows = list_pool()
+    except Exception as e:
+        return None, f"pool unreachable: {str(e)[:80]}"
+    alive = [r for r in rows if r.get("e2_ok") and r.get("ip")]
+    if not alive:
+        return None, "no live proxies in the pool yet — run a refresh first"
+    best = pick_best(alive)
+    activate(best)
+    lat = best.get("latency_ms")
+    return best, (f"activated {best['ip']}:{best.get('port')} "
+                  f"({lat}ms) from last test results")
+
+
 def refresh_and_activate(progress=None):
     """Full cycle: refresh the pool, then pick & activate the fastest live
-    proxy. Returns (proxy_or_None, message)."""
+    proxy. On success the pool is enabled too — an activated proxy without the
+    pool flag is a broken state (nothing would use it). Returns
+    (proxy_or_None, message)."""
     if not is_configured():
         return None, "proxy pool not configured (set URL and key in Settings)"
     try:
@@ -344,6 +375,7 @@ def refresh_and_activate(progress=None):
         return None, "0 proxies working after refresh — try again later or use manual proxy"
     best = pick_best(rows)
     activate(best)
+    enable()
     lat = best.get("latency_ms")
     return best, (f"activated {best['ip']}:{best.get('port')} "
                   f"({lat}ms) — {len(alive)}/{len(rows)} proxies alive")

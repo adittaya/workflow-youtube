@@ -164,10 +164,18 @@ def check_project(project):
 
     # ── Linked upload account ──
     if account_id:
-        account = supabase_db.get_account(account_id)
+        account = None
+        acct_error = ""
+        try:
+            account = supabase_db.get_account(account_id)
+        except Exception as e:
+            acct_error = f"database unreachable: {str(e)[:50]}"
         if not account:
-            add("Linked upload account", False, f"'{account_id}' no longer exists",
-                fix=("field", "account_id", "", f"unlinked missing account '{account_id}'"))
+            if acct_error:
+                add("Linked upload account", False, acct_error)
+            else:
+                add("Linked upload account", False, f"'{account_id}' no longer exists",
+                    fix=("field", "account_id", "", f"unlinked missing account '{account_id}'"))
         else:
             a_ok, a_note, a_exp = test_refresh_token(account.get("client_id", ""),
                                                      account.get("client_secret", ""),

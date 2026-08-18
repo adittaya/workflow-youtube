@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS public.projects (
 -- Idempotent migrations for columns added after the original deploy
 ALTER TABLE public.projects ADD COLUMN IF NOT EXISTS enabled boolean NOT NULL DEFAULT true;
 ALTER TABLE public.projects ADD COLUMN IF NOT EXISTS account_id text NOT NULL DEFAULT '';
+ALTER TABLE public.projects ADD COLUMN IF NOT EXISTS source_url text NOT NULL DEFAULT '';
 ALTER TABLE public.projects ADD COLUMN IF NOT EXISTS mirror_description_suffix text NOT NULL DEFAULT '';
 ALTER TABLE public.projects ADD COLUMN IF NOT EXISTS custom_title text NOT NULL DEFAULT '';
 ALTER TABLE public.projects ADD COLUMN IF NOT EXISTS custom_description text NOT NULL DEFAULT '';
@@ -107,6 +108,7 @@ ALTER TABLE public.accounts ADD COLUMN IF NOT EXISTS last_error text NOT NULL DE
 ALTER TABLE public.accounts ADD COLUMN IF NOT EXISTS token_expires_at timestamptz;
 ALTER TABLE public.accounts ADD COLUMN IF NOT EXISTS uploads_count bigint NOT NULL DEFAULT 0;
 ALTER TABLE public.accounts ADD COLUMN IF NOT EXISTS notes text NOT NULL DEFAULT '';
+ALTER TABLE public.accounts ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
 
 -- ─── Per-project upload state ──────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS public.upload_state (

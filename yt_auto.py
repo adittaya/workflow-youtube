@@ -348,12 +348,14 @@ def cmd_proxy(args):
             print("proxy pool not configured — set PROXY_POOL_URL / PROXY_POOL_KEY")
             return 1
 
-        def progress(done, total, ip):
-            print(f"\r  tested {done}/{total} — {ip}    ", end="", flush=True)
+        def progress(done, total, label):
+            print(f"\r  tested {done}/{total} — {label}{' ' * 20}", end="", flush=True)
 
         print("refreshing & testing proxy pool...")
         best, msg = proxy_pool.refresh_and_activate(progress=progress)
         print()
+        if best:
+            proxy_pool.enable()
         print(msg)
         return 0 if best else 1
     return 1

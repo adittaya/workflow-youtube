@@ -3,10 +3,16 @@ import subprocess
 import json
 import tempfile
 import config
-from PIL import Image, ImageEnhance
 
 
 def process_thumbnail(video_id, output_path=None):
+    # PIL is used only for thumbnail processing — import lazily so a missing
+    # Pillow never breaks downloads/uploads (thumbnails just get skipped).
+    try:
+        from PIL import Image, ImageEnhance
+    except ImportError:
+        config.log("Pillow not installed — skipping thumbnail enhancement")
+        return None
     if output_path is None:
         output_path = os.path.join(tempfile.mkdtemp(), f"{video_id}_thumb.jpg")
     urls = [

@@ -244,10 +244,16 @@ def save_proxy_settings(**fields):
         supabase_db.set_setting(key, val)
 
 
+def _flag(v):
+    """True for any representation of an enabled flag (bool, or legacy string
+    values like 'true'/'1' written before settings stored native JSON)."""
+    return str(v).strip().lower() in ("1", "true", "yes", "on")
+
+
 def get_proxy_url():
     """Full proxy URL like http://user:pass@host:port, or '' when disabled."""
     s = get_proxy_settings()
-    if not s.get("proxy_enabled"):
+    if not _flag(s.get("proxy_enabled")):
         return ""
     host = str(s.get("proxy_host", "") or "").strip()
     if not host:
@@ -317,6 +323,15 @@ def get_yt_credentials():
             "client_id": acct["client_id"],
             "client_secret": acct["client_secret"],
             "refresh_token": acct["refresh_token"],
+        }
+    if len(accounts) == 1:
+        # Single saved account (e.g. seeded via cloud_bootstrap.py) — use it
+        # so a fresh device with the database connected just works.
+        acct = next(iter(accounts.values()))
+        return {
+            "client_id": acct.get("client_id", ""),
+            "client_secret": acct.get("client_secret", ""),
+            "refresh_token": acct.get("refresh_token", ""),
         }
     cfg = load()
     return {

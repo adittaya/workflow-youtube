@@ -46,27 +46,35 @@ class CandidateUrlsTests(unittest.TestCase):
 
     def test_orders_by_latency_and_skips_used(self):
         rows = [_row("slow", latency=500), _row("fast", latency=50)]
-        with mock.patch.object(proxy_pool, "list_pool", return_value=rows), \
+        with mock.patch.object(proxy_pool, "is_enabled", return_value=True), \
+                mock.patch.object(proxy_pool, "is_configured", return_value=True), \
+                mock.patch.object(proxy_pool, "list_pool", return_value=rows), \
                 mock.patch.object(proxy_pool, "_used_unexpired", return_value={("slow", 9999)}):
             self.assertEqual(proxy_pool.candidate_urls(),
                              ["http://fast:9999"])
 
     def test_respects_limit_and_dedups(self):
         rows = [_row(f"p{i}", latency=100 + i) for i in range(6)]
-        with mock.patch.object(proxy_pool, "list_pool", return_value=rows):
+        with mock.patch.object(proxy_pool, "is_enabled", return_value=True), \
+                mock.patch.object(proxy_pool, "is_configured", return_value=True), \
+                mock.patch.object(proxy_pool, "list_pool", return_value=rows):
             urls = proxy_pool.candidate_urls(limit=3)
             self.assertEqual(len(urls), 3)
             self.assertEqual(urls[0], "http://p0:9999")
 
     def test_orders_fastest_first(self):
         rows = [_row("slow", latency=500), _row("fast", latency=50)]
-        with mock.patch.object(proxy_pool, "list_pool", return_value=rows):
+        with mock.patch.object(proxy_pool, "is_enabled", return_value=True), \
+                mock.patch.object(proxy_pool, "is_configured", return_value=True), \
+                mock.patch.object(proxy_pool, "list_pool", return_value=rows):
             self.assertEqual(proxy_pool.candidate_urls(),
                              ["http://fast:9999", "http://slow:9999"])
 
     def test_falls_back_to_all_when_everything_used(self):
         rows = [_row("p1"), _row("p2")]
-        with mock.patch.object(proxy_pool, "list_pool", return_value=rows), \
+        with mock.patch.object(proxy_pool, "is_enabled", return_value=True), \
+                mock.patch.object(proxy_pool, "is_configured", return_value=True), \
+                mock.patch.object(proxy_pool, "list_pool", return_value=rows), \
                 mock.patch.object(proxy_pool, "_used_unexpired",
                                   return_value={("p1", 9999), ("p2", 9999)}):
             self.assertEqual(proxy_pool.candidate_urls(limit=2),
@@ -74,7 +82,9 @@ class CandidateUrlsTests(unittest.TestCase):
 
     def test_ignores_dead_proxies(self):
         rows = [_row("dead", e2=False), _row("alive")]
-        with mock.patch.object(proxy_pool, "list_pool", return_value=rows):
+        with mock.patch.object(proxy_pool, "is_enabled", return_value=True), \
+                mock.patch.object(proxy_pool, "is_configured", return_value=True), \
+                mock.patch.object(proxy_pool, "list_pool", return_value=rows):
             self.assertEqual(proxy_pool.candidate_urls(), ["http://alive:9999"])
 
     def test_default_candidate_urls_has_no_cap(self):

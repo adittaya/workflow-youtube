@@ -111,7 +111,11 @@ def get_video_details(youtube, video_id):
 
 
 def upload_video(youtube, file_path, title, description, tags=None, category_id="22",
-                 privacy_status="public", thumbnail_path=None, progress_callback=None):
+                 privacy_status="public", thumbnail_path=None, progress_callback=None,
+                 publish_at=None):
+    """Upload a video. `publish_at` (RFC 3339, e.g. '2026-08-20T15:00:00Z')
+    schedules the upload: the video goes up as private and YouTube auto-
+    publishes it at that time (privacyStatus must be 'private' for this)."""
     body = {
         "snippet": {
             "title": title,
@@ -124,6 +128,8 @@ def upload_video(youtube, file_path, title, description, tags=None, category_id=
             "privacyStatus": privacy_status,
         },
     }
+    if publish_at:
+        body["status"]["publishAt"] = publish_at
     parts = "snippet,status"
     media = MediaFileUpload(file_path, chunksize=UPLOAD_CHUNK_SIZE, resumable=True, mimetype="video/*")
     request = youtube.videos().insert(part=parts, body=body, media_body=media)

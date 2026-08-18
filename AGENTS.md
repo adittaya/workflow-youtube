@@ -12,7 +12,12 @@
 - **Cloud (opt-in):** setting `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` routes
   the same code through Supabase for storage. The TUI (`tui.py`) is hybrid —
   local JSON by default, cloud projects/accounts once a Supabase connection is
-  set (`[4]` in the main menu).
+  set (`[4]` Database: the connect flow live-tests the URL/key via the REST
+  API before saving — wrong keys and unreachable URLs are rejected with a
+  clear message — then prints a data summary of projects/accounts/uploads/
+  alerts; missing schema tables are listed with a "run schema.sql" warning; a
+  fresh/empty database still connects and shows an empty state; `[D]` shows
+  the summary anytime; local mode hints at `[4]` on the main menu).
 - **Entry points:** `yt_auto.py` = main local CLI (`upload`/`setup`/`oauth`/
   `status`/`logs`/`verify`/`version`/`proxy`); `tui.py` = management TUI (hybrid
   local/cloud). Main menu is grouped into **Upload** (`[Q]` Quick Deploy guided
@@ -39,6 +44,21 @@
   stored `source_url` (field 1 in Configure) using its own linked account
   (from `account_id` or embedded creds) and its own custom fields; downloads
   rotate through the whole proxy pool with no retry cap (`retries=None`).
+  Two optional questions before the run (Enter skips both): **videos per
+  project** (1–5) — each extra copy is freshly processed with randomised
+  fps/trim via `_bulk_random_overrides` so every upload is a distinct edit
+  (copyright-safe); two more optional range questions let the user pick the
+  randomise bounds per copy — **FPS range** (e.g. `22 28`) and **cut range**
+  (e.g. `8 15`) — each copy draws fresh values inside those bounds (defaults
+  20–25 fps / 10–20s from settings) and the per-copy line shows the actual
+  values; and **schedule publish** — uploads go up private with a
+  `publishAt` RFC-3339 timestamp and YouTube auto-publishes them (threaded
+  through `youtube_api.upload_video(publish_at=...)`; scheduling requires
+  `privacyStatus=private`). Two schedule modes: **auto-spread (default)** —
+  each copy gets its own slot every 6 hours from the current time
+  (`slot_t0 + 6h*n`, displayed in local time, `timedelta` math in tui.py);
+  or **one time** — all videos publish together at a chosen
+  `YYYY-MM-DD HH:MM` local time.
 
 ## Manual Run Model
 
@@ -138,6 +158,10 @@
 
 - `python3 -m py_compile *.py` — all modules compile
 - `python3 yt_auto.py verify` — self-check (local); `yt-auto status --json` — inspect state
+- `installer verify` also checks the **installed app copy is not stale** — it
+  parses the installed `installer/version.py` and flags "re-install to update"
+  when it is older than the current source version (so an old deployment is
+  caught instead of silently running buggy code)
 - Local backend smoke tests run against a throwaway `YT_DATA_DIR` to avoid touching real state
 - No test framework is installed; verification is manual via the CLI
 

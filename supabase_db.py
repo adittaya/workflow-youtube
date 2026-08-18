@@ -61,12 +61,23 @@ def _api(path):
     return f"{_SUPABASE_URL.rstrip('/')}/rest/v1/{path.lstrip('/')}"
 
 
+def _enc(value):
+    """URL-encode a filter value so names with spaces/special chars (e.g.
+    an account called 'My Main Channel') never break the REST query."""
+    return urllib.parse.quote(str(value), safe="")
+
+
 def _request(method, path, **kwargs):
     if not _DB_ENABLED:
         return _local_request(method, path, kwargs.get("data"))
     import urllib.request
     import urllib.error
     url = _api(path)
+    # Safety net: even if a future call site forgets _enc(), a raw space or
+    # other whitespace must never reach urlopen (http.client would raise
+    # InvalidURL). Encode whitespace in place; everything else is untouched.
+    if any(ch.isspace() for ch in url):
+        url = "".join(urllib.parse.quote(ch) if ch.isspace() else ch for ch in url)
     data = kwargs.pop("data", None)
     body = json.dumps(data).encode("utf-8") if data is not None else None
     req = urllib.request.Request(url, data=body, headers=_headers(), method=method)
@@ -97,7 +108,7 @@ def _upsert(table, data, on_conflict="id"):
     except urllib.error.HTTPError as e:
         if e.code == 409:
             key_cols = [c.strip() for c in on_conflict.split(",")]
-            key_filter = "&".join(f"{k}=eq.{data.get(k)}" for k in key_cols if data.get(k) is not None)
+            key_filter = "&".join(f"{k}=eq.{_enc(data.get(k))}" for k in key_cols if data.get(k) is not None)
             if key_filter:
                 existing = _request("GET", f"{table}?{key_filter}&select={key_cols[0]}")
                 if existing:
@@ -128,18 +139,21 @@ def set_pending_hashes(hashes, project_id="1"):
 # ─── Settings ────────────────────────────────────────────────────────────
 
 def get_setting(key, default=None):
+    """Settings round-trip: values are stored natively (JSON), so a string
+    "3128" must come back as "3128", never as int 3128. Only legacy rows
+    written as json.dumps'd strings (objects/arrays) are decoded."""
     if not _DB_ENABLED:
         val = _read_json(_settings_path(), {}).get(key, default)
-        if isinstance(val, str):
+        if isinstance(val, str) and val[:1] in ("{", "["):
             try:
                 return json.loads(val)
             except (json.JSONDecodeError, TypeError):
                 return val
         return val
-    row = _request("GET", f"settings?key=eq.{key}&select=value")
+    row = _request("GET", f"settings?key=eq.{_enc(key)}&select=value")
     if row:
         val = row[0]["value"]
-        if isinstance(val, str):
+        if isinstance(val, str) and val[:1] in ("{", "["):
             try:
                 return json.loads(val)
             except (json.JSONDecodeError, TypeError):
@@ -151,11 +165,12 @@ def get_setting(key, default=None):
 def set_setting(key, value):
     if not _DB_ENABLED:
         vals = _read_json(_settings_path(), {})
-        vals[key] = value if isinstance(value, str) else json.dumps(value)
+        vals[key] = value
         _write_json_atomic(_settings_path(), vals)
         return
-    if not isinstance(value, str):
-        value = json.dumps(value)
+    # Send native JSON values so a bool stays a bool (jsonb): an old json.dumps
+    # path stored 'true' as a JSON *string*, which read back as the string
+    # "true" — a falsey flag like 'false' then became truthy for naive callers.
     _upsert("settings", {"key": key, "value": value, "updated_at": datetime.now(timezone.utc).isoformat()}, on_conflict="key")
 
 
@@ -187,7 +202,7 @@ def _save_local_accounts_rows(rows):
 def get_account(name):
     if not _DB_ENABLED:
         return next((r for r in _local_accounts_rows() if r.get("name") == name), None)
-    row = _request("GET", f"accounts?name=eq.{name}&select=*")
+    row = _request("GET", f"accounts?name=eq.{_enc(name)}&select=*")
     return row[0] if row else None
 
 
@@ -210,6 +225,14 @@ def save_account(name, data):
         rows.append(dict(data))
         _save_local_accounts_rows(rows)
         return
+    # Postgres checks NOT NULL before ON CONFLICT resolution, so a partial
+    # payload (e.g. verify_account writing only status) can never merge via
+    # the API alone. Merge with the existing row first, like local mode.
+    existing = get_account(name)
+    if existing:
+        merged = dict(existing)
+        merged.update(data)
+        data = merged
     _upsert("accounts", data, on_conflict="name")
 
 
@@ -217,7 +240,7 @@ def delete_account(name):
     if not _DB_ENABLED:
         _save_local_accounts_rows([r for r in _local_accounts_rows() if r.get("name") != name])
         return
-    _request("DELETE", f"accounts?name=eq.{name}")
+    _request("DELETE", f"accounts?name=eq.{_enc(name)}")
 
 
 def set_project_account(project_id, account_name):
@@ -278,7 +301,7 @@ def get_upload_state(project_id=""):
         }
         defaults.update(state)
         return defaults
-    row = _request("GET", f"upload_state?project_id=eq.{project_id}&select=*")
+    row = _request("GET", f"upload_state?project_id=eq.{_enc(project_id)}&select=*")
     if row:
         s = row[0]
         if isinstance(s.get("processed_hashes"), list):
@@ -321,7 +344,7 @@ def get_upload_logs(limit=100, project_id=""):
         uploads = [dict(u) for u in log.get("uploads", [])]
         uploads.reverse()
         return uploads[:limit]
-    return _request("GET", f"upload_logs?select=*&project_id=eq.{project_id}&order=upload_time.desc&limit={limit}") or []
+    return _request("GET", f"upload_logs?select=*&project_id=eq.{_enc(project_id)}&order=upload_time.desc&limit={limit}") or []
 
 
 def add_upload_log(entry, project_id=""):
@@ -356,7 +379,7 @@ def list_projects():
 
 
 def get_project(project_id):
-    row = _request("GET", f"projects?id=eq.{project_id}&select=*")
+    row = _request("GET", f"projects?id=eq.{_enc(project_id)}&select=*")
     return row[0] if row else None
 
 
@@ -379,12 +402,12 @@ def update_project(project_id, **fields):
     data = {"updated_at": datetime.now(timezone.utc).isoformat()}
     for k, v in fields.items():
         data[k] = v
-    _request("PATCH", f"projects?id=eq.{project_id}", data=data)
+    _request("PATCH", f"projects?id=eq.{_enc(project_id)}", data=data)
     return get_project(project_id)
 
 
 def delete_project(project_id):
-    _request("DELETE", f"projects?id=eq.{project_id}")
+    _request("DELETE", f"projects?id=eq.{_enc(project_id)}")
 
 
 # ─── Verify checks (self-verification audit trail) ────────────────────────
@@ -405,13 +428,13 @@ def record_verify_check(project_id="", check_name="", status="ok", message="", d
 
 def get_open_alerts(project_id="", limit=50):
     return _request("GET",
-        f"alerts?project_id=eq.{project_id}&resolved_at=is.null"
+        f"alerts?project_id=eq.{_enc(project_id)}&resolved_at=is.null"
         f"&select=*&order=created_at.desc&limit={limit}") or []
 
 
 def resolve_alert(alert_id, by="bot"):
     now = datetime.now(timezone.utc).isoformat()
-    _request("PATCH", f"alerts?id=eq.{alert_id}", data={"resolved_at": now, "resolved_by": by})
+    _request("PATCH", f"alerts?id=eq.{_enc(alert_id)}", data={"resolved_at": now, "resolved_by": by})
 
 
 # ─── Local JSON backend (local-first mode) ────────────────────────────────

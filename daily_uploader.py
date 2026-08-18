@@ -239,7 +239,7 @@ def _extract_keywords(description):
 def upload_daily(video_path, title=None, description=None,
                  tags=None, category_id="22", source_url=None, force=False,
                  source_channel="", comment=None, raw=False,
-                 privacy_status=None):
+                 privacy_status=None, publish_at=None):
     youtube = youtube_api.get_client()
 
     settings = config.load_tui_settings()
@@ -289,6 +289,7 @@ def upload_daily(video_path, title=None, description=None,
         category_id=category_id,
         privacy_status=privacy_status or "public",
         thumbnail_path=thumbnail_path,
+        publish_at=publish_at,
     )
 
     if video_id:

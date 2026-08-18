@@ -12,7 +12,7 @@ Systematic menu layout
 
 import json, os, sys, time, http.server, urllib.request, urllib.error, urllib.parse, re, shutil, random
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 # The TUI renders box-drawing and symbol glyphs (╔═║╚╝ ✓ ✗ ⚠ ▸). Force UTF-8
 # output so it never crashes with UnicodeEncodeError on non-UTF-8 consoles
@@ -218,6 +218,16 @@ def _save_account(name, data):
 
 
 def _delete_account(name):
+    """Delete an account and unlink it from every project (projects keep the
+    credentials that were copied onto them at link time)."""
+    try:
+        for p in supabase_db.list_projects():
+            if p.get("account_id") == name:
+                supabase_db.update_project(p["id"], account_id="")
+                if not supabase_db.is_enabled():
+                    _sync_local_project(supabase_db.get_project(p["id"]))
+    except Exception as e:
+        warn(f"Could not unlink projects: {e}")
     if supabase_db.is_enabled():
         supabase_db.delete_account(name)
     else:
@@ -451,6 +461,8 @@ def main_menu():
             print(f"  {C_DIM}Database: Supabase (cloud){C_RESET}" + (f"  —  {connected_to}" if connected_to else ""))
         else:
             print(f"  {C_DIM}Database: local JSON — data in {DATA_DIR}{C_RESET}")
+            print(f"  {C_DIM}Connect your database in [4] to load your projects, accounts{C_RESET}")
+            print(f"  {C_DIM}and history on this device.{C_RESET}")
         print()
 
         choice = prompt("Choice").strip().upper()
@@ -473,6 +485,98 @@ def main_menu():
             _batch_run_projects()
 
 
+def _probe_supabase(url, key):
+    """Live-test a Supabase connection BEFORE saving it. Returns
+    (ok, message, missing_tables).
+
+    The old flow saved any non-empty URL/key and 'connected' trivially, so a
+    wrong key broke every screen afterwards. This proves the key works against
+    the REST API and reports which app tables the schema.sql has not created
+    yet (a missing table still allows connecting — the app just warns).
+    """
+    base = url.rstrip("/")
+    missing = []
+
+    def _get(path):
+        req = urllib.request.Request(
+            f"{base}/rest/v1/{path}",
+            headers={"apikey": key, "Authorization": f"Bearer {key}"})
+        with urllib.request.urlopen(req, timeout=15):
+            pass
+
+    try:
+        _get("settings?select=*&limit=1")
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            return False, "wrong key — the URL answered but rejected it", missing
+        if e.code == 404:
+            try:
+                _get("")
+            except urllib.error.HTTPError:
+                return False, "URL reachable but has no Supabase REST API here — check the URL", missing
+            missing.append("settings")
+        else:
+            return False, f"HTTP {e.code} — check the URL", missing
+    except Exception as e:
+        return False, f"unreachable ({str(e)[:60]})", missing
+
+    for t in ("projects", "accounts", "settings", "upload_state",
+              "upload_logs", "verify_checks", "alerts"):
+        if t in missing:
+            continue
+        try:
+            _get(f"{t}?select=*&limit=1")
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                missing.append(t)
+        except Exception:
+            pass
+    return True, "connected", missing
+
+
+def _show_db_summary():
+    """After connecting, show what the database actually holds so the synced
+    data is visible immediately. An empty database is fine — it means the app
+    connected to a fresh project and is ready."""
+    print()
+    print(f"  {C_BOLDWHITE}DATA IN THE DATABASE{C_RESET}")
+    divider()
+    try:
+        projects = supabase_db.list_projects()
+        accounts = supabase_db.get_all_accounts()
+    except Exception as e:
+        error(f"Could not read data: {str(e)[:80]}")
+        return
+    total_uploads = 0
+    open_alerts = 0
+    for p in projects:
+        try:
+            st = supabase_db.get_upload_state(project_id=str(p["id"]))
+            total_uploads += int(st.get("total_uploaded", 0) or 0)
+        except Exception:
+            pass
+        try:
+            open_alerts += len(supabase_db.get_open_alerts(str(p["id"]), limit=100))
+        except Exception:
+            pass
+    try:
+        open_alerts += len(supabase_db.get_open_alerts("", limit=100))
+    except Exception:
+        pass
+    print(f"  {C_BOLD}{len(projects)}{C_RESET} project(s)   "
+          f"{C_BOLD}{len(accounts)}{C_RESET} account(s)   "
+          f"{C_BOLD}{total_uploads}{C_RESET} total upload(s)   "
+          f"{C_BOLD}{open_alerts}{C_RESET} open alert(s)")
+    if not projects and not accounts:
+        info("Empty database — connected and ready. Add a project from the main menu.")
+    else:
+        for p in projects[:5]:
+            print(f"    • project: {C_BOLD}{p.get('name')}{C_RESET}")
+        for a in accounts[:5]:
+            print(f"    • account: {C_BOLD}{a.get('name')}{C_RESET}")
+    print()
+
+
 def _database_screen():
     while True:
         clear()
@@ -484,8 +588,10 @@ def _database_screen():
             print(f"  {C_GREEN}Supabase connected:{C_RESET} {su}")
             print()
             print(f"  {C_BOLD}[1]{C_RESET} Disconnect → switch to LOCAL mode")
+            print(f"  {C_BOLD}[D]{C_RESET} Show data summary (what the database holds)")
         else:
             print(f"  {C_DIM}Local JSON mode — data stored in {DATA_DIR}{C_RESET}")
+            print(f"  {C_DIM}Connect your database to see the same data on every device.{C_RESET}")
             print()
             print(f"  {C_BOLD}[1]{C_RESET} Connect Supabase (cloud)")
         print(f"  {C_BOLD}[0]{C_RESET} Back")
@@ -494,6 +600,9 @@ def _database_screen():
         choice = prompt("Choice").strip().upper()
         if choice == "0":
             return
+        elif choice == "D" and supabase_db.is_enabled():
+            _show_db_summary()
+            pause()
         elif choice == "1":
             if supabase_db.is_enabled():
                 if confirm("Disconnect from Supabase and switch to LOCAL mode?"):
@@ -504,14 +613,24 @@ def _database_screen():
             else:
                 su = prompt("Supabase URL", _read_json(BOOTSTRAP_PATH).get("supabase_url", ""))
                 sk = prompt("Supabase Service Key", _read_json(BOOTSTRAP_PATH).get("supabase_key", ""))
-                if su and sk:
-                    _write_json(BOOTSTRAP_PATH, {"supabase_url": su, "supabase_key": sk})
-                    supabase_db.configure(su, sk)
-                    if supabase_db.is_enabled():
-                        success("Connected to Supabase — cloud mode")
-                    else:
-                        error("Connection failed — check URL and key")
+                if not (su and sk):
+                    warn("Both URL and key are required")
                     pause()
+                    continue
+                loading(f"Testing connection to {su}...")
+                ok, msg, missing = _probe_supabase(su, sk)
+                if not ok:
+                    error(f"Connection failed — {msg}")
+                    pause()
+                    continue
+                _write_json(BOOTSTRAP_PATH, {"supabase_url": su, "supabase_key": sk})
+                supabase_db.configure(su, sk)
+                success(f"Connected to Supabase — {msg}")
+                if missing:
+                    warn(f"table(s) missing: {', '.join(missing)} — "
+                         "run schema.sql in the Supabase SQL editor first")
+                _show_db_summary()
+                pause()
 
 
 # ─── SETTINGS (proxy & network) ──────────────────────────────────────────────
@@ -629,7 +748,8 @@ def _clear_proxy():
 
 def _toggle_pool(enabled):
     if enabled:
-        config.save_proxy_settings(proxy_pool_enabled=False)
+        import proxy_pool
+        proxy_pool.disable()
         success("Proxy pool disabled — using manual proxy/direct")
     else:
         import proxy_pool
@@ -637,8 +757,12 @@ def _toggle_pool(enabled):
             warn("Set Pool URL and Pool Key first — pool stays disabled")
             pause()
             return
-        config.save_proxy_settings(proxy_pool_enabled=True)
-        success("Proxy pool enabled — fastest live proxy auto-activated")
+        proxy_pool.enable()
+        best, msg = proxy_pool.activate_saved_best()
+        if best:
+            success(f"Proxy pool enabled — {msg}")
+        else:
+            warn(f"Proxy pool enabled — {msg}")
     pause()
 
 
@@ -703,13 +827,14 @@ def _pool_refresh_now():
         return
     loading("Refreshing & testing proxy pool (this takes a minute)...")
 
-    def progress(done, total, ip):
-        print(f"  {C_DIM}   tested {done}/{total} — {ip}{C_RESET}", end="\r")
+    def progress(done, total, label):
+        print(f"  {C_DIM}   tested {done}/{total} — {label}{C_RESET}{' ' * 28}", end="\r")
 
     best, msg = proxy_pool.refresh_and_activate(progress=progress)
     print()
     if best:
-        success(msg)
+        proxy_pool.enable()
+        success(f"Proxy pool enabled — {msg}")
     else:
         error(msg)
     pause()
@@ -785,11 +910,16 @@ def settings_screen():
         pok = str(s.get("proxy_pool_key") or "").strip()
         pon = C_GREEN if pe else C_DIM
         plabel = "ON" if pe else "OFF"
+        aip = str(s.get("proxy_active_ip") or "").strip()
+        aport = str(s.get("proxy_active_port") or "").strip()
+        alat = s.get("proxy_active_latency")
         print(f"  {C_BOLD}[7]{C_RESET} Enable pool         {pon}{plabel}{C_RESET}")
         print(f"  {C_BOLD}[8]{C_RESET} Pool URL            {pou or f'{C_DIM}(empty){C_RESET}'}")
         print(f"  {C_BOLD}[9]{C_RESET} Pool key            {_masked_display(pok) if pok else f'{C_DIM}(empty){C_RESET}'}")
         print(f"  {C_BOLD}[P]{C_RESET} Refresh & test pool — then activate fastest")
         print(f"  {C_BOLD}[S]{C_RESET} Pool status")
+        if aip:
+            print(f"  {C_DIM}Currently active: {aip}:{aport} ({alat}ms){C_RESET}")
         print()
         divider()
         print(f"\n  {C_BOLDWHITE}PROCESSING — copyright-safe BGM, fps & trim{C_RESET}")
@@ -1196,9 +1326,6 @@ def _delete_account_menu(accounts):
     if not confirm(f"Delete account '{name}' and unlink it from all projects?"):
         return
     _delete_account(name)
-    for p in supabase_db.list_projects():
-        if p.get("account_id") == name:
-            supabase_db.update_project(p["id"], account_id="")
     success(f"Deleted '{name}'")
     pause()
 
@@ -1507,6 +1634,19 @@ def screen_setup(project):
         print(f"\n  {C_BOLDWHITE}CONFIGURE — {p['name']}{C_RESET}")
         divider()
 
+        # ── Credential status — what's set, what's missing ─────────────────
+        def _mark(present):
+            return f"{C_GREEN}✓{C_RESET}" if present else f"{C_RED}✗{C_RESET}"
+
+        has_cid = bool(p.get("yt_client_id"))
+        has_csec = bool(p.get("yt_client_secret"))
+        has_rt = bool(p.get("yt_refresh_token"))
+        print(f"  Google credentials: {_mark(has_cid)} Client ID  "
+              f"{_mark(has_csec)} Secret  {_mark(has_rt)} Login token"
+              + (f"  {C_GREEN}(signed in){C_RESET}" if has_rt
+                 else f"  {C_DIM}run [O] to sign in, or [A] to pick a saved account{C_RESET}"))
+        print()
+
         for i, (key, label, kind) in enumerate(FIELD_SPEC, 1):
             val = p.get(key, "")
             sensitive = "secret" in key or "token" in key or "key" in key or "refresh" in key
@@ -1610,8 +1750,16 @@ def screen_setup(project):
                 # ── Auto-actions ──────────────────────────────────────────
                 if key in ("yt_client_id", "yt_client_secret") and p.get("yt_client_id") and p.get("yt_client_secret"):
                     if confirm("Sign in with Google now to get the login token?"):
-                        p = supabase_db.get_project(pid) or p
                         _do_oauth(p)
+                        p = supabase_db.get_project(pid) or p
+                elif key == "yt_refresh_token" and new_val and p.get("yt_client_id") and p.get("yt_client_secret"):
+                    info("Verifying the saved login token live...")
+                    t_ok, t_note, _t_exp = doctor.test_refresh_token(
+                        p.get("yt_client_id"), p.get("yt_client_secret"), new_val)
+                    if t_ok:
+                        success(f"Token verified live — {t_note}")
+                    else:
+                        warn(f"Token saved, but live check failed: {t_note}")
 
 
 # ─── Doctor screen ────────────────────────────────────────────────────────────
@@ -1702,6 +1850,12 @@ def _do_oauth(project):
         if not supabase_db.is_enabled():
             _sync_local_project(supabase_db.get_project(project["id"]) or project)
         success("Refresh token obtained and saved to project!")
+        if confirm("Also save as a reusable account (other projects can pick it in [2])?"):
+            name = prompt("Account name", project["name"]).strip()
+            if name:
+                _save_account(name, {"client_id": doctor.sanitize_client_id(cid),
+                                     "client_secret": csec, "refresh_token": rt})
+                success(f"Account '{name}' saved — pick it in Project → [2]")
         warn("Your YouTube login expires after ~7 days — re-sign-in before then")
     pause()
 
@@ -2132,7 +2286,86 @@ def _batch_run_projects(projects=None):
     if not selected:
         return
 
+    # Optional: how many videos per project. Each extra copy is freshly
+    # processed with randomised fps/trim so no two uploads are ever the same
+    # (that is what keeps every copy copyright-safe). Enter = 1 (skip).
+    videos_per = 1
+    try:
+        raw = prompt("Videos per project? (Enter = 1, max 5)").strip()
+        if raw:
+            videos_per = max(1, min(5, int(raw)))
+            info(f"Each project will upload {videos_per} fresh processed copies")
+    except (TypeError, ValueError):
+        warn("Not a number — using 1 video per project (option skipped)")
+
+    # Optional: randomised edit range for every copy — each copy gets a fresh
+    # random FPS / cut inside the chosen bounds, so no two uploads are ever an
+    # exact duplicate (that is what keeps every copy copyright-safe).
+    # Enter on both = keep the configured defaults (20–25 fps / 10–20s cut).
+    fps_range = None
+    trim_range = None
+    try:
+        raw = prompt("Randomise FPS per copy — range e.g. '22 28' (Enter = default 20 25)").strip()
+        if raw:
+            nums = [int(x) for x in re.findall(r"\d+", raw)]
+            if len(nums) >= 2:
+                lo, hi = min(nums[0], nums[1]), max(nums[0], nums[1])
+                if 1 <= lo <= 60 and hi <= 60:
+                    fps_range = (lo, hi)
+                    info(f"Each copy gets a random FPS between {lo} and {hi}")
+                else:
+                    warn("FPS range outside 1–60 — keeping the default")
+            else:
+                warn("Could not read the FPS range — keeping the default")
+        raw = prompt("Randomise cut per copy — range in seconds e.g. '8 15' (Enter = default 10 20)").strip()
+        if raw:
+            nums = [int(x) for x in re.findall(r"\d+", raw)]
+            if len(nums) >= 2:
+                lo, hi = min(nums[0], nums[1]), max(nums[0], nums[1])
+                if 0 <= lo <= 300 and hi <= 300:
+                    trim_range = (lo, hi)
+                    info(f"Each copy gets a random cut between {lo}s and {hi}s")
+                else:
+                    warn("Cut range outside 0–300s — keeping the default")
+            else:
+                warn("Could not read the cut range — keeping the default")
+    except (TypeError, ValueError):
+        warn("Skipping the randomise questions (option skipped)")
+
+    # Optional: schedule publish — video goes up PRIVATE and YouTube auto-
+    # publishes it later. Two modes: auto-spread (DEFAULT — each copy gets its
+    # own slot, 6 hours apart from the current time) or one fixed time for all.
+    publish_at = None
+    schedule_spread = False
+    if confirm("Schedule publish? (private now, auto-publishes later)", default_no=True):
+        print()
+        print(f"  {C_BOLDWHITE}SCHEDULE MODE{C_RESET}")
+        print(f"  {C_BOLD}[1]{C_RESET} Auto-spread — one slot every 6 hours from now (default)")
+        print(f"  {C_BOLD}[2]{C_RESET} One time — all videos publish together")
+        print(f"  {C_BOLD}[0]{C_RESET} Skip scheduling")
+        mode = prompt("Choice", "1").strip()
+        if mode == "2":
+            raw = prompt("Publish at (YYYY-MM-DD HH:MM local time, Enter = skip)").strip()
+            if raw:
+                try:
+                    when = datetime.strptime(raw, "%Y-%m-%d %H:%M")
+                    when = when.replace(tzinfo=datetime.now().astimezone().tzinfo)
+                    when_utc = when.astimezone(timezone.utc)
+                    if when_utc <= datetime.now(timezone.utc):
+                        warn("That time is already in the past — scheduling skipped")
+                    else:
+                        publish_at = when_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+                        info(f"All videos scheduled for {when.strftime('%Y-%m-%d %H:%M')} local "
+                             f"({when_utc.strftime('%Y-%m-%d %H:%M')} UTC)")
+                except ValueError:
+                    warn("Could not parse that time — scheduling skipped")
+        elif mode == "1":
+            schedule_spread = True
+            info(f"Auto-spread: {videos_per} slot(s) per project, 6 hours apart "
+                 f"starting now+6h ({datetime.now(timezone.utc).strftime('%H:%M')} UTC now)")
+
     results = []
+    slot_t0 = datetime.now(timezone.utc)
     accounts = _accounts_dict()
     env_keys = ("YT_CLIENT_ID", "YT_CLIENT_SECRET", "YT_REFRESH_TOKEN")
     start = time.time()
@@ -2213,23 +2446,45 @@ def _batch_run_projects(projects=None):
             video_path = dl_result["path"]
             download_dir = os.path.dirname(video_path)
             try:
-                info("  processing (remove music, mix BGM)...")
-                processed = daily_uploader.process_video(video_path)
-                if not processed:
-                    error("  processing failed or duplicate")
-                    results.append((name, False, "processing failed"))
-                    continue
-                info("  uploading...")
-                vid = _upload_with_failover(
-                    processed, title=title, description=description,
-                    tags=tags, source_url=source_url, comment=comment,
-                    source_channel=details.get("channel_id", ""), retries=None)
-                if vid:
-                    success(f"  '{name}' → https://www.youtube.com/watch?v={vid}")
-                    results.append((name, True, vid))
-                else:
-                    error(f"  upload failed for '{name}'")
-                    results.append((name, False, "upload failed"))
+                for n in range(1, videos_per + 1):
+                    label = name if videos_per == 1 else f"{name} #{n}"
+                    overrides = None
+                    if videos_per > 1 or fps_range or trim_range:
+                        overrides = _bulk_random_overrides(settings)
+                        if fps_range:
+                            overrides["fps"] = random.randint(fps_range[0], fps_range[1])
+                        if trim_range:
+                            overrides["trim_start"] = random.randint(trim_range[0], trim_range[1])
+                            overrides["trim_end"] = random.randint(trim_range[0], trim_range[1])
+                    if overrides:
+                        info(f"  processing copy {n}/{videos_per} — randomised edits "
+                             f"(fps {overrides['fps']}, cut {overrides['trim_start']}–"
+                             f"{overrides['trim_end']}s, every copy differs)...")
+                    elif videos_per > 1:
+                        info(f"  processing copy {n}/{videos_per} ...")
+                    processed = daily_uploader.process_video(video_path, overrides=overrides)
+                    if not processed:
+                        error(f"  processing failed for '{label}'")
+                        results.append((label, False, "processing failed"))
+                        continue
+                    copy_publish_at = publish_at
+                    if schedule_spread:
+                        copy_publish_at = (slot_t0 + timedelta(hours=6 * n)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                        local_when = datetime.strptime(copy_publish_at, "%Y-%m-%dT%H:%M:%SZ")
+                        local_when = local_when.replace(tzinfo=timezone.utc).astimezone()
+                        info(f"  scheduled for {local_when.strftime('%Y-%m-%d %H:%M')} local")
+                    info("  uploading..." + (" (scheduled)" if copy_publish_at else ""))
+                    vid = _upload_with_failover(
+                        processed, title=title, description=description,
+                        tags=tags, source_url=source_url, comment=comment,
+                        source_channel=details.get("channel_id", ""), retries=None,
+                        publish_at=copy_publish_at)
+                    if vid:
+                        success(f"  '{label}' → https://www.youtube.com/watch?v={vid}")
+                        results.append((label, True, vid))
+                    else:
+                        error(f"  upload failed for '{label}'")
+                        results.append((label, False, "upload failed"))
             finally:
                 shutil.rmtree(download_dir, ignore_errors=True)
                 info(f"  cleaned up: {download_dir}")
@@ -2244,12 +2499,23 @@ def _batch_run_projects(projects=None):
     ok_count = sum(1 for _, ok, _ in results if ok)
     print()
     divider()
-    print(f"\n  {C_BOLDWHITE}BATCH RUN COMPLETE — {ok_count}/{len(selected)} succeeded"
+    print(f"\n  {C_BOLDWHITE}BATCH RUN COMPLETE — {ok_count}/{len(results)} succeeded"
           f"  ({C_DIM}{_elapsed(start)}{C_RESET}){C_RESET}")
-    for name, ok, detail in results:
+    if publish_at:
+        print(f"  {C_DIM}All uploads are private and scheduled for "
+              f"{publish_at.replace('T', ' ').replace('Z', ' UTC')} — "
+              f"YouTube publishes them automatically.{C_RESET}")
+    elif schedule_spread:
+        first = slot_t0 + timedelta(hours=6)
+        last = slot_t0 + timedelta(hours=6 * videos_per)
+        print(f"  {C_DIM}Auto-spread schedule: every upload is private now and "
+              f"publishes every 6 hours — {videos_per} slot(s) per project from "
+              f"{first.strftime('%Y-%m-%d %H:%M')} to "
+              f"{last.strftime('%Y-%m-%d %H:%M')} UTC.{C_RESET}")
+    for label, ok, detail in results:
         mark = f"{C_GREEN}OK{C_RESET}" if ok else f"{C_RED}FAIL{C_RESET}"
         shown = f"https://www.youtube.com/watch?v={detail}" if ok else detail
-        print(f"  {mark}  {name}  {C_DIM}{shown}{C_RESET}")
+        print(f"  {mark}  {label}  {C_DIM}{shown}{C_RESET}")
     pause()
 
 
@@ -2402,7 +2668,7 @@ def _activate_proxy_live():
 
 
 def _upload_with_failover(processed, title, description, tags, source_url,
-                          comment, source_channel, retries=4):
+                          comment, source_channel, retries=4, publish_at=None):
     """Test the proxy, upload, and on any proxy-related failure re-rotate the
     pool and retry. Returns the video ID or None.
 
@@ -2434,12 +2700,15 @@ def _upload_with_failover(processed, title, description, tags, source_url,
         attempt += 1
         if cap and attempt > cap:
             return None
-        info(f"uploading (attempt {attempt}{'/' + str(cap) if cap else ''})...")
+        info(f"uploading (attempt {attempt}{'/' + str(cap) if cap else ''})"
+             + (" — scheduled" if publish_at else "") + "...")
         try:
             vid = daily_uploader.upload_daily(
                 processed, title=title, description=description,
                 tags=tags, source_url=source_url, force=True,
                 source_channel=source_channel, comment=comment, raw=True,
+                privacy_status="private" if publish_at else "public",
+                publish_at=publish_at,
             )
         except HttpError as e:
             status = getattr(getattr(e, "resp", None), "status", 0)
@@ -2558,7 +2827,8 @@ def _quick_deploy_flow(name, acct):
 
     # 6) Proxy mode — verify the proxy LIVE and auto-rotate when it's down
     if confirm("\nEnable proxy mode (route traffic through the proxy pool)?", default_no=True):
-        config.save_proxy_settings(proxy_pool_enabled=True)
+        import proxy_pool
+        proxy_pool.enable()
         info("Activating proxy pool...")
         ok, msg = _activate_proxy_live()
         if ok:

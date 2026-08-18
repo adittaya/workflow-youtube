@@ -308,12 +308,22 @@ def upload_daily(video_path, title=None, description=None,
 
         comment_id = None
         if comment_text:
-            try:
-                held = settings.get("comment_moderation", "published") == "heldForReview"
-                comment_id = youtube_api.post_comment(youtube, video_id, comment_text, held_for_review=held)
-                config.log(f"comment posted: {comment_id}")
-            except Exception as e:
-                config.log(f"comment failed: {e}")
+            if publish_at:
+                # Scheduled uploads are private until YouTube auto-publishes
+                # them, and the API refuses comments on private videos
+                # (403 forbidden). Queue the comment — drain_pending_comments
+                # posts it once the video is public.
+                supabase_db.add_pending_comment(
+                    video_id, comment_text, project_id=config.PROJECT_ID,
+                    publish_at=publish_at)
+                config.log(f"comment queued — posts when the video publishes ({publish_at})")
+            else:
+                try:
+                    held = settings.get("comment_moderation", "published") == "heldForReview"
+                    comment_id = youtube_api.post_comment(youtube, video_id, comment_text, held_for_review=held)
+                    config.log(f"comment posted: {comment_id}")
+                except Exception as e:
+                    config.log(f"comment failed: {e}")
 
         state = load_upload_state()
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -361,6 +371,95 @@ def upload_daily(video_path, title=None, description=None,
         config.log(f"uploaded: {video_id}")
 
     return video_id
+
+
+# ─── Queued comments for scheduled uploads ────────────────────────────────
+# Scheduled uploads go up private (publishAt) and the YouTube API refuses
+# comments on private videos, so upload_daily queues the comment instead.
+# drain_pending_comments posts each one once the video is public (publish_at
+# passed). Runs on TUI startup and `yt-auto comments`.
+
+def _http_error_reason(e):
+    try:
+        err = json.loads(e.content.decode("utf-8"))
+        return err["error"]["errors"][0]["reason"]
+    except Exception:
+        return ""
+
+
+def _comment_client(entry):
+    """YouTube client for a queued comment: the project's embedded creds
+    first, then its linked account. None when no credentials exist (the
+    project/account was deleted)."""
+    cid = csec = rtoken = ""
+    pid = str(entry.get("project_id") or "")
+    try:
+        project = supabase_db.get_project(pid) if pid else None
+    except Exception:
+        project = None
+    if project:
+        cid = project.get("yt_client_id") or ""
+        csec = project.get("yt_client_secret") or ""
+        rtoken = project.get("yt_refresh_token") or ""
+    if not rtoken and pid:
+        try:
+            acct = supabase_db.get_project_account(pid)
+        except Exception:
+            acct = None
+        if acct:
+            cid = acct.get("client_id") or cid
+            csec = acct.get("client_secret") or csec
+            rtoken = acct.get("refresh_token") or ""
+    if not cid or not rtoken:
+        return None
+    try:
+        return youtube_api.get_client(cid, csec, rtoken)
+    except Exception:
+        return None
+
+
+def drain_pending_comments():
+    """Post queued comments whose videos have published. Returns (posted,
+    dropped). Never raises — every failure either retries later or drops
+    the entry with a log line."""
+    posted, dropped = 0, 0
+    now = datetime.now(timezone.utc)
+    for entry in supabase_db.list_pending_comments():
+        try:
+            due = datetime.fromisoformat(entry["publish_at"].replace("Z", "+00:00"))
+        except (TypeError, ValueError, KeyError):
+            due = now
+        if due > now:
+            continue
+        yt = _comment_client(entry)
+        if yt is None:
+            supabase_db.remove_pending_comment(entry["id"])
+            dropped += 1
+            config.log(f"queued comment dropped (no credentials left): {entry['video_id']}")
+            continue
+        try:
+            youtube_api.post_comment(yt, entry["video_id"], entry["comment"])
+            supabase_db.remove_pending_comment(entry["id"])
+            posted += 1
+            config.log(f"queued comment posted on {entry['video_id']}")
+        except Exception as e:
+            reason = _http_error_reason(e)
+            if reason == "commentsDisabled":
+                supabase_db.remove_pending_comment(entry["id"])
+                dropped += 1
+                config.log(f"queued comment dropped (comments disabled): {entry['video_id']}")
+            elif reason in ("forbidden", "insufficientPermissions"):
+                attempts = int(entry.get("attempts") or 0) + 1
+                if attempts >= 5:
+                    supabase_db.remove_pending_comment(entry["id"])
+                    dropped += 1
+                    config.log(f"queued comment dropped after 5 attempts "
+                               f"(video still not commentable): {entry['video_id']}")
+                else:
+                    supabase_db.increment_pending_attempt(entry["id"])
+            else:
+                supabase_db.increment_pending_attempt(entry["id"])
+    return posted, dropped
 
 
 def get_status():

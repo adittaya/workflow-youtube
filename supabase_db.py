@@ -2,6 +2,7 @@ import os
 import json
 import time
 import tempfile
+import uuid
 import urllib.error
 import urllib.parse
 from pathlib import Path
@@ -372,6 +373,46 @@ def add_upload_log(entry, project_id=""):
             _request("POST", "upload_logs", data=entry)
         else:
             raise
+
+
+# ─── Pending comments (queued for scheduled/private uploads) ───────────────
+# YouTube's API refuses comments on private videos (403 forbidden), so a
+# comment for a scheduled upload (private + publishAt) is queued here and
+# posted once YouTube has auto-published the video. Stored as a JSON list in
+# the settings table (works in both backends, no schema migration needed).
+
+def add_pending_comment(video_id, comment, project_id="", account="", publish_at=""):
+    now = datetime.now(timezone.utc).isoformat()
+    rows = list(get_setting("pending_comments", []) or [])
+    rows.append({
+        "id": str(uuid.uuid4()),
+        "video_id": video_id,
+        "comment": comment,
+        "project_id": str(project_id),
+        "account": account or "",
+        "publish_at": publish_at or now,
+        "attempts": 0,
+        "created_at": now,
+    })
+    set_setting("pending_comments", rows)
+
+
+def list_pending_comments():
+    rows = get_setting("pending_comments", []) or []
+    return sorted(rows, key=lambda r: r.get("publish_at", ""))
+
+
+def remove_pending_comment(cid):
+    set_setting("pending_comments",
+                [r for r in list_pending_comments() if str(r.get("id")) != str(cid)])
+
+
+def increment_pending_attempt(cid):
+    rows = list_pending_comments()
+    for r in rows:
+        if str(r.get("id")) == str(cid):
+            r["attempts"] = int(r.get("attempts") or 0) + 1
+    set_setting("pending_comments", rows)
 
 
 # ─── Projects ───────────────────────────────────────────────────────────────

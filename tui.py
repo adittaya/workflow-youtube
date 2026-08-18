@@ -442,6 +442,13 @@ def main_menu():
         banner()
         print()
         _print_quick_status()
+        try:
+            posted, dropped = daily_uploader.drain_pending_comments()
+            if posted or dropped:
+                print(f"  {C_BOLD}queued comments:{C_RESET} {posted} posted, {dropped} dropped")
+                print()
+        except Exception:
+            pass
         print(f"\n  {C_BOLDWHITE}MAIN MENU{C_RESET}")
         divider()
         print(f"  {C_DIM}── UPLOAD ────────────────────────────────────────{C_RESET}")

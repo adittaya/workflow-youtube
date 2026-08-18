@@ -44,6 +44,13 @@
   stored `source_url` (field 1 in Configure) using its own linked account
   (from `account_id` or embedded creds) and its own custom fields; downloads
   rotate through the whole proxy pool with no retry cap (`retries=None`).
+  **Scheduled uploads queue their comment**: the YouTube API refuses comments
+  on private videos (403 forbidden), so when `publish_at` is set the comment
+  is queued via `supabase_db.add_pending_comment` (JSON list in the settings
+  table, works in both backends) and `daily_uploader.drain_pending_comments`
+  posts it once the video is public — runs on TUI startup and
+  `yt-auto comments`; attempts cap at 5, `commentsDisabled` drops
+  immediately, deleted projects drop the entry with a log line.
   Two optional questions before the run (Enter skips both): **videos per
   project** (1–5) — each extra copy is freshly processed with randomised
   fps/trim via `_bulk_random_overrides` so every upload is a distinct edit

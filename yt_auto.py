@@ -317,6 +317,14 @@ def cmd_upload(args):
             config.log(f"cleanup failed: {e}")
 
 
+def cmd_comments(args):
+    import daily_uploader
+    posted, dropped = daily_uploader.drain_pending_comments()
+    print(f"queued comments: {posted} posted, {dropped} dropped, "
+          f"{len(daily_uploader.supabase_db.list_pending_comments())} still waiting")
+    return 0
+
+
 def cmd_proxy(args):
     import json as _json
     import proxy_pool
@@ -395,6 +403,8 @@ def build_parser():
 
     sub.add_parser("version", help="print version")
 
+    sub.add_parser("comments", help="post queued comments for scheduled uploads that have published")
+
     p_proxy = sub.add_parser("proxy", help="proxy pool: refresh (test+activate) or status")
     p_proxy.add_argument("action", choices=["refresh", "status"], help="what to do")
     p_proxy.add_argument("--json", action="store_true", help="JSON output (status)")
@@ -418,6 +428,7 @@ def main(argv=None):
         "upload": cmd_upload,
         "version": cmd_version,
         "proxy": cmd_proxy,
+        "comments": cmd_comments,
     }
     if not args.cmd:
         parser.print_help()

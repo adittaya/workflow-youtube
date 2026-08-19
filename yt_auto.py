@@ -248,7 +248,8 @@ def cmd_setup(args):
 def cmd_upload(args):
     """Interactive single-video upload: paste a link, process it through the
     Demucs → FFmpeg → BGM pipeline, then prompt for a custom title, comment and
-    description (Enter keeps the defaults) and a publish confirmation."""
+    description (Enter copies from the source video; comment Enter = skip) and
+    a publish confirmation."""
     import re
     import shutil
 
@@ -308,8 +309,8 @@ def cmd_upload(args):
         print(f"processed: {os.path.basename(processed)}\n")
 
         title = _prompt(f"Title (Enter = copy from source) [{source_title}]") or source_title
-        comment = _prompt("Comment (Enter = default template)")
-        desc = _prompt("Description (Enter = default template)")
+        comment = _prompt("Comment (Enter = no comment; or paste a custom one)")
+        desc = _prompt("Description (Enter = copy from source)")
         publish = _prompt("Publish now? (Y/n)").strip().lower()
         print()
 
@@ -318,7 +319,8 @@ def cmd_upload(args):
         vid = daily_uploader.upload_daily(
             processed, title=title, description=desc or None, tags=source_tags,
             source_url=source_url, force=True, source_channel=source_channel,
-            comment=comment or None, raw=True, privacy_status=privacy,
+            comment=comment or daily_uploader.SKIP_COMMENT, raw=True,
+            privacy_status=privacy, details=details,
         )
         if vid:
             state = "published" if publish else "saved as private draft"

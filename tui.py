@@ -2018,6 +2018,7 @@ def _do_instant_upload(project):
             processed, title=title, description=description,
             tags=tags, source_url=source_url, force=True,
             source_channel=details.get("channel_id", ""),
+            details=details,
         )
         if vid:
             success(f"Uploaded: https://www.youtube.com/watch?v={vid}  ({_elapsed(start)})")
@@ -2153,16 +2154,13 @@ def _do_bulk_upload(project):
             if not confirm("Upload anyway?", default_no=False):
                 return
 
-        # Pre-configured project fields fire into every account; fall back to
-        # the source values when a field is empty.
-        title = (settings.get("custom_title") or "").strip() or details.get("title", "")
-        description = (settings.get("custom_description") or "").strip() or details.get("description", "")
-        desc_suffix = (settings.get("mirror_description_suffix") or "").strip()
-        if desc_suffix:
-            description = f"{description}\n{desc_suffix}"
-        comment = (settings.get("custom_comment") or "").strip() or None
-        tags = details.get("tags", [])
-        info(f"Project fields → title: {title[:70]}{'…' if len(title) > 70 else ''}")
+        # Pre-configured project fields fire into every account; the unified
+        # resolver falls back to the source values when a field is empty and
+        # skips the comment entirely when none is configured.
+        p_title, p_desc, p_comment = daily_uploader.resolve_fields(
+            details, settings, url=source_url)
+        info(f"Project fields → title: {p_title[:70]}{'…' if len(p_title) > 70 else ''}"
+             + ("" if p_comment else "  (no comment)"))
         info(f"Uploading to {len(ok_accounts)} account(s): {', '.join(ok_accounts)}")
 
         info("Downloading video (trying every proxy in the pool, no retry limit)...")
@@ -2214,10 +2212,10 @@ def _do_bulk_upload(project):
                 os.environ["YT_REFRESH_TOKEN"] = acct.get("refresh_token", "")
                 try:
                     vid = _upload_with_failover(
-                        processed, title=title, description=description,
-                        tags=tags, source_url=source_url,
-                        comment=comment, source_channel=details.get("channel_id", ""),
-                        retries=None)
+                        processed, title=None, description=None,
+                        tags=details.get("tags", []), source_url=source_url,
+                        comment=None, source_channel=details.get("channel_id", ""),
+                        retries=None, raw=False, details=details)
                     if vid:
                         success(f"[{i}/{len(ok_accounts)}] '{name}' → "
                                 f"https://www.youtube.com/watch?v={vid}")
@@ -2457,17 +2455,9 @@ def _batch_run_projects(projects=None):
                 results.append((name, False, "video not found"))
                 continue
 
-            def _custom(key):
-                v = (p.get(key) or settings.get(key) or "").strip()
-                return v
-
-            title = _custom("custom_title") or details.get("title", "")
-            description = _custom("custom_description") or details.get("description", "")
-            desc_suffix = (settings.get("mirror_description_suffix") or "").strip()
-            if desc_suffix:
-                description = f"{description}\n{desc_suffix}"
-            comment = _custom("custom_comment") or None
             tags = details.get("tags", [])
+            if not (p.get("custom_comment") or settings.get("custom_comment") or "").strip():
+                info("  no comment configured — comment will be skipped")
 
             info("  downloading (full proxy rotation, no retry cap)...")
             try:
@@ -2517,10 +2507,10 @@ def _batch_run_projects(projects=None):
                         info(f"  scheduled for {local_when.strftime('%Y-%m-%d %H:%M')} local")
                     info("  uploading..." + (" (scheduled)" if copy_publish_at else ""))
                     vid = _upload_with_failover(
-                        processed, title=title, description=description,
-                        tags=tags, source_url=source_url, comment=comment,
+                        processed, title=None, description=None,
+                        tags=tags, source_url=source_url, comment=None,
                         source_channel=details.get("channel_id", ""), retries=None,
-                        publish_at=copy_publish_at)
+                        publish_at=copy_publish_at, raw=False, details=details)
                     if vid:
                         success(f"  '{label}' → https://www.youtube.com/watch?v={vid}")
                         results.append((label, True, vid))
@@ -2608,15 +2598,19 @@ def _ask_copy_or_custom(label, source, single_line=False):
 
 
 def _ask_comment():
-    """Comment question: download-link default or a custom pasted comment.
-    Returns None for the default (upload falls back to the download link)."""
+    """Comment question with an explicit skip: Enter = no comment,
+    y = download link, n = custom pasted comment. Returns the text, the
+    DOWNLOAD_LINK_COMMENT sentinel, or SKIP_COMMENT (never None)."""
     print()
     print(f"  {C_BOLDWHITE}Comment{C_RESET}")
-    print(f"  {C_DIM}Default: download link in the comment.{C_RESET}")
-    choice = prompt("Use the download-link default comment? (y=default / n=custom)", "y").strip().lower()
-    if choice in ("", "y", "yes"):
-        return None
-    return _read_multiline("Paste your custom comment")
+    print(f"  {C_DIM}Enter = no comment (skip)  ·  y = download link in the comment  ·  n = custom{C_RESET}")
+    choice = prompt("Comment choice (Enter / y / n)").strip().lower()
+    if choice in ("y", "yes", "dl", "download", "link", "1"):
+        return daily_uploader.DOWNLOAD_LINK_COMMENT
+    if choice in ("n", "no", "custom", "2"):
+        text = _read_multiline("Paste your custom comment")
+        return text if text else daily_uploader.SKIP_COMMENT
+    return daily_uploader.SKIP_COMMENT
 
 
 def _ask_processing_options():
@@ -2717,7 +2711,8 @@ def _activate_proxy_live():
 
 
 def _upload_with_failover(processed, title, description, tags, source_url,
-                          comment, source_channel, retries=4, publish_at=None):
+                          comment, source_channel, retries=4, publish_at=None,
+                          raw=False, details=None):
     """Test the proxy, upload, and on any proxy-related failure re-rotate the
     pool and retry. Returns the video ID or None.
 
@@ -2755,9 +2750,9 @@ def _upload_with_failover(processed, title, description, tags, source_url,
             vid = daily_uploader.upload_daily(
                 processed, title=title, description=description,
                 tags=tags, source_url=source_url, force=True,
-                source_channel=source_channel, comment=comment, raw=True,
+                source_channel=source_channel, comment=comment, raw=raw,
                 privacy_status="private" if publish_at else "public",
-                publish_at=publish_at,
+                publish_at=publish_at, details=details,
             )
         except HttpError as e:
             status = getattr(getattr(e, "resp", None), "status", 0)
@@ -2928,6 +2923,7 @@ def _quick_deploy_flow(name, acct):
             title=title, description=description,
             tags=details.get("tags", []), source_url=source_url,
             comment=comment, source_channel=details.get("channel_id", ""),
+            raw=True, details=details,
         )
         if vid:
             success(f"Uploaded: https://www.youtube.com/watch?v={vid}  ({_elapsed(start)})")

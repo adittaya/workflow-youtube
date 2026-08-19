@@ -191,63 +191,86 @@ def _format_template(tmpl, **kw):
         return tmpl
 
 
-def _extract_keywords(description):
-    """Pull only the keyword/tag block out of a copied description: hashtags
-    found anywhere plus the trailing run of keyword-like lines at the bottom.
-    Returns '' when nothing keyword-ish exists."""
-    if not description:
-        return ""
-    lines = str(description).splitlines()
+# Sentinel for an explicit "download link in the comment" choice. The actual
+# link is only known after the upload (shortening), so the marker survives the
+# resolution step and is expanded at comment-posting time.
+DOWNLOAD_LINK_COMMENT = "\x1fDOWNLOAD_LINK_COMMENT\x1f"
+# Sentinel for an explicit "post no comment" choice. Needed to distinguish
+# "not provided" (fall back to the configured custom comment) from a real
+# skip (the user said no comment even though one is configured).
+SKIP_COMMENT = "\x1fSKIP_COMMENT\x1f"
 
-    hashtags = []
-    for line in lines:
-        for tok in re.findall(r"#[A-Za-z0-9_]+", line):
-            if tok not in hashtags:
-                hashtags.append(tok)
 
-    def _keyword_line(s):
-        if s.startswith("#"):
-            return True
-        if re.search(r"https?://", s):
-            return False
-        if any(c in s for c in ".!?;"):
-            return False
-        tokens = [t for t in re.split(r"[,/\\\s]+", s) if t]
-        if not tokens:
-            return False
-        return all(len(t) <= 40 for t in tokens)
+def resolve_fields(details, settings, *, title=None, description=None,
+                   comment=None, url="", prefix=None, suffix=None, raw=False):
+    """The single, authoritative title/description/comment resolution used by
+    every upload path (quick deploy, instant, bulk, batch, CLI).
 
-    trailing = []
-    for line in reversed(lines):
-        s = line.strip()
-        if not s:
-            if trailing:
-                break
-            continue
-        if _keyword_line(s):
-            trailing.insert(0, s)
+    Rules (applied in this order):
+      - custom_title / custom_description empty  → the SOURCE video's own
+        values are used automatically (never blank, never a placeholder).
+      - `raw=True`                              → the provided title/description
+        are used exactly as given (interactive flows); `raw=False` applies the
+        project's configured fields (project flows).
+      - `mirror_title_prefix` prepends to the title only when no custom title
+        exists (project flows only); `mirror_description_suffix` is appended
+        to the description the same way.
+      - `comment`:
+          * SKIP_COMMENT            → no comment (explicit user choice)
+          * DOWNLOAD_LINK_COMMENT   → download-link comment (expanded later)
+          * any other text          → used as-is (may contain {url}/{title})
+          * None / empty            → configured custom comment, or if that is
+                                      empty too → NO comment (never auto-posted)
+      - Template tokens ({title}, {url}) that fail to expand are left intact
+        rather than crashing the upload.
+
+    Returns (title, description, comment) where `comment` is the final raw
+    text, a sentinel, or None (= skipped)."""
+    source_title = str((details or {}).get("title") or "")
+    source_desc = str((details or {}).get("description") or "")
+    settings = settings or {}
+    if prefix is None:
+        prefix = settings.get("mirror_title_prefix") or ""
+    if suffix is None:
+        suffix = settings.get("mirror_description_suffix") or ""
+    custom_title = (settings.get("custom_title") or "").strip()
+    custom_desc = (settings.get("custom_description") or "").strip()
+
+    if raw:
+        final_title = str(title or source_title or "")
+        final_desc = str(description or source_desc or "")
+    else:
+        base = str(title or source_title or "")
+        if custom_title:
+            final_title = _format_template(custom_title, title=base, url=url)
         else:
-            break
+            final_title = f"{prefix}{base}"
+        if custom_desc:
+            final_desc = _format_template(custom_desc, title=final_title, url=url)
+        else:
+            final_desc = str(description or source_desc or "")
+        if suffix:
+            final_desc = (final_desc + "\n" + suffix).strip()
 
-    parts = list(hashtags)
-    for line in trailing:
-        if line not in parts:
-            parts.append(line)
-    return "\n".join(parts)
+    if comment == SKIP_COMMENT:
+        final_comment = None
+    elif comment == DOWNLOAD_LINK_COMMENT:
+        final_comment = DOWNLOAD_LINK_COMMENT
+    elif comment and str(comment).strip():
+        final_comment = str(comment).strip()
+    else:
+        custom_comment = (settings.get("custom_comment") or "").strip()
+        final_comment = custom_comment if custom_comment else None
+    return final_title, final_desc, final_comment
 
 
 def upload_daily(video_path, title=None, description=None,
                  tags=None, category_id="22", source_url=None, force=False,
                  source_channel="", comment=None, raw=False,
-                 privacy_status=None, publish_at=None):
+                 privacy_status=None, publish_at=None, details=None):
     youtube = youtube_api.get_client()
 
     settings = config.load_tui_settings()
-    prefix = settings.get("mirror_title_prefix", "")
-    suffix = settings.get("mirror_description_suffix", "")
-
-    if title is None:
-        title = f"Daily Upload {datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
 
     video_url = source_url or ""
     short_url = None
@@ -255,11 +278,14 @@ def upload_daily(video_path, title=None, description=None,
         short_url = shortener.shorten_url(video_url)
         config.log(f"shortened: {video_url} → {short_url}")
 
-    custom_title = (settings.get("custom_title") or "").strip()
-    if custom_title and not raw:
-        title = _format_template(custom_title, title=title, url=short_url or video_url)
-    elif not raw:
-        title = f"{prefix}{title}"
+    # Single source of truth for title/description/comment resolution
+    title, description, comment = resolve_fields(
+        details, settings,
+        title=title, description=description, comment=comment,
+        url=short_url or video_url, raw=raw)
+
+    if not title:
+        title = f"Daily Upload {datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
 
     thumbnail_path = None
     if source_url:
@@ -270,21 +296,7 @@ def upload_daily(video_path, title=None, description=None,
 
     config.log(f"uploading: {title}")
 
-    custom_desc = (settings.get("custom_description") or "").strip()
-    if custom_desc and (description is None or not raw):
-        upload_desc = _format_template(custom_desc, title=title, url=short_url or video_url)
-        if suffix:
-            upload_desc += "\n" + suffix
-    elif raw and description:
-        upload_desc = description
-        if suffix:
-            upload_desc += "\n" + suffix
-    else:
-        upload_desc = "Download link in pinned comment"
-        keywords = _extract_keywords(description) if description else ""
-        if keywords:
-            upload_desc += "\n\n" + keywords
-
+    upload_desc = description or ""
     video_id = youtube_api.upload_video(
         youtube, video_path,
         title=title,
@@ -298,17 +310,13 @@ def upload_daily(video_path, title=None, description=None,
 
     if video_id:
         comment_text = None
-        if comment:
-            comment_text = comment
+        if comment == DOWNLOAD_LINK_COMMENT:
+            comment_text = f"Download link: {short_url or video_url}"
+        elif comment:
+            comment_text = _format_template(comment,
+                                            url=short_url or video_url, title=title)
         else:
-            custom_comment = (settings.get("custom_comment") or "").strip()
-            if custom_comment:
-                comment_text = _format_template(custom_comment,
-                                                url=short_url or video_url, title=title)
-            elif short_url:
-                comment_text = f"Download link: {short_url}"
-            elif video_url:
-                comment_text = f"Download link: {video_url}"
+            config.log("comment skipped — no comment configured for this upload")
 
         comment_id = None
         if comment_text:
@@ -317,17 +325,20 @@ def upload_daily(video_path, title=None, description=None,
                 # them, and the API refuses comments on private videos
                 # (403 forbidden). Queue the comment — drain_pending_comments
                 # posts it once the video is public.
-                supabase_db.add_pending_comment(
-                    video_id, comment_text, project_id=config.PROJECT_ID,
-                    publish_at=publish_at)
-                config.log(f"comment queued — posts when the video publishes ({publish_at})")
+                try:
+                    supabase_db.add_pending_comment(
+                        video_id, comment_text, project_id=config.PROJECT_ID,
+                        publish_at=publish_at)
+                    config.log(f"comment queued — posts when the video publishes ({publish_at})")
+                except Exception as e:
+                    config.log(f"comment queue failed (upload unaffected): {e}")
             else:
                 try:
                     held = settings.get("comment_moderation", "published") == "heldForReview"
                     comment_id = youtube_api.post_comment(youtube, video_id, comment_text, held_for_review=held)
                     config.log(f"comment posted: {comment_id}")
                 except Exception as e:
-                    config.log(f"comment failed: {e}")
+                    config.log(f"comment failed (upload unaffected): {e}")
 
         state = load_upload_state()
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")

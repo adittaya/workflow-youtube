@@ -40,6 +40,19 @@
   the terminal, a blank line — or `END` — finishes and saves; single-line
   `input()` silently cut long pastes at the first newline, which is why long
   descriptions appeared "not saved").
+  **Unified field algorithm** (`daily_uploader.resolve_fields` — the single
+  source of truth for every upload path): empty custom title/description fall
+  back to the SOURCE video's own values (never a placeholder); `raw=True`
+  (interactive flows) uses exactly what the user chose, `raw=False` (project
+  flows) applies the project's configured fields + title prefix + description
+  suffix; an empty comment means the comment is **SKIPPED** — nothing is
+  posted and nothing is queued (no automatic download-link fallback; the
+  download-link comment only happens via the explicit choice). Two sentinels:
+  `SKIP_COMMENT` (explicit no-comment that beats a configured comment) and
+  `DOWNLOAD_LINK_COMMENT` (expanded to "Download link: <short url>" at post
+  time). Bad `{token}` templates fall back verbatim instead of crashing.
+  Quick Deploy comment question: Enter = no comment, y = download link,
+  n = custom paste.
   UI strings prefer plain language over jargon (Google sign-in, "flagged by
   YouTube", short link service) with placeholder hints on inputs.
 - **Bulk upload** (`[6]` per project): pick multiple saved accounts or "all",

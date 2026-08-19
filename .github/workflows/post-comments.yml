@@ -23,4 +23,9 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: python3 yt_auto.py comments
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_SERVICE_KEY" ]; then
+            echo "::error::Repo secrets SUPABASE_URL / SUPABASE_SERVICE_KEY are not set — the drain would silently no-op in local mode. Add them under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          python3 yt_auto.py comments

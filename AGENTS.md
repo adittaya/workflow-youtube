@@ -57,11 +57,16 @@
   immediately, deleted projects drop the entry with a log line.
   Cloud-only extra drain: `supabase/functions/post-pending-comments` (Edge
   Function, Deno TS) mirrors the Python drain so Supabase itself can post
-  within ~1 min of publish — schedule it every minute via Dashboard →
-  Integrations → Cron → Edge Function (or pg_cron + pg_net; pg_net alone
-  can't refresh OAuth tokens, JSON-body-only). Deploy via
-  `supabase functions deploy post-pending-comments`; validated live against
-  the cloud (token refresh + 403-retry path exercised).
+  within ~1 min of publish — **deployed with verify_jwt=false** (the
+  `sb_secret_...` key is not a JWT) and gated by the `X-Post-Secret` header
+  matching the `FUNCTION_POST_SECRET` env secret; runs every minute via a
+  **pg_cron job** calling `net.http_post` (pg_net rejects non-JSON bodies,
+  so the OAuth refresh — form-urlencoded — must stay inside the function);
+  project region is ap-southeast-1
+  (`aws-0-ap-southeast-1.pooler.supabase.com` for psql); deploy via
+  `supabase functions deploy post-pending-comments --project-ref zzxatvwjblfbaqzdxouw --no-verify-jwt`
+  with `SUPABASE_ACCESS_TOKEN` set; setup SQL + test steps in the function
+  README; validated live (cron run → HTTP 200 no-op, 403 without secret).
   Two optional questions before the run (Enter skips both): **videos per
   project** (1–5) — each extra copy is freshly processed with randomised
   fps/trim via `_bulk_random_overrides` so every upload is a distinct edit

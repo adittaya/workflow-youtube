@@ -13,43 +13,63 @@ Same logic as `daily_uploader.drain_pending_comments()`:
   other 403s (video still private) retry, capped at 5 attempts; transient
   errors retry next tick
 
-## Deploy (one time, ~2 minutes)
+## Deployed state (already done for zzxatvwjblfbaqzdxouw)
 
-```bash
-# 1. install the CLI + log in (opens a browser, authorize with the
-#    account that owns the zzxatvwjblfbaqzdxouw project)
-npm install -g supabase
-supabase login
+- Function `post-pending-comments` deployed with **verify_jwt disabled**
+  (the `sb_secret_...` key is not a JWT, so JWT verification would reject
+  every call). Access is gated by the shared secret env var
+  `FUNCTION_POST_SECRET` — callers must send it in the `X-Post-Secret`
+  header, else the function answers 403.
+- Env vars: `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` are auto-injected
+  by the runtime; `FUNCTION_POST_SECRET` was set via `supabase secrets set`.
+- The 1-minute schedule is a **pg_cron job** (enabled via
+  `create extension if not exists pg_cron;` + `pg_net;` — the project lives
+  in ap-southeast-1, so use `aws-0-ap-southeast-1.pooler.supabase.com`):
 
-# 2. from the repo root, link the project and deploy the function
-supabase link --project-ref zzxatvwjblfbaqzdxouw
-supabase functions deploy post-pending-comments
+```sql
+create extension if not exists pg_cron;
+create extension if not exists pg_net;
 
-# 3. test it (must return {"posted":0,...} — the queue is drained but
-#    nothing is due right now, so it no-ops)
-curl -X POST https://zzxatvwjblfbaqzdxouw.supabase.co/functions/v1/post-pending-comments \
-  -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
-  -H "Content-Type: application/json" -d '{}'
+select cron.unschedule('post-pending-comments');
+select cron.schedule(
+  'post-pending-comments',
+  '* * * * *',
+  format('select net.http_post(url := ''https://zzxatvwjblfbaqzdxouw.supabase.co/functions/v1/post-pending-comments'', headers := ''{"Authorization":"Bearer %s","X-Post-Secret":"%s","Content-Type":"application/json"}''::jsonb, body := ''{}''::jsonb)', 'SB_SECRET_KEY', 'FUNCTION_POST_SECRET')
+);
 ```
 
-## Schedule it every minute
+(Why not pg_net directly against YouTube? pg_net only sends JSON bodies —
+Google's OAuth token refresh requires form-urlencoded, so the token step
+must run in the Edge Function.)
 
-Dashboard → **Integrations → Cron → Create cron job**:
+## Redeploy (after changing index.ts)
 
-- Name: `post-pending-comments`
-- Schedule: `* * * * *`
-- Type: **Supabase Edge Function**
-- Function: `post-pending-comments`
-- Save.
+```bash
+export SUPABASE_ACCESS_TOKEN=sbp_...            # Dashboard → Account → Access Tokens
+npx supabase@latest functions deploy post-pending-comments \
+  --project-ref zzxatvwjblfbaqzdxouw --no-verify-jwt
+```
 
-(Or with plain SQL: `SELECT cron.schedule('post-pending-comments', '* * * * *',
-$$SELECT net.http_post(url:='https://zzxatvwjblfbaqzdxouw.supabase.co/functions/v1/post-pending-comments', headers:='{"Authorization":"Bearer <SERVICE_ROLE_KEY>","Content-Type":"application/json"}'::jsonb, body:='{}'::jsonb)$$);`
-— the service key is fine here because the function holds no extra secrets.)
+The `FUNCTION_POST_SECRET` secret survives redeploys (set once via
+`supabase secrets set --project-ref ... --env-file <file>`).
+
+## Test
+
+```bash
+# with secret — must return {"posted":0,...} when nothing is due
+curl -X POST https://zzxatvwjblfbaqzdxouw.supabase.co/functions/v1/post-pending-comments \
+  -H "X-Post-Secret: $FUNCTION_POST_SECRET" -H "Content-Type: application/json" -d '{}'
+# without secret — must return 403
+```
+
+Verify the cron fires: `select status, return_message from cron.job_run_details
+where jobid = <id> order by runid desc limit 3;` and the function's answer in
+`net._http_response` (HTTP 200 + `{"posted":0,...}`).
 
 ## Failure semantics
 
 - If the database is paused or Supabase is down, the tick silently skips —
   the queue is untouched and the next tick (or the app's own drain on any
-  TUI/CLI run) posts it.
+  TUI/CLI run, or the GitHub Actions 30-min cron) posts it.
 - No retry inside a tick beyond the attempts cap — the queue itself is the
   durable state.

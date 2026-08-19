@@ -138,7 +138,13 @@ class CommentError extends Error {
   }
 }
 
-Deno.serve(async () => {
+Deno.serve(async (req) => {
+  // Deployed with verify_jwt=false (the service key is not a JWT), so gate
+  // on a shared secret instead: X-Post-Secret must match FUNCTION_POST_SECRET.
+  const expected = Deno.env.get("FUNCTION_POST_SECRET");
+  if (expected && req.headers.get("X-Post-Secret") !== expected) {
+    return Response.json({ error: "forbidden" }, { status: 403 });
+  }
   const posted: string[] = [];
   const dropped: string[] = [];
   const retried: string[] = [];

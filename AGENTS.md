@@ -35,6 +35,10 @@
   Status, `[H]` Upload history). Long lists (accounts/projects) paginate at 15
   rows with `[N]`/`[P]`; projects support `[R]` rename. Secret prompts show only
   a masked `********abcd` default — Enter keeps the value, never echoing the key.
+  Configure fields `custom_description`/`custom_comment`/`mirror_description_suffix`
+  accept **multi-line paste** (`_read_multiline`, END-terminated; single-line
+  `input()` silently cut long pastes at the first newline, which is why long
+  descriptions appeared "not saved").
   UI strings prefer plain language over jargon (Google sign-in, "flagged by
   YouTube", short link service) with placeholder hints on inputs.
 - **Bulk upload** (`[6]` per project): pick multiple saved accounts or "all",

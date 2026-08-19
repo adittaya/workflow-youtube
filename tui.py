@@ -1615,10 +1615,11 @@ FIELD_SPEC = [
     ("shortlink_provider", "Short link service (vplink/cleanuri/tinyurl)", "str"),
     ("shortlink_api_key", "Short link service key", "str"),
     ("comment_moderation", "Comment approval (hold-for-review/publish)", "str"),
-    ("mirror_title_prefix", "Title prefix (optional)", "str"),
-    ("custom_title", "Custom title (optional, {title} {url})", "str"),
-    ("custom_description", "Custom description (optional, {title} {url})", "str"),
-    ("custom_comment", "Custom comment (optional, {url} download link)", "str"),
+    ("mirror_title_prefix", "Title prefix (added before the video title)", "str"),
+    ("custom_title", "Custom title (replaces video title; {title} {url})", "str"),
+    ("custom_description", "Custom description (multi-line; {title} {url})", "str"),
+    ("custom_comment", "Custom comment (multi-line; {url} download link)", "str"),
+    ("mirror_description_suffix", "Description suffix (appended at the end)", "str"),
 ]
 
 
@@ -1716,6 +1717,11 @@ def screen_setup(project):
                     continue
                 if "secret" in key or "token" in key or "key" in key or "refresh" in key:
                     new_val = _secret_prompt(label, old)
+                elif key in ("custom_description", "custom_comment", "mirror_description_suffix"):
+                    if old:
+                        old_preview = str(old)
+                        print(f"  {C_DIM}Current: {old_preview[:120]}{'…' if len(old_preview) > 120 else ''}{C_RESET}")
+                    new_val = _read_multiline(f"{label} — paste lines, then type END on its own line")
                 else:
                     new_val = prompt(f"{label}", old if old != "" else None)
                 if new_val is None:
@@ -2151,6 +2157,9 @@ def _do_bulk_upload(project):
         # the source values when a field is empty.
         title = (settings.get("custom_title") or "").strip() or details.get("title", "")
         description = (settings.get("custom_description") or "").strip() or details.get("description", "")
+        desc_suffix = (settings.get("mirror_description_suffix") or "").strip()
+        if desc_suffix:
+            description = f"{description}\n{desc_suffix}"
         comment = (settings.get("custom_comment") or "").strip() or None
         tags = details.get("tags", [])
         info(f"Project fields → title: {title[:70]}{'…' if len(title) > 70 else ''}")
@@ -2454,6 +2463,9 @@ def _batch_run_projects(projects=None):
 
             title = _custom("custom_title") or details.get("title", "")
             description = _custom("custom_description") or details.get("description", "")
+            desc_suffix = (settings.get("mirror_description_suffix") or "").strip()
+            if desc_suffix:
+                description = f"{description}\n{desc_suffix}"
             comment = _custom("custom_comment") or None
             tags = details.get("tags", [])
 
@@ -2551,12 +2563,14 @@ def _batch_run_projects(projects=None):
 
 # ─── QUICK DEPLOY (guided question flow) ─────────────────────────────────────
 
-def _read_multiline(msg):
+def _read_multiline(msg, default=None):
     """Read multi-line pasted content until a line equal to 'END' (or EOF).
     Returns the text with its internal line breaks preserved. A visible cue is
     printed after every line so it is never ambiguous that more input is being
-    read (pasting a block with or without a trailing newline both work)."""
-    print(f"  {C_CYAN}▸{C_RESET} {msg} — paste it, then type END on its own line")
+    read (pasting a block with or without a trailing newline both work).
+    Nothing pasted (immediate END) keeps `default` — e.g. the saved value."""
+    print(f"  {C_CYAN}▸{C_RESET} {msg} — paste it, then type END on its own line"
+          + (f" (or just END to keep the saved value)" if default is not None else ""))
     lines = []
     while True:
         try:
@@ -2567,7 +2581,8 @@ def _read_multiline(msg):
             break
         lines.append(line)
         print(f"  {C_DIM}▸ keep pasting lines, or type END on its own line to finish{C_RESET}")
-    return "\n".join(lines).strip()
+    text = "\n".join(lines).strip()
+    return text if text else default
 
 
 def _ask_copy_or_custom(label, source, single_line=False):

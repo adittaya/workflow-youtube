@@ -259,7 +259,7 @@ def upload_daily(video_path, title=None, description=None,
     if custom_title and not raw:
         title = _format_template(custom_title, title=title, url=short_url or video_url)
     elif not raw:
-        title = f"{prefix}{title}{suffix}"
+        title = f"{prefix}{title}"
 
     thumbnail_path = None
     if source_url:
@@ -273,8 +273,12 @@ def upload_daily(video_path, title=None, description=None,
     custom_desc = (settings.get("custom_description") or "").strip()
     if custom_desc and (description is None or not raw):
         upload_desc = _format_template(custom_desc, title=title, url=short_url or video_url)
+        if suffix:
+            upload_desc += "\n" + suffix
     elif raw and description:
         upload_desc = description
+        if suffix:
+            upload_desc += "\n" + suffix
     else:
         upload_desc = "Download link in pinned comment"
         keywords = _extract_keywords(description) if description else ""

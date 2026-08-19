@@ -1721,7 +1721,7 @@ def screen_setup(project):
                     if old:
                         old_preview = str(old)
                         print(f"  {C_DIM}Current: {old_preview[:120]}{'…' if len(old_preview) > 120 else ''}{C_RESET}")
-                    new_val = _read_multiline(f"{label} — paste lines, then type END on its own line")
+                    new_val = _read_multiline(f"{label} — paste, then Enter on an empty line")
                 else:
                     new_val = prompt(f"{label}", old if old != "" else None)
                 if new_val is None:
@@ -2564,24 +2564,28 @@ def _batch_run_projects(projects=None):
 # ─── QUICK DEPLOY (guided question flow) ─────────────────────────────────────
 
 def _read_multiline(msg, default=None):
-    """Read multi-line pasted content until a line equal to 'END' (or EOF).
-    Returns the text with its internal line breaks preserved. A visible cue is
-    printed after every line so it is never ambiguous that more input is being
-    read (pasting a block with or without a trailing newline both work).
-    Nothing pasted (immediate END) keeps `default` — e.g. the saved value."""
-    print(f"  {C_CYAN}▸{C_RESET} {msg} — paste it, then type END on its own line"
-          + (f" (or just END to keep the saved value)" if default is not None else ""))
+    """Read multi-line pasted content. Every pasted line echoes on the
+    terminal exactly as typed; a single Enter on an empty line saves what
+    was pasted (like running a command). 'END' also works as an explicit
+    terminator. Pasting stops at the first blank line — internal blank
+    lines are not supported (the blank line is the save signal). An empty
+    paste (immediate Enter) keeps `default` — e.g. the saved value."""
+    print(f"  {C_CYAN}▸{C_RESET} {msg} — paste it, then press Enter on an empty line to save"
+          + (f" (empty Enter keeps the saved value)" if default is not None else ""))
     lines = []
     while True:
         try:
             line = input()
         except EOFError:
             break
+        if not line.strip():
+            break
         if line.strip().lower() == "end":
             break
         lines.append(line)
-        print(f"  {C_DIM}▸ keep pasting lines, or type END on its own line to finish{C_RESET}")
     text = "\n".join(lines).strip()
+    if text:
+        print(f"  {C_DIM}(captured {len(lines)} line(s), {len(text)} chars){C_RESET}")
     return text if text else default
 
 

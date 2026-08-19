@@ -36,7 +36,8 @@
   rows with `[N]`/`[P]`; projects support `[R]` rename. Secret prompts show only
   a masked `********abcd` default — Enter keeps the value, never echoing the key.
   Configure fields `custom_description`/`custom_comment`/`mirror_description_suffix`
-  accept **multi-line paste** (`_read_multiline`, END-terminated; single-line
+  accept **multi-line paste** (`_read_multiline`: every pasted line echoes on
+  the terminal, a blank line — or `END` — finishes and saves; single-line
   `input()` silently cut long pastes at the first newline, which is why long
   descriptions appeared "not saved").
   UI strings prefer plain language over jargon (Google sign-in, "flagged by
